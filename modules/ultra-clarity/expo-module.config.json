@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android", "web"],
+  "apple": {
+    "modules": ["UltraClarityModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.ultraclarity.UltraClarityModule"]
+  }
+}
