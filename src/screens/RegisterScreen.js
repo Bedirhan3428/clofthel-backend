@@ -100,14 +100,17 @@ export default function RegisterScreen({ navigation }) {
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Header Bar */}
+      <View style={styles.headerBar}>
+        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+          <Ionicons name="arrow-back" size={24} color="#FFF" />
+        </TouchableOpacity>
+      </View>
+
       <KeyboardAvoidingView 
         style={styles.keyboardView} 
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-          <Ionicons name="arrow-back" size={24} color="#FFF" />
-        </TouchableOpacity>
-
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           <View style={styles.headerContainer}>
             <Text style={styles.title}>Aramıza Katıl!</Text>
@@ -242,14 +245,15 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     paddingHorizontal: SPACING.xl,
-    paddingTop: 80, // back button için alan
+    paddingTop: 20,
     paddingBottom: 20,
   },
+  headerBar: {
+    height: 56,
+    justifyContent: 'center',
+    paddingHorizontal: SPACING.lg,
+  },
   backButton: {
-    position: 'absolute',
-    top: Platform.OS === 'android' ? 40 : 10,
-    left: SPACING.lg,
-    zIndex: 10,
     width: 40,
     height: 40,
     borderRadius: 20,

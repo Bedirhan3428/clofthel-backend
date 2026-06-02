@@ -70,14 +70,17 @@ export default function VerificationScreen({ route, navigation }) {
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Header Bar */}
+      <View style={styles.headerBar}>
+        <TouchableOpacity style={styles.backButton} onPress={() => navigation.navigate('Login')}>
+          <Ionicons name="arrow-back" size={24} color="#FFF" />
+        </TouchableOpacity>
+      </View>
+
       <KeyboardAvoidingView 
         style={styles.keyboardView} 
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        <TouchableOpacity style={styles.backButton} onPress={() => navigation.navigate('Login')}>
-          <Ionicons name="arrow-back" size={24} color="#FFF" />
-        </TouchableOpacity>
-
         <View style={styles.content}>
           <View style={styles.headerContainer}>
             <View style={styles.iconWrapper}>
@@ -154,11 +157,12 @@ const styles = StyleSheet.create({
   keyboardView: {
     flex: 1,
   },
+  headerBar: {
+    height: 56,
+    justifyContent: 'center',
+    paddingHorizontal: SPACING.lg,
+  },
   backButton: {
-    position: 'absolute',
-    top: Platform.OS === 'android' ? 40 : 10,
-    left: SPACING.lg,
-    zIndex: 10,
     width: 40,
     height: 40,
     borderRadius: 20,
