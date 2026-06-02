@@ -147,7 +147,7 @@ export default function ProfileScreen({ navigation }) {
 
         {/* Menu Items */}
         <View style={styles.menuSection}>
-          <Text style={styles.sectionTitle}>İzleme Geçmişi</Text>
+          <Text style={styles.sectionTitle}>İzlemeye Devam Et</Text>
           {loading ? (
             <ActivityIndicator color={COLORS.accent} />
           ) : profileData?.watchHistory?.length > 0 ? (

@@ -175,10 +175,6 @@ function SlideItem({ anime, onPress, isActive }) {
                 <Text style={styles.watchButtonText}>Hemen İzle ⚡</Text>
               </LinearGradient>
             </TouchableOpacity>
-
-            <TouchableOpacity style={styles.addButton} activeOpacity={0.7}>
-              <Ionicons name="add" size={24} color={COLORS.textPrimary} />
-            </TouchableOpacity>
           </Animated.View>
         </View>
       )}

@@ -62,22 +62,34 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const [customLists, setCustomLists] = useState([]);
   const [isListModalVisible, setIsListModalVisible] = useState(false);
 
+  const [lastWatchedEntry, setLastWatchedEntry] = useState(null);
+
   const { user } = useContext(AuthContext);
 
   useEffect(() => {
-    const checkFavorite = async () => {
+    const checkUserData = async () => {
       if (user) {
         const data = await getProfileData();
-        if (data && data.favorites) {
-          const favObj = data.favorites.find(f => f._id === anime._id || f === anime._id);
-          setIsFavorite(!!favObj);
-        }
-        if (data && data.customLists) {
-          setCustomLists(data.customLists);
+        if (data) {
+          if (data.favorites) {
+            const favObj = data.favorites.find(f => f._id === anime._id || f === anime._id);
+            setIsFavorite(!!favObj);
+          }
+          if (data.customLists) {
+            setCustomLists(data.customLists);
+          }
+          if (data.watchHistory) {
+            const historyObj = data.watchHistory.find(
+              h => h.anime && (h.anime._id === anime._id || h.anime === anime._id)
+            );
+            if (historyObj) {
+              setLastWatchedEntry(historyObj);
+            }
+          }
         }
       }
     };
-    checkFavorite();
+    checkUserData();
   }, [anime._id, user]);
 
   const handleToggleFavorite = async () => {
@@ -333,21 +345,31 @@ export default function AnimeDetailScreen({ route, navigation }) {
             style={styles.watchButton}
             activeOpacity={0.85}
             onPress={() => {
-              const firstEp = episodes[0];
-              if (firstEp) {
+              if (lastWatchedEntry) {
                 navigation.navigate('Resolve', {
                   animeId: anime._id,
-                  episodeNumber: firstEp.episode_number,
-                  episodeTitle: firstEp.episode_title || `Bölüm ${firstEp.episode_number}`,
-                  animeTitle: anime.title || anime.anime_title
+                  episodeNumber: lastWatchedEntry.episode,
+                  episodeTitle: `${lastWatchedEntry.episode}. Bölüm`,
+                  animeTitle: anime.title || anime.anime_title,
+                  startAt: lastWatchedEntry.currentTime || 0
                 });
-              } else if (anime.tranimeizle_url) {
-                navigation.navigate('Resolve', {
-                  animeId: anime._id,
-                  episodeNumber: 1,
-                  episodeTitle: anime.title || anime.anime_title,
-                  animeTitle: anime.title || anime.anime_title
-                });
+              } else {
+                const firstEp = episodes[0];
+                if (firstEp) {
+                  navigation.navigate('Resolve', {
+                    animeId: anime._id,
+                    episodeNumber: firstEp.episode_number,
+                    episodeTitle: firstEp.episode_title || `Bölüm ${firstEp.episode_number}`,
+                    animeTitle: anime.title || anime.anime_title
+                  });
+                } else if (anime.tranimeizle_url) {
+                  navigation.navigate('Resolve', {
+                    animeId: anime._id,
+                    episodeNumber: 1,
+                    episodeTitle: anime.title || anime.anime_title,
+                    animeTitle: anime.title || anime.anime_title
+                  });
+                }
               }
             }}
           >
@@ -357,8 +379,12 @@ export default function AnimeDetailScreen({ route, navigation }) {
               end={{ x: 1, y: 0 }}
               style={styles.watchButtonGradient}
             >
-              <Ionicons name="play" size={20} color="#FFF" />
-              <Text style={styles.watchButtonText}>İzlemeye Başla</Text>
+              <Ionicons name={lastWatchedEntry ? "play-forward" : "play"} size={20} color="#FFF" />
+              <Text style={styles.watchButtonText}>
+                {lastWatchedEntry 
+                  ? `İzlemeye Devam Et (${lastWatchedEntry.episode}. Bölüm)` 
+                  : 'İzlemeye Başla'}
+              </Text>
             </LinearGradient>
           </TouchableOpacity>
 
