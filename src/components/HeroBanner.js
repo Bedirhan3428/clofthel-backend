@@ -80,11 +80,11 @@ function SlideItem({ anime, onPress, isActive }) {
       {isActive && imageSource ? (
         <Animated.View
           entering={FadeIn.duration(1200)}
-          style={[styles.posterImage, { opacity: 0.85 }]}
+          style={styles.posterImage}
         >
           <Image
             source={{ uri: imageSource }}
-            style={{ width: '100%', height: '100%' }}
+            style={{ width: '100%', height: '100%', opacity: 0.85 }}
             contentFit="cover"
           />
         </Animated.View>
