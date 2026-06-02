@@ -13,10 +13,10 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-// ── Rate Limiters (Brute Force Koruması) ────────────────────────
+// ── Rate Limiters (Brute Force Koruması - Testler için artırıldı)
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 dakika
-  max: 10, // IP başına 10 deneme
+  max: 100, // IP başına 100 deneme
   message: { success: false, error: 'Çok fazla giriş denemesi. 15 dakika sonra tekrar deneyin.' },
   standardHeaders: true,
   legacyHeaders: false
@@ -24,7 +24,7 @@ const loginLimiter = rateLimit({
 
 const registerLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 saat
-  max: 5, // IP başına 5 kayıt
+  max: 50, // IP başına 50 kayıt
   message: { success: false, error: 'Çok fazla kayıt denemesi. 1 saat sonra tekrar deneyin.' },
   standardHeaders: true,
   legacyHeaders: false
@@ -32,7 +32,7 @@ const registerLimiter = rateLimit({
 
 const resendCodeLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
+  max: 50,
   message: { success: false, error: 'Çok fazla kod gönderme denemesi. 15 dakika sonra tekrar deneyin.' },
   standardHeaders: true,
   legacyHeaders: false
