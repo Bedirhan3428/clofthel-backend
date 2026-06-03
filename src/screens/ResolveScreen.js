@@ -9,11 +9,13 @@ import {
   StatusBar,
   Animated,
   Platform,
+  findNodeHandle,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { fetchEpisodeVideoUrl, cacheEpisodeVideoUrl } from '../services/api';
+import TouchInjector from '../modules/TouchInjector';
 import { API_BASE_URL } from '../constants/config';
 
 let WebView = null;
@@ -39,6 +41,8 @@ export default function ResolveScreen({ route, navigation }) {
 
   const webViewRef = useRef(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const animatedProgress = useRef(new Animated.Value(10)).current;
+  const [displayedPercent, setDisplayedPercent] = useState(10);
 
   // Pulse animation for loading indicator
   useEffect(() => {
@@ -58,6 +62,32 @@ export default function ResolveScreen({ route, navigation }) {
     ).start();
   }, []);
 
+  // Smoothly animate progress bar and count up percentage text
+  useEffect(() => {
+    Animated.timing(animatedProgress, {
+      toValue: progressPercent,
+      duration: 1000, // 1 second smooth transition
+      useNativeDriver: false,
+    }).start();
+
+    let start = displayedPercent;
+    const end = progressPercent;
+    if (start === end) return;
+
+    const range = end - start;
+    const stepTime = Math.max(Math.floor(1000 / Math.abs(range)), 15);
+
+    const timer = setInterval(() => {
+      start += (end > start ? 1 : -1);
+      setDisplayedPercent(start);
+      if (start === end) {
+        clearInterval(timer);
+      }
+    }, stepTime);
+
+    return () => clearInterval(timer);
+  }, [progressPercent]);
+
   useEffect(() => {
     checkDatabaseCache();
   }, []);
@@ -67,6 +97,8 @@ export default function ResolveScreen({ route, navigation }) {
     setErrorMsg(null);
     setEpisodeUrl(null);
     setProgressPercent(10);
+    animatedProgress.setValue(10);
+    setDisplayedPercent(10);
     setResolvingState('Veritabanı kontrol ediliyor...');
 
     if (!IS_WEB && !WebView) {
@@ -157,6 +189,19 @@ export default function ResolveScreen({ route, navigation }) {
       } else if (data.type === 'noSource' || data.type === 'error') {
         setErrorMsg(data.message || 'Anime bulunamadı.');
         setLoading(false);
+      } else if (data.type === 'native_touch') {
+        const { x, y } = data;
+        if (TouchInjector) {
+          const reactTag = event.nativeEvent.target; // React Native'in gönderdiği gerçek View Tag'ı
+          if (reactTag) {
+            console.log(`[Native Touch] Injecting touch at X:${x} Y:${y} on tag: ${reactTag}`);
+            TouchInjector.simulateTouch(reactTag, x, y)
+              .then(res => console.log('[Native Touch Success]', res))
+              .catch(err => console.error('[Native Touch Error]', err));
+          } else {
+            console.warn('[Native Touch] WebView reactTag could not be resolved from event.');
+          }
+        }
       }
     } catch (err) {
       console.error('[ResolveScreen Message Parse Error]', err);
@@ -168,6 +213,23 @@ export default function ResolveScreen({ route, navigation }) {
       (function() {
         if (window.__scraper_initialized) return;
         window.__scraper_initialized = true;
+
+        // --- GÜVENLİK (BOT) KORUMASI ATLATMA (PROXY SPOOFING) & REKLAM ENGELLEME ---
+        try {
+          if (navigator.userActivation === undefined || !navigator.userActivation.hasBeenActive) {
+            Object.defineProperty(navigator, 'userActivation', {
+              get: function() { return { hasBeenActive: true, isActive: true }; }
+            });
+          }
+          Object.defineProperty(navigator, 'webdriver', { get: function() { return false; } });
+          
+          // window.open override ederek yeni sekmede reklam açılmasını engelliyoruz
+          window.open = function(url) {
+            sendToNative({ type: 'log', message: 'window.open engellendi (Reklam): ' + url });
+            return null;
+          };
+        } catch(e) {}
+        // --------------------------------------------------------
 
         var messageQueue = [];
         
@@ -356,7 +418,7 @@ export default function ResolveScreen({ route, navigation }) {
                  return true;
               } else {
                  var playBtn = document.querySelector('.vjs-big-play-button') || document.querySelector('.vjs-play-control') || document.querySelector('.vjs-poster');
-                 if (playBtn) clickElement(playBtn);
+                 if (playBtn) requestNativeTouch(playBtn);
                  
                  if (!window.__sibnetRetryDone) {
                    window.__sibnetRetryDone = true;
@@ -405,70 +467,48 @@ export default function ResolveScreen({ route, navigation }) {
         }
 
         function clickElement(el) {
-          if (!el) return;
           try {
-            var rect = el.getBoundingClientRect();
-            var x = rect.left + (rect.width / 2);
-            var y = rect.top + (rect.height / 2);
-            
-            // Eğer element henüz ekranda tam boyutlanmadıysa veya koordinat 0 ise manuel düzeltme yapıyoruz
-            if (x === 0 && y === 0) {
-              x = window.innerWidth / 2;
-              y = window.innerHeight / 2;
-              sendToNative({ type: 'log', message: 'Koordinat alinamadi, sayfa ortasina zorlaniyor.' });
-            } else {
-              sendToNative({ type: 'log', message: 'Kordinatla tiklaniyor: X:' + Math.round(x) + ' Y:' + Math.round(y) });
-            }
-            
-            // 1. Adım: Elementi odakla (Focus) ve aktif et
-            if (el.focus) el.focus();
-            
-            var opts = { 
-              bubbles: true, 
-              cancelable: true, 
-              view: window,
-              clientX: x,
-              clientY: y,
-              screenX: x,
-              screenY: y
-            };
-            
-            // 2. Adım: Klasik HTML4 tarzı tıklama eventi (En çok korumayı bu deler)
-            try {
-              var evt = el.ownerDocument.createEvent('MouseEvents');
-              evt.initMouseEvent('click', true, true, el.ownerDocument.defaultView, 1, x, y, x, y, false, false, false, false, 0, null);
-              el.dispatchEvent(evt);
-            } catch(e) {}
-
-            // 3. Adım: Modern Mouse Events
-            try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e){}
-            try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e){}
-            try { el.dispatchEvent(new MouseEvent('click', opts)); } catch(e){}
-            
-            // 4. Adım: Mobil Touch Events
-            try { 
-              var touchObj = new Touch({ identifier: Date.now(), target: el, clientX: x, clientY: y, screenX: x, screenY: y, pageX: x + window.scrollX, pageY: y + window.scrollY });
-              var touchEventInit = { bubbles: true, cancelable: true, view: window, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj] };
-              el.dispatchEvent(new TouchEvent('touchstart', touchEventInit)); 
-              el.dispatchEvent(new TouchEvent('touchend', touchEventInit)); 
-            } catch(e){}
-            
-            // 5. Adım: En İlkel Ama En Etkili Fallback (Direct Execute)
-            if (typeof el.click === 'function') {
+            if (el.click) {
               el.click();
             } else {
-              // Eğer .click() yoksa elementin üstündeki onclick attribute'unu zorla çalıştırıyoruz
-              var onclickStr = el.getAttribute('onclick');
-              if (onclickStr) {
-                new Function(onclickStr).call(el);
-              }
+              var ev = document.createEvent("MouseEvents");
+              ev.initMouseEvent("click", true, true, window, 1, 0, 0, 0, 0, false, false, false, false, 0, null);
+              el.dispatchEvent(ev);
             }
-            
-            // Ekstra Altın Değerinde İpucu: jQuery desteği
-            try { if (window.$ && window.$(el).trigger) { window.$(el).trigger('click'); } } catch(e){}
-          } catch(e) {
-            sendToNative({ type: 'log', message: 'Tiklama hatasi: ' + e.message });
+            sendToNative({ type: 'log', message: 'Elemente JS ile tıklandı (Reklamsız hızlı geçiş).' });
+          } catch (e) {
+            sendToNative({ type: 'log', message: 'JS tıklama hatası: ' + e.message });
           }
+        }
+
+        function requestNativeTouch(el) {
+          try {
+            if (el.scrollIntoView) {
+              el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+            }
+          } catch(e){}
+
+          setTimeout(function() {
+            try {
+              var rect = el.getBoundingClientRect();
+              var x = rect.left + (rect.width / 2);
+              var y = rect.top + (rect.height / 2);
+              
+              if (x === 0 || y === 0 || rect.width === 0) {
+                 sendToNative({ type: 'log', message: 'Element gorunmez veya 0x0.' });
+                 return;
+              }
+              
+              // CSS piksel koordinatlarını tam fiziksel piksele çeviriyoruz
+              var physicalX = x * window.devicePixelRatio;
+              var physicalY = y * window.devicePixelRatio;
+
+              sendToNative({ type: 'log', message: 'Donanımsal dokunuş talep ediliyor: X:' + Math.round(x) + ' Y:' + Math.round(y) + ' (Fiziksel X:' + Math.round(physicalX) + ' Y:' + Math.round(physicalY) + ')' });
+              sendToNative({ type: 'native_touch', x: physicalX, y: physicalY });
+            } catch(e) {
+              sendToNative({ type: 'log', message: 'Native touch hatasi: ' + e.message });
+            }
+          }, 100);
         }
 
         function isUnrelatedElement(el, sourceListEl) {
@@ -522,6 +562,28 @@ export default function ResolveScreen({ route, navigation }) {
           return el;
         }
 
+        function removeAdOverlays() {
+          try {
+            var allElements = document.querySelectorAll('*');
+            for (var i = 0; i < allElements.length; i++) {
+              var el = allElements[i];
+              var style = window.getComputedStyle(el);
+              if (
+                (style.position === 'fixed' || style.position === 'absolute') &&
+                (style.zIndex && parseInt(style.zIndex) > 100) &&
+                (parseFloat(style.width) >= window.innerWidth * 0.8 || el.offsetWidth >= window.innerWidth * 0.8) &&
+                (parseFloat(style.height) >= window.innerHeight * 0.8 || el.offsetHeight >= window.innerHeight * 0.8) &&
+                (style.opacity === '0' || parseFloat(style.opacity) < 0.1 || style.backgroundColor === 'transparent' || style.backgroundColor === 'rgba(0, 0, 0, 0)')
+              ) {
+                if (el.tagName !== 'HTML' && el.tagName !== 'BODY' && el !== debugDiv && !debugDiv.contains(el)) {
+                  sendToNative({ type: 'log', message: 'Reklam perdesi silindi: ' + el.tagName + ' (ID: ' + el.id + ' | Class: ' + el.className + ')' });
+                  el.parentNode.removeChild(el);
+                }
+              }
+            }
+          } catch(e) {}
+        }
+
         function isPlayerLoaded() {
           try {
             var iframes = document.querySelectorAll('iframe');
@@ -542,6 +604,7 @@ export default function ResolveScreen({ route, navigation }) {
 
         var runAutomation = function() {
           checkCount++;
+          removeAdOverlays();
 
           try {
             if (_resolved) {
@@ -707,17 +770,33 @@ export default function ResolveScreen({ route, navigation }) {
                     sendToNative({ type: 'log', message: 'En farkli gorsel bulundu (#' + (outlierImg.index + 1) + ', ' + outlierImg.size + ' byte). Zamanlama (timing) ayarlaniyor...' });
                     
                     var targetEl = outlierImg.element;
-                    var parentA = targetEl.closest ? targetEl.closest('a') : null;
-                    var parentBtn = targetEl.closest ? targetEl.closest('button') : null;
-                    
-                    var clickTarget = parentA || parentBtn || targetEl;
                     
                     var timeElapsed = Date.now() - detectionTime;
-                    var remainingDelay = Math.max(0, 2000 - timeElapsed);
+                    var remainingDelay = Math.max(0, 2500 - timeElapsed);
                     
                     setTimeout(function() {
-                      clickElement(clickTarget);
-                      setTimeout(function() { captchaChecked = false; }, 2500);
+                      sendToNative({ type: 'log', message: 'Donanımsal (Native) Tıklama gönderiliyor...' });
+                      requestNativeTouch(targetEl);
+                      
+                      // Güvence tıklamasına (parent element) gerek yok, çünkü Native dokunuş zaten baloncuklama (bubbling) yapacak.
+
+                      // 4 saniye bekle, çözülmezse yenile
+                      setTimeout(function() { 
+                        if (!_resolved) {
+                          var reloadCount = parseInt(sessionStorage.getItem('captcha_reloads') || '0');
+                          if (reloadCount < 2) {
+                            sessionStorage.setItem('captcha_reloads', reloadCount + 1);
+                            sendToNative({ type: 'log', message: 'Sistem zorlanıyor, sayfa YENİLENİYOR (Reload ' + (reloadCount+1) + ')...' });
+                            window.location.reload();
+                          } else {
+                            sendToNative({ type: 'log', message: 'Tüm donanımsal dokunuşlar başarısız. Lütfen ekrana BİR KEZ dokunun.' });
+                            captchaChecked = false; 
+                          }
+                        } else {
+                          captchaChecked = false;
+                        }
+                      }, 4000);
+
                     }, remainingDelay);
                   } else {
                     sendToNative({ type: 'log', message: 'Farkli gorsel bulunamadi veya fark yok. Tekrar denenecek...' });
@@ -800,66 +879,86 @@ export default function ResolveScreen({ route, navigation }) {
       
       {loading ? (
         episodeUrl ? (
-          // Scraper/Automation is running (WebView is visible)
-          <SafeAreaView style={styles.resolvingContainer} edges={['top', 'left', 'right']}>
-            <View style={styles.webViewContainer}>
-              {IS_WEB ? (
-                <View style={{ flex: 1, width: '100%', height: '100%' }}>
-                  <iframe
-                    src={episodeUrl}
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      border: 'none',
-                      backgroundColor: '#000',
+          // Scraper/Automation is running (WebView runs in background, user sees a clean full-screen loading overlay)
+          <SafeAreaView style={styles.resolvingContainer} edges={['top', 'left', 'right', 'bottom']}>
+            <View style={{ flex: 1, position: 'relative' }}>
+              <View style={styles.webViewContainer}>
+                {IS_WEB ? (
+                  <View style={{ flex: 1, width: '100%', height: '100%' }}>
+                    <iframe
+                      src={episodeUrl}
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        border: 'none',
+                        backgroundColor: '#000',
+                      }}
+                      sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+                      title="Video Resolver"
+                    />
+                  </View>
+                ) : WebView ? (
+                  <WebView
+                    ref={webViewRef}
+                    source={{ uri: episodeUrl }}
+                    injectedJavaScriptBeforeContentLoaded={injectedJs}
+                    injectedJavaScript={injectedJs}
+                    onMessage={handleWebViewMessage}
+                    javaScriptEnabled={true}
+                    domStorageEnabled={true}
+                    mixedContentMode="always"
+                    mediaPlaybackRequiresUserAction={false}
+                    style={{ flex: 1, width: '100%', height: '100%' }}
+                    onLoadStart={(e) => console.log('[WebView] Load Start:', e.nativeEvent.url)}
+                    onLoad={(e) => console.log('[WebView] Loaded successfully')}
+                    onLoadEnd={(e) => console.log('[WebView] Load End')}
+                    onError={(e) => console.error('[WebView] Error:', e.nativeEvent)}
+                    onHttpError={(e) => console.error('[WebView] HTTP Error:', e.nativeEvent)}
+                    setSupportMultipleWindows={false}
+                    onShouldStartLoadWithRequest={(request) => {
+                      const url = request.url;
+                      // Izin verilecek guvenilir domain listesi
+                      const isTrAnime = url.includes('tranimeizle.io');
+                      const isOptraco = url.includes('optraco.top');
+                      const isSibnet = url.includes('sibnet.ru');
+                      const isCaptcha = url.includes('Captcha') || url.includes('challenge');
+                      const isGoogle = url.includes('google');
+                      
+                      if (isTrAnime || isOptraco || isSibnet || isCaptcha || isGoogle || url.startsWith('about:blank') || url.startsWith('data:')) {
+                        return true;
+                      }
+                      
+                      console.log('[Ad Blocker] Engellenen reklam yönlendirmesi:', url);
+                      return false;
                     }}
-                    sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-                    title="Video Resolver"
                   />
-                </View>
-              ) : WebView ? (
-                <WebView
-                  ref={webViewRef}
-                  source={{ uri: episodeUrl }}
-                  injectedJavaScriptBeforeContentLoaded={injectedJs}
-                  injectedJavaScript={injectedJs}
-                  onMessage={handleWebViewMessage}
-                  javaScriptEnabled={true}
-                  domStorageEnabled={true}
-                  mixedContentMode="always"
-                  mediaPlaybackRequiresUserAction={false}
-                  style={{ flex: 1, width: '100%', height: '100%' }}
-                  onLoadStart={(e) => console.log('[WebView] Load Start:', e.nativeEvent.url)}
-                  onLoad={(e) => console.log('[WebView] Loaded successfully')}
-                  onLoadEnd={(e) => console.log('[WebView] Load End')}
-                  onError={(e) => console.error('[WebView] Error:', e.nativeEvent)}
-                  onHttpError={(e) => console.error('[WebView] HTTP Error:', e.nativeEvent)}
-                />
-              ) : null}
-            </View>
-            
-            {/* Bottom Status Panel for progress tracking and logs */}
-            <View style={styles.bottomStatusPanel}>
-              <Animated.View style={{ transform: [{ scale: pulseAnim }], justifyContent: 'center', alignItems: 'center', marginBottom: 12 }}>
-                <ActivityIndicator size="large" color={COLORS.accent} style={{ transform: [{ scale: 1.2 }] }} />
-              </Animated.View>
-              
-              <Text style={styles.loadingTitleCompact}>Bölüm Yükleniyor...</Text>
-              <Text style={styles.loadingStateTextCompact}>%{progressPercent}</Text>
-              
-              <View style={styles.progressContainerCompact}>
-                <View style={[styles.progressBar, { width: `${progressPercent}%` }]} />
+                ) : null}
               </View>
-              
 
-              <TouchableOpacity 
-                style={styles.cancelButtonCompact}
-                onPress={() => {
-                  navigation.goBack();
-                }}
-              >
-                <Ionicons name="close-circle" size={36} color="rgba(255,255,255,0.4)" />
-              </TouchableOpacity>
+              {/* Temiz Yükleme Perdesi (Full Screen Loading Overlay) */}
+              <View style={styles.webViewOverlay}>
+                <Animated.View style={{ transform: [{ scale: pulseAnim }], marginBottom: 32, justifyContent: 'center', alignItems: 'center' }}>
+                  <Ionicons name="sparkles" size={64} color={COLORS.accent} />
+                </Animated.View>
+                <Text style={styles.overlayText}>Bölüm Yükleniyor...</Text>
+                <Text style={styles.overlayPercentText}>%{displayedPercent}</Text>
+                
+                <View style={styles.progressContainerCompact}>
+                  <Animated.View style={[styles.progressBar, { width: animatedProgress.interpolate({
+                    inputRange: [0, 100],
+                    outputRange: ['0%', '100%'],
+                  }) }]} />
+                </View>
+
+                <TouchableOpacity 
+                  style={styles.cancelButtonOverlay}
+                  onPress={() => {
+                    navigation.goBack();
+                  }}
+                >
+                  <Text style={styles.cancelButtonText}>İptal Et</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </SafeAreaView>
         ) : (
@@ -996,31 +1095,35 @@ const styles = StyleSheet.create({
     backgroundColor: '#09090E',
   },
   webViewContainer: {
-    width: 0,
-    height: 0,
-    opacity: 0,
-    overflow: 'hidden',
-  },
-  bottomStatusPanel: {
     flex: 1,
     width: '100%',
+    backgroundColor: '#000',
+  },
+  webViewOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     backgroundColor: '#09090E',
-    alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: SPACING.xxl,
+    alignItems: 'center',
+    zIndex: 100,
+    paddingHorizontal: 40,
   },
-  loadingTitleCompact: {
+  overlayText: {
     color: '#FFF',
-    fontSize: FONT_SIZES.title,
-    fontWeight: FONT_WEIGHTS.bold,
-    marginTop: 24,
-    marginBottom: SPACING.xs,
-  },
-  loadingStateTextCompact: {
-    color: COLORS.accent,
     fontSize: FONT_SIZES.heading,
     fontWeight: FONT_WEIGHTS.bold,
-    marginBottom: SPACING.lg,
+    textAlign: 'center',
+    marginBottom: SPACING.xs,
+    letterSpacing: 0.5,
+  },
+  overlayPercentText: {
+    color: COLORS.accent,
+    fontSize: FONT_SIZES.heading + 6,
+    fontWeight: FONT_WEIGHTS.bold,
+    marginBottom: 30,
   },
   progressContainerCompact: {
     height: 8,
@@ -1028,20 +1131,26 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.08)',
     borderRadius: 4,
     overflow: 'hidden',
-    marginTop: 10,
-    marginBottom: 20,
+    marginBottom: 40,
   },
-  loadingSubtitleCompact: {
-    color: COLORS.textSecondary,
-    fontSize: 11,
-    textAlign: 'center',
-    paddingHorizontal: SPACING.md,
-    lineHeight: 15,
+  progressBar: {
+    height: '100%',
+    backgroundColor: COLORS.accent,
+    borderRadius: 4,
   },
-  cancelButtonCompact: {
+  cancelButtonOverlay: {
     position: 'absolute',
-    top: 15,
-    right: 15,
-    padding: 5,
+    bottom: 60,
+    paddingVertical: 12,
+    paddingHorizontal: 30,
+    borderRadius: 25,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  cancelButtonText: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: FONT_SIZES.body,
+    fontWeight: FONT_WEIGHTS.semibold,
   },
 });

@@ -344,7 +344,7 @@ router.post('/google', async (req, res) => {
         userAvatar = payload.picture;
       } catch (e) {
         console.error('Google ID Token doğrulama hatası:', e.message);
-        return res.status(401).json({ success: false, error: 'Google kimlik doğrulaması başarısız. Geçersiz token.' });
+        return res.status(401).json({ success: false, error: 'Google kimlik doğrulaması başarısız. Hata: ' + e.message });
       }
     } else {
       return res.status(400).json({ success: false, error: 'Google ID Token gereklidir.' });
