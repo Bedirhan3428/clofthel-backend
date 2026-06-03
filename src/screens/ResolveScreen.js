@@ -937,9 +937,6 @@ export default function ResolveScreen({ route, navigation }) {
 
               {/* Temiz Yükleme Perdesi (Full Screen Loading Overlay) */}
               <View style={styles.webViewOverlay}>
-                <Animated.View style={{ transform: [{ scale: pulseAnim }], marginBottom: 32, justifyContent: 'center', alignItems: 'center' }}>
-                  <Ionicons name="sparkles" size={64} color={COLORS.accent} />
-                </Animated.View>
                 <Text style={styles.overlayText}>Bölüm Yükleniyor...</Text>
                 <Text style={styles.overlayPercentText}>%{displayedPercent}</Text>
                 
