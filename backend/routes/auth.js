@@ -6,7 +6,8 @@ const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
 const { JWT_SECRET } = require('../middleware/authMiddleware');
 
-const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const googleClientId = (process.env.GOOGLE_CLIENT_ID || '').trim().replace(/^['"]|['"]$/g, '');
+const client = new OAuth2Client(googleClientId);
 
 const router = express.Router();
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -334,9 +335,10 @@ router.post('/google', async (req, res) => {
 
     if (idToken) {
       try {
+        const cleanedClientId = (process.env.GOOGLE_CLIENT_ID || '').trim().replace(/^['"]|['"]$/g, '');
         const ticket = await client.verifyIdToken({
           idToken,
-          audience: process.env.GOOGLE_CLIENT_ID
+          audience: cleanedClientId
         });
         const payload = ticket.getPayload();
         userEmail = payload.email;
@@ -344,10 +346,11 @@ router.post('/google', async (req, res) => {
         userAvatar = payload.picture;
       } catch (e) {
         console.error('Google ID Token doğrulama hatası:', e.message);
+        const cleanedClientId = (process.env.GOOGLE_CLIENT_ID || '').trim().replace(/^['"]|['"]$/g, '');
         let tokenDetails = "";
         try {
           const tempPayload = jwt.decode(idToken);
-          tokenDetails = ` (Token Aud: ${tempPayload ? tempPayload.aud : 'null'}, Server Aud: ${process.env.GOOGLE_CLIENT_ID})`;
+          tokenDetails = ` (Token Aud: ${tempPayload ? tempPayload.aud : 'null'}, Server Aud: ${cleanedClientId})`;
         } catch(decodeErr) {
           tokenDetails = " (Token decode failed)";
         }
