@@ -936,26 +936,43 @@ export default function ResolveScreen({ route, navigation }) {
               </View>
 
               {/* Temiz Yükleme Perdesi (Full Screen Loading Overlay) */}
-              <View style={styles.webViewOverlay}>
-                <Text style={styles.overlayText}>Bölüm Yükleniyor...</Text>
-                <Text style={styles.overlayPercentText}>%{displayedPercent}</Text>
-                
-                <View style={styles.progressContainerCompact}>
-                  <Animated.View style={[styles.progressBar, { width: animatedProgress.interpolate({
-                    inputRange: [0, 100],
-                    outputRange: ['0%', '100%'],
-                  }) }]} />
-                </View>
+              {!showWebView ? (
+                <View style={styles.webViewOverlay}>
+                  <Text style={styles.overlayText}>Bölüm Yükleniyor...</Text>
+                  <Text style={styles.overlayPercentText}>%{displayedPercent}</Text>
+                  
+                  <View style={styles.progressContainerCompact}>
+                    <Animated.View style={[styles.progressBar, { width: animatedProgress.interpolate({
+                      inputRange: [0, 100],
+                      outputRange: ['0%', '100%'],
+                    }) }]} />
+                  </View>
 
+                  <TouchableOpacity 
+                    style={styles.debugButtonOverlay}
+                    onPress={() => setShowWebView(true)}
+                  >
+                    <Text style={styles.debugButtonText}>Hata Ayıklama (Tarayıcıyı Göster)</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity 
+                    style={styles.cancelButtonOverlay}
+                    onPress={() => {
+                      navigation.goBack();
+                    }}
+                  >
+                    <Text style={styles.cancelButtonText}>İptal Et</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
                 <TouchableOpacity 
-                  style={styles.cancelButtonOverlay}
-                  onPress={() => {
-                    navigation.goBack();
-                  }}
+                  style={styles.floatingCloseDebugButton}
+                  onPress={() => setShowWebView(false)}
                 >
-                  <Text style={styles.cancelButtonText}>İptal Et</Text>
+                  <Ionicons name="eye-off" size={20} color="#FFF" />
+                  <Text style={{ color: '#FFF', marginLeft: 8, fontWeight: 'bold' }}>Tarayıcıyı Gizle</Text>
                 </TouchableOpacity>
-              </View>
+              )}
             </View>
           </SafeAreaView>
         ) : (
@@ -1149,5 +1166,36 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.7)',
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.semibold,
+  },
+  debugButtonOverlay: {
+    marginBottom: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 20,
+    borderRadius: 15,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  debugButtonText: {
+    color: 'rgba(255, 255, 255, 0.4)',
+    fontSize: FONT_SIZES.body - 2,
+    fontWeight: FONT_WEIGHTS.medium,
+  },
+  floatingCloseDebugButton: {
+    position: 'absolute',
+    bottom: 30,
+    right: 20,
+    backgroundColor: 'rgba(255, 59, 48, 0.9)',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    zIndex: 999,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 5,
   },
 });
