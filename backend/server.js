@@ -46,6 +46,7 @@ const allowedOrigins = [
   'http://192.168.1.10:5000',
   'http://192.168.1.10:8081',
   'https://clofthel.com.tr',
+  'https://www.clofthel.com.tr',
   'https://api.clofthel.com.tr',
   'https://scraper.clofthel.com.tr',
   // Expo Go ve React Native bundler'lar tüm yerel IP'lerden gelebilir
