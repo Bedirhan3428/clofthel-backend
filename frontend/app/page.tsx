@@ -452,10 +452,14 @@ export default function Home() {
                 <FaWindows className="w-7 h-7 opacity-50" />
                 Windows (Yakında)
               </button>
-              <button className="flex items-center justify-center gap-3 bg-[#1e1e24] border border-white/10 text-white px-8 py-5 rounded-2xl font-black hover:bg-[#2a2a32] hover:scale-105 active:scale-95 transition-all shadow-xl w-full sm:w-auto text-lg group">
+              <a 
+                href="https://firebasestorage.googleapis.com/v0/b/sigalmedia.firebasestorage.app/o/app-release.apk?alt=media&token=7e60ce1f-9984-44e7-98f4-5117af8fbc2f" 
+                download
+                className="flex items-center justify-center gap-3 bg-[#1e1e24] border border-white/10 text-white px-8 py-5 rounded-2xl font-black hover:bg-[#2a2a32] hover:scale-105 active:scale-95 transition-all shadow-xl w-full sm:w-auto text-lg group"
+              >
                 <FaAndroid className="w-7 h-7 text-[#3DDC84] transition-transform group-hover:-translate-y-1" />
                 Android (APK) İndir
-              </button>
+              </a>
             </div>
           </div>
 
@@ -648,23 +652,24 @@ export default function Home() {
               </p>
             </div>
             
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 w-full">
+            <div className="flex flex-wrap justify-center gap-4 w-full">
               {[
-                { name: 'Seisubs / Seicode', desc: 'Hızlı çeviri ve yüksek kalite' },
-                { name: 'TrAnimeİzle', desc: 'Türkiye\'nin devasa platformu' },
-                { name: 'TAÇE', desc: 'Türkanime\'nin resmi arşivi' },
-                { name: 'Akatsuki Fansub', desc: 'Aktif topluluk ve hız' },
-                { name: 'Tempest Fansub', desc: 'Görsel kalite ve dizgi ustaları' },
-                { name: 'PuzzleSub', desc: 'Geniş arşiv ve köklü tecrübe' },
-                { name: 'Anisekai Fansub', desc: 'Anime & Manga öncüleri' },
-                { name: 'Aoi Fansub', desc: 'Düzenli projeler ve disiplin' }
+                { name: 'Seisubs / Seicode', color: 'from-[#FF6B6B] to-[#FFE66D]' },
+                { name: 'TrAnimeİzle', color: 'from-[#4FACFE] to-[#00F2FE]' },
+                { name: 'TAÇE', color: 'from-[#43E97B] to-[#38F9D7]' },
+                { name: 'Akatsuki Fansub', color: 'from-[#FA709A] to-[#FEE140]' },
+                { name: 'Tempest Fansub', color: 'from-[#30CFD0] to-[#330867]' },
+                { name: 'PuzzleSub', color: 'from-[#F5576C] to-[#F093FB]' },
+                { name: 'Anisekai Fansub', color: 'from-[#5EE7DF] to-[#B490CA]' },
+                { name: 'Aoi Fansub', color: 'from-[#667EEA] to-[#764BA2]' }
               ].map((sub, idx) => (
                 <div 
                   key={idx}
-                  className="bg-white/[0.02] border border-white/5 rounded-3xl p-8 flex flex-col items-center text-center gap-3 transition-transform hover:-translate-y-2 hover:bg-white/[0.04]"
+                  className="bg-[#121217] border border-white/10 rounded-2xl px-6 py-4 flex flex-col items-center justify-center transition-all hover:scale-110 hover:-translate-y-1 shadow-lg hover:shadow-[#ff6b00]/20 cursor-default"
                 >
-                  <h3 className="font-black text-xl md:text-2xl text-white">{sub.name}</h3>
-                  <p className="text-sm text-[#8e8e9f] font-medium">{sub.desc}</p>
+                  <h3 className={`font-black text-xl md:text-2xl text-transparent bg-clip-text bg-gradient-to-r ${sub.color}`}>
+                    {sub.name}
+                  </h3>
                 </div>
               ))}
             </div>
