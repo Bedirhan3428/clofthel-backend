@@ -5,6 +5,18 @@ const axios = require('axios');
 const { resolveSibnetId } = require('../utils/resolver');
 const { apiKeyAuth, protect } = require('../middleware/authMiddleware');
 
+// ── Basit TTL Cache (AniList verilerini tekrar çekmemek için) ──────────────
+const memCache = {}; // { key: { data, expiresAt } }
+function cacheGet(key) {
+  const entry = memCache[key];
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { delete memCache[key]; return null; }
+  return entry.data;
+}
+function cacheSet(key, data, ttlMs) {
+  memCache[key] = { data, expiresAt: Date.now() + ttlMs };
+}
+
 // SSRF Koruması: Proxy endpointlerinde sadece izin verilen domainlere erişim
 const ALLOWED_PROXY_DOMAINS = [
   'video.sibnet.ru',
@@ -877,22 +889,30 @@ router.get('/trending', async (req, res) => {
       }
     `;
 
-    let anilistIds = [];
-    try {
-      const aniRes = await axios.post('https://graphql.anilist.co', 
-        { query: anilistQuery },
-        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 5000 }
-      );
-      const trendingMedia = aniRes.data?.data?.trending?.media || [];
-      const popularMedia  = aniRes.data?.data?.popular?.media  || [];
-      // Birleştir ve tekrarları kaldır
-      const combined = [...trendingMedia, ...popularMedia];
-      const seen = new Set();
-      for (const m of combined) {
-        if (!seen.has(m.id)) { seen.add(m.id); anilistIds.push(m.id); }
+    let anilistIds = cacheGet('trending_anilist_ids') || [];
+
+    if (anilistIds.length === 0) {
+      try {
+        const aniRes = await axios.post('https://graphql.anilist.co', 
+          { query: anilistQuery },
+          { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 5000 }
+        );
+        const trendingMedia = aniRes.data?.data?.trending?.media || [];
+        const popularMedia  = aniRes.data?.data?.popular?.media  || [];
+        // Birleştir ve tekrarları kaldır
+        const combined = [...trendingMedia, ...popularMedia];
+        const seen = new Set();
+        for (const m of combined) {
+          if (!seen.has(m.id)) { seen.add(m.id); anilistIds.push(m.id); }
+        }
+        // 1 saat cache'le
+        cacheSet('trending_anilist_ids', anilistIds, 60 * 60 * 1000);
+        console.log('[trending] AniList verisi çekildi, 1 saat cache\'lendi.');
+      } catch (e) {
+        console.warn('[trending] AniList çekilemedi, DB fallback kullanılıyor:', e.message);
       }
-    } catch (e) {
-      console.warn('[trending] AniList çekilemedi, DB fallback kullanılıyor:', e.message);
+    } else {
+      console.log('[trending] Cache\'den AniList verisi kullanıldı.');
     }
 
     let animes = [];
@@ -954,6 +974,9 @@ router.get('/trending', async (req, res) => {
     lazyResolveAnilistInfo(animes);
     animes = animes.filter(doc => !isGhostEntry(doc) && (doc.format || '').toUpperCase() !== 'MUSIC');
 
+    // Cloudflare CDN ve tarayıcılar 1 saat cache'lesin (s-maxage = CDN, max-age = tarayıcı)
+    res.set('Cache-Control', 'public, max-age=1800, s-maxage=3600');
+    res.set('Vary', 'Accept-Encoding');
     res.json({ success: true, data: animes.map(formatAnimeDoc) });
   } catch (error) {
     console.error('[GET /api/animes/trending] Error:', error.message);
