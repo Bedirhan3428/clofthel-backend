@@ -905,7 +905,9 @@ router.get('/trending', async (req, res) => {
         for (const m of combined) {
           if (!seen.has(m.id)) { seen.add(m.id); anilistIds.push(m.id); }
         }
-        // 1 saat cache'le
+        // Sadece ilk 20 ID'yi tut — RAM tasarrufu için
+        anilistIds = anilistIds.slice(0, 20);
+        // 1 saat cache'le (yaklaşık ~160 byte)
         cacheSet('trending_anilist_ids', anilistIds, 60 * 60 * 1000);
         console.log('[trending] AniList verisi çekildi, 1 saat cache\'lendi.');
       } catch (e) {
