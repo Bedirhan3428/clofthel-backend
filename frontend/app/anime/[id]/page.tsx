@@ -242,9 +242,9 @@ export default function AnimePage() {
             </span>
           </Link>
           <div className="flex gap-4 items-center">
-            <Link href="/" className="px-5 py-2.5 bg-gradient-to-r from-[#ff6b00] to-[#ff8e3c] text-black font-black text-xs md:text-sm rounded-xl shadow-lg shadow-[#ff6b00]/20 hover:scale-105 active:scale-95 transition-all">
+            <a href="/api/download-apk" download="Clofthel-v1.2.0.apk" className="px-5 py-2.5 bg-gradient-to-r from-[#ff6b00] to-[#ff8e3c] text-black font-black text-xs md:text-sm rounded-xl shadow-lg shadow-[#ff6b00]/20 hover:scale-105 active:scale-95 transition-all">
               ↓ Uygulamayı İndir
-            </Link>
+            </a>
           </div>
         </div>
       </header>
@@ -301,10 +301,10 @@ export default function AnimePage() {
               <FaWindows className="w-6 h-6 opacity-50" />
               Windows (Yakında)
             </button>
-            <button className="flex items-center justify-center gap-3 bg-white text-black px-8 py-4 rounded-2xl font-black hover:bg-white/90 active:scale-95 transition-all shadow-xl">
+            <a href="/api/download-apk" download="Clofthel-v1.2.0.apk" className="flex items-center justify-center gap-3 bg-white text-black px-8 py-4 rounded-2xl font-black hover:bg-white/90 active:scale-95 transition-all shadow-xl">
               <FaAndroid className="w-6 h-6 text-[#3DDC84]" />
               Android (APK) İndir
-            </button>
+            </a>
           </div>
         </section>
 
