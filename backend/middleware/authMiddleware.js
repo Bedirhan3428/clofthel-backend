@@ -75,7 +75,7 @@ const verifyRequestSignature = (req, res, next) => {
   const secret = process.env.MOBILE_APP_SECRET;
 
   // Stream ve Proxy endpointleri için imzayı bypass et (Video Player'lar HMAC header gönderemez)
-  const bypassPaths = ['/stream.m3u8', '/chunk.ts', '/sibnet-proxy'];
+  const bypassPaths = ['/stream.m3u8', '/chunk.ts', '/sibnet-proxy', '/resolve-source'];
   if (bypassPaths.some(p => req.originalUrl.includes(p))) {
     return next();
   }

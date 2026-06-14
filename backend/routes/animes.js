@@ -1609,7 +1609,87 @@ router.post('/:id/episodes/:episode_number/video-url', protect, async (req, res)
   }
 });
 
-// Optraco/Aitrvip sunucusunun beklediği Referer adresini m3u8 veya ts URL'sinden üreten akıllı fonksiyon
+/**
+ * POST /api/animes/resolve-source
+ * TrAnimeIzle bölüm URL'sinden AitrVip/optraco ham m3u8 linkini çıkarır.
+ *
+ * Body: { episodeUrl: "https://www.tranimeizle.co/bölüm-slug" }
+ * Response: { success: true, m3u8Url: "https://optraco.top/plateau/UUID/HASH.m3u8", explorerUrl: "..." }
+ */
+router.post('/resolve-source', async (req, res) => {
+  const { episodeUrl } = req.body;
+  if (!episodeUrl) {
+    return res.status(400).json({ success: false, error: 'episodeUrl gerekli.' });
+  }
+
+  try {
+    const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+    // 1. Bölüm sayfasını çek
+    const pageRes = await axios.get(episodeUrl, {
+      headers: {
+        'User-Agent': UA,
+        'Referer': 'https://www.tranimeizle.co/',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+      timeout: 10000,
+    });
+
+    const html = pageRes.data;
+
+    // 2. AitrVip butonunun data-id ve data-eid'sini bul
+    // Önce "AitrVip" metnini içeren <li>'yi bul
+    const aitrVipMatch = html.match(
+      /<li[^>]*class=["']sourceBtn["'][^>]*data-id=["'](\d+)["'][^>]*data-eid=["'](\d+)["'][^>]*>[\s\S]*?AitrVip/i
+    ) || html.match(
+      /data-id=["'](\d+)["'][^>]*data-eid=["'](\d+)["'][^>]*>[\s\S]{0,200}?AitrVip/i
+    );
+
+    if (!aitrVipMatch) {
+      return res.status(404).json({ success: false, error: 'AitrVip kaynağı bu bölümde bulunamadı.' });
+    }
+
+    const dataId = aitrVipMatch[1];
+    const dataEid = aitrVipMatch[2];
+    console.log(`[resolve-source] data-id=${dataId} data-eid=${dataEid}`);
+
+    // 3. TrAnimeIzle kaynak API'sine POST at
+    const sourceRes = await axios.post(
+      `https://www.tranimeizle.co/${dataId}/`,
+      new URLSearchParams({ id: dataId, eid: dataEid }).toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': UA,
+          'Referer': episodeUrl,
+          'X-Requested-With': 'XMLHttpRequest',
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
+        },
+        timeout: 8000,
+      }
+    );
+
+    const sourceData = sourceRes.data;
+    const iframeSrc = typeof sourceData === 'string'
+      ? sourceData.match(/src=["']([^"']+optraco[^"']+)["']/i)?.[1]
+      : sourceData?.source?.match(/src=["']([^"']+optraco[^"']+)["']/i)?.[1];
+
+    if (!iframeSrc) {
+      return res.status(502).json({ success: false, error: 'optraco iframe URL ayıklanamadı.', raw: sourceData });
+    }
+
+    // 4. explorer → plateau + .m3u8
+    const m3u8Url = iframeSrc.replace('/explorer/', '/plateau/') + '.m3u8';
+    console.log(`[resolve-source] m3u8 URL: ${m3u8Url}`);
+
+    res.json({ success: true, explorerUrl: iframeSrc, m3u8Url });
+  } catch (err) {
+    console.error('[resolve-source] Hata:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
 const getOptracoHeaders = (targetUrl, queryReferer) => {
     const isAitrVip = targetUrl && targetUrl.includes('aitrvip.com');
     const baseOrigin = isAitrVip ? 'https://aitrvip.com' : 'https://optraco.top';
