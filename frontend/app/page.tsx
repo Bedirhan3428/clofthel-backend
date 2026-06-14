@@ -654,14 +654,14 @@ export default function Home() {
             
             <div className="flex flex-wrap justify-center gap-4 w-full">
               {[
-                { name: 'Seisubs / Seicode', color: 'from-[#FF6B6B] to-[#FFE66D]' },
-                { name: 'TrAnimeİzle', color: 'from-[#4FACFE] to-[#00F2FE]' },
-                { name: 'TAÇE', color: 'from-[#43E97B] to-[#38F9D7]' },
-                { name: 'Akatsuki Fansub', color: 'from-[#FA709A] to-[#FEE140]' },
-                { name: 'Tempest Fansub', color: 'from-[#30CFD0] to-[#330867]' },
-                { name: 'PuzzleSub', color: 'from-[#F5576C] to-[#F093FB]' },
-                { name: 'Anisekai Fansub', color: 'from-[#5EE7DF] to-[#B490CA]' },
-                { name: 'Aoi Fansub', color: 'from-[#667EEA] to-[#764BA2]' }
+                { name: 'Seisubs / Seicode', color: 'from-white to-[#a1a1aa]' },
+                { name: 'TrAnimeİzle', color: 'from-[#d4d4d8] to-[#71717a]' },
+                { name: 'TAÇE', color: 'from-[#fcd34d] to-[#d97706]' },
+                { name: 'Akatsuki Fansub', color: 'from-white to-[#8e8e9f]' },
+                { name: 'Tempest Fansub', color: 'from-[#e4e4e7] to-[#a1a1aa]' },
+                { name: 'PuzzleSub', color: 'from-[#ff8e3c] to-[#ff6b00]' },
+                { name: 'Anisekai Fansub', color: 'from-[#f4f4f5] to-[#d4d4d8]' },
+                { name: 'Aoi Fansub', color: 'from-[#d1d5db] to-[#6b7280]' }
               ].map((sub, idx) => (
                 <div 
                   key={idx}
