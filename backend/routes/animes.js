@@ -848,20 +848,77 @@ router.get('/recent', async (req, res) => {
 
 /**
  * GET /api/animes/trending
- * Trend animeler (en çok bölüme sahip olanlar)
+ * AniList üzerinden gerçek trend/popüler animeleri getirir, 
+ * DB'deki eşleşen kayıtları döner (yeni animeler önde görünür).
  */
 router.get('/trending', async (req, res) => {
   try {
     const limit = Math.min(30, parseInt(req.query.limit) || 20);
-    let animes = await Anime.find()
-      .sort({ total_episodes: -1 })
-      .limit(limit)
-      .lean();
 
-    animes = await resolveSiblings(animes);
+    // 1. AniList'ten trend + popüler animeleri çek
+    const anilistQuery = `
+      query {
+        trending: Page(page: 1, perPage: 30) {
+          media(type: ANIME, sort: TRENDING_DESC, status_not: NOT_YET_RELEASED) {
+            id
+            title { romaji english native }
+            averageScore
+            popularity
+          }
+        }
+        popular: Page(page: 1, perPage: 30) {
+          media(type: ANIME, sort: POPULARITY_DESC, status_not: NOT_YET_RELEASED) {
+            id
+            title { romaji english native }
+            averageScore
+            popularity
+          }
+        }
+      }
+    `;
+
+    let anilistIds = [];
+    try {
+      const aniRes = await axios.post('https://graphql.anilist.co', 
+        { query: anilistQuery },
+        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 5000 }
+      );
+      const trendingMedia = aniRes.data?.data?.trending?.media || [];
+      const popularMedia  = aniRes.data?.data?.popular?.media  || [];
+      // Birleştir ve tekrarları kaldır
+      const combined = [...trendingMedia, ...popularMedia];
+      const seen = new Set();
+      for (const m of combined) {
+        if (!seen.has(m.id)) { seen.add(m.id); anilistIds.push(m.id); }
+      }
+    } catch (e) {
+      console.warn('[trending] AniList çekilemedi, DB fallback kullanılıyor:', e.message);
+    }
+
+    let animes = [];
+
+    if (anilistIds.length > 0) {
+      // 2a. AniList ID'leriyle DB'de eşleş (sıralamayı koru)
+      const found = await Anime.find({ anilist_id: { $in: anilistIds } }).lean();
+      const idxMap = Object.fromEntries(anilistIds.map((id, i) => [id, i]));
+      found.sort((a, b) => (idxMap[a.anilist_id] ?? 999) - (idxMap[b.anilist_id] ?? 999));
+      animes = found;
+    }
+
+    // 2b. Yeterli yoksa DB fallback (bölüm sayısına göre değil anilist_id'si olanlara göre)
+    if (animes.length < 10) {
+      const fallback = await Anime.find({ anilist_id: { $ne: null } })
+        .sort({ anilist_id: -1 })
+        .limit(limit)
+        .lean();
+      const existingIds = new Set(animes.map(a => String(a._id)));
+      for (const a of fallback) {
+        if (!existingIds.has(String(a._id))) animes.push(a);
+      }
+    }
+
+    animes = await resolveSiblings(animes.slice(0, limit));
     lazyResolveAnilistInfo(animes);
-
-    // Filter out ghost entries and MUSIC formats
     animes = animes.filter(doc => !isGhostEntry(doc) && (doc.format || '').toUpperCase() !== 'MUSIC');
 
     res.json({ success: true, data: animes.map(formatAnimeDoc) });
@@ -870,6 +927,7 @@ router.get('/trending', async (req, res) => {
     res.status(500).json({ success: false, error: 'Trend seriler alınamadı.' });
   }
 });
+
 
 /**
  * GET /api/animes/genre/:genre
