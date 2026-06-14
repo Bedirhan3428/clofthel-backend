@@ -939,31 +939,42 @@ router.get('/trending', async (req, res) => {
       }
     }
 
-    // 2c. Tekilleştirme: Aynı animenin farklı sezonları tekrar göründüğünde
-    // sadece AniList sıralamasında en önde olanı (ilk geleni) tut.
-    // Base slug = "-2-sezon", "-3-sezon", "-izle" gibi ekleri kırp.
-    function getBaseKey(doc) {
+    // 2c. Tekilleştirme — çok daha güvenilir yöntem:
+    // Önce orijinal_ad varsa onu normalize et (sezon sayılarını kaldır),
+    // yoksa slug'ın ilk 22 karakterine bak. Aynı franchise farklı season
+    // olarak listelenmesin.
+    function getDedupeKey(doc) {
+      if (doc.orijinal_ad) {
+        return doc.orijinal_ad
+          .toLowerCase()
+          .replace(/[\s:]+(?:season|sezon|part|cour|the final|final)\s*\d*/gi, '')
+          .replace(/\s*\d+$/, '')              // sondaki sayıları sil
+          .replace(/[^a-z0-9]/g, '')           // özel karakterleri sil
+          .trim()
+          .substring(0, 20);                   // ilk 20 karakter yeterli
+      }
+      // orijinal_ad yoksa slug'ı agresifçe temizle
       let slug = (doc.tranimeizle_slug || '').toLowerCase();
-      // Sezon, kısım, film eklerini kaldır
+      // Sağdan başlayarak bilinen tüm ekleri kaldır (çok aşamalı)
       slug = slug
-        .replace(/-\d+-sezon(?:u)?(?:-\d+-kisim)?(?:-izle)?$/, '')
+        .replace(/(?:-\d+)?(?:-the)?-final(?:-season|-sezonu?)?(?:-\d+)?(?:-izle)?$/, '')
+        .replace(/-\d+-sezon(?:u)?(?:-\d+)?(?:-part\d+)?(?:-izle)?$/, '')
         .replace(/-sezon(?:u)?(?:-\d+)?(?:-izle)?$/, '')
+        .replace(/-\d+-cour(?:-izle)?$/, '')
+        .replace(/-part-?\d+(?:-izle)?$/, '')
+        .replace(/-kisim-?\d*(?:-izle)?$/, '')
         .replace(/-\d+-kisim(?:-izle)?$/, '')
-        .replace(/-movie(?:-\d+)?(?:-izle)?$/, '')
-        .replace(/-film(?:-izle)?$/, '')
-        .replace(/-ova(?:-\d+)?(?:-izle)?$/, '')
-        .replace(/-ona(?:-izle)?$/, '')
-        .replace(/-special(?:-\d+)?(?:-izle)?$/, '')
+        .replace(/-(movie|film)-?\d*(?:-izle)?$/, '')
+        .replace(/-(ova|ona|special)-?\d*(?:-izle)?$/, '')
         .replace(/-izle$/, '')
-        .replace(/-hd$/, '')
-        .replace(/-fullhd$/, '');
-      return slug.trim();
+        .replace(/-(hd|fullhd|fhd)$/, '');
+      return slug.trim().substring(0, 22);
     }
 
     const seenBase = new Set();
     const dedupedAnimes = [];
     for (const anime of animes) {
-      const key = getBaseKey(anime);
+      const key = getDedupeKey(anime);
       if (!seenBase.has(key)) {
         seenBase.add(key);
         dedupedAnimes.push(anime);
