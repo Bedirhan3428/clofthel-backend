@@ -29,7 +29,9 @@ Clofthel sunucuları dışarıya tamamen kapalıdır. Yetkisiz girişleri önlem
 
 - **NoSQL Injection Koruması:** Zararlı kod barındıran MongoDB sorgularını (Injection) temizleyen aktif bir filtre devrededir.
 - **XSS Clean:** Formlardan gelebilecek HTML/JavaScript sızıntıları otomatik olarak silinir.
-- **Rate Limiting:** Sunucumuzu gereksiz yere yorarak erişimi engellemeye (DDoS) veya şifre kırmaya çalışan sistemlerin IP adresleri kalıcı olarak bloke edilir.
+- **Rate Limiting & IP Blocking:** Sunucumuzu gereksiz yere yorarak erişimi engellemeye (DDoS) veya şifre kırmaya çalışan sistemlerin, ayrıca spam yorum atanların IP adresleri kalıcı olarak bloke edilir.
+- **Web Sitesi Yazma Kısıtlamaları (Write Restrictions):** Clofthel'in ana web sitesi üzerinden sunucu veritabanına doğrudan veri yazılamaz. Site üzerindeki tüm formlar (Yorumlar hariç) salt okunurdur. Kayıt ekleme veya anime kaynağı güncelleme uç noktaları özel API anahtarlarıyla korunur.
+- **Korsan Yayıncılığa Karşı Web İzolasyonu (Anime İzleme):** Telif hakları ihlallerini önlemek ve yüksek sunucu güvenliğini korumak amacıyla, anime izleme (Streaming) modülü web sitesinden tamamen kaldırılmıştır. Videolar yalnızca özel ve şifrelenmiş Player'lara sahip Masaüstü (Windows) veya Mobil (Android) uygulamalarından izlenebilir.
 
 ## 5. Güvenlik Açığı Bildirimi (Vulnerability Disclosure)
 

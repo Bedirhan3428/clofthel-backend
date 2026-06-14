@@ -1139,7 +1139,7 @@ router.get('/sibnet-proxy', async (req, res) => {
  * GET /api/animes/:id
  * Tek anime detayı
  */
-router.get('/:id', async (req, res) => {
+router.get('/:id([0-9a-fA-F]{24})', async (req, res) => {
   try {
     let anime = await Anime.findById(req.params.id).lean();
     if (!anime) {
@@ -1314,23 +1314,32 @@ router.get('/:id/episodes/:episode_number/video-url', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Anime bulunamadı.' });
     }
     
+    const { force } = req.query;
     // Check if the link exists in the DB cache
-    const cached = anime.episodes_cache ? anime.episodes_cache[episode_number] : null;
+    const cached = (!force && anime.episodes_cache) ? anime.episodes_cache[episode_number] : null;
     if (cached) {
       const type = cached.type || (typeof cached === 'string' ? (cached.includes('.m3u8') ? 'aitrvip' : 'sibnet') : 'aitrvip');
       const resolvedAt = typeof cached === 'string' ? 0 : (cached.resolvedAt || 0);
       const ageMs = Date.now() - resolvedAt;
-      const maxAgeMs = 12 * 60 * 60 * 1000; // 12 hours for AitrVip
+      const maxAgeMs = type === 'aitrvip' ? 2 * 60 * 60 * 1000 : 12 * 60 * 60 * 1000; // 2 hours for AitrVip, 12 hours for Sibnet
 
       if (type === 'aitrvip' || type === 'sibnet-direct') {
         const videoUrl = typeof cached === 'string' ? cached : cached.videoUrl;
         const isAitrVip = type === 'aitrvip';
-        // AitrVip links never expire, Sibnet-Direct has maxAgeMs check
-        if (typeof cached === 'string' || isAitrVip || ageMs < maxAgeMs) {
+        
+        if (typeof cached === 'string' || ageMs < maxAgeMs) {
           console.log(`[SUCCESS] Doğrudan akış linki (${type}) DB'de bulundu. Dönülüyor.`);
+          
+          let proxiedUrl = videoUrl;
+          if (isAitrVip) {
+            proxiedUrl = `http://${req.headers.host}/api/animes/stream.m3u8?url=${encodeURIComponent(videoUrl)}`;
+          } else if (type === 'sibnet-direct') {
+            proxiedUrl = `http://${req.headers.host}/api/animes/sibnet-proxy?url=${encodeURIComponent(videoUrl)}`;
+          }
+
           return res.json({
             success: true,
-            videoUrl: videoUrl,
+            videoUrl: proxiedUrl,
             cached: true
           });
         } else {
@@ -1445,9 +1454,11 @@ router.post('/:id/episodes/:episode_number/video-url', protect, async (req, res)
   }
 });
 
-// Optraco sunucusunun beklediği Referer adresini m3u8 veya ts URL'sinden üreten akıllı fonksiyon
+// Optraco/Aitrvip sunucusunun beklediği Referer adresini m3u8 veya ts URL'sinden üreten akıllı fonksiyon
 const getOptracoHeaders = (targetUrl, queryReferer) => {
-    let referer = 'https://optraco.top/';
+    const isAitrVip = targetUrl && targetUrl.includes('aitrvip.com');
+    const baseOrigin = isAitrVip ? 'https://aitrvip.com' : 'https://optraco.top';
+    let referer = `${baseOrigin}/`;
 
     if (queryReferer) {
         referer = queryReferer;
@@ -1463,7 +1474,7 @@ const getOptracoHeaders = (targetUrl, queryReferer) => {
                 if (id2.length > 40) {
                     id2 = id2.substring(0, 40);
                 }
-                referer = `https://optraco.top/explorer/${id1}/${id2}`;
+                referer = `${baseOrigin}/explorer/${id1}/${id2}`;
             }
         } catch (e) {
             console.error('Referer ayıklama hatası:', e.message);
@@ -1472,7 +1483,7 @@ const getOptracoHeaders = (targetUrl, queryReferer) => {
 
     return {
         'Referer': referer,
-        'Origin': 'https://optraco.top',
+        'Origin': baseOrigin,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     };
 };

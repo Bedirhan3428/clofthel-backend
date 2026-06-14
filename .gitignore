@@ -52,3 +52,6 @@ yarn-error.*
 # Build folders
 build/
 **/build/
+
+backend/.env
+backend/node_modules

@@ -19,6 +19,7 @@ const profileRouter = require('./routes/profile');
 const aiRouter = require('./routes/ai');
 const notificationsRouter = require('./routes/notifications');
 const internalRouter = require('./routes/internal');
+const commentsRouter = require('./routes/comments');
 const { verifyRequestSignature } = require('./middleware/authMiddleware');
 
 const app = express();
@@ -35,6 +36,7 @@ app.use(helmet({
 
 // 2. CORS — Sadece izin verilen originlerden istek kabul et
 const allowedOrigins = [
+  'http://localhost:3000',
   'http://localhost:5000',
   'http://localhost:8081',
   'http://localhost:19006',
@@ -102,6 +104,7 @@ app.use('/api/notifications', verifyRequestSignature, notificationsRouter);
 
 // Internal ve public rotalar
 app.use('/api/internal', internalRouter);
+app.use('/api/comments', commentsRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {
