@@ -23,6 +23,9 @@ const commentsRouter = require('./routes/comments');
 const { verifyRequestSignature } = require('./middleware/authMiddleware');
 
 const app = express();
+// Cloudflare veya Nginx gibi ters proxy'lerin (reverse proxy) arkasındayken doğru IP'yi almak için:
+app.set('trust proxy', 1);
+
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/clofthel';
 
