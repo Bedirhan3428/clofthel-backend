@@ -8,6 +8,9 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const mongoose = require('mongoose');
+const mongoSanitize = require('express-mongo-sanitize');
+const xss = require('xss-clean');
+const hpp = require('hpp');
 
 const animesRouter = require('./routes/animes');
 const secureRouter = require('./routes/secure');
@@ -16,6 +19,7 @@ const profileRouter = require('./routes/profile');
 const aiRouter = require('./routes/ai');
 const notificationsRouter = require('./routes/notifications');
 const internalRouter = require('./routes/internal');
+const { verifyRequestSignature } = require('./middleware/authMiddleware');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -59,6 +63,15 @@ app.use(cors({
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
+// 3.1 Data Sanitization against NoSQL query injection
+app.use(mongoSanitize());
+
+// 3.2 Data Sanitization against XSS
+app.use(xss());
+
+// 3.3 Prevent HTTP Parameter Pollution
+app.use(hpp());
+
 // 4. Genel Rate Limiter — Tüm API istekleri için (100 istek / 15 dk)
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 dakika
@@ -79,12 +92,15 @@ app.use((req, res, next) => {
 });
 
 // ── Routes ─────────────────────────────────────────────────────
-app.use('/api/animes', animesRouter);
-app.use('/api/secure', secureRouter);
-app.use('/api/auth', authRouter);
-app.use('/api/profile', profileRouter);
-app.use('/api/ai', aiRouter);
-app.use('/api/notifications', notificationsRouter);
+// Dinamik İstek İmzası gerektiren rotalar
+app.use('/api/animes', verifyRequestSignature, animesRouter);
+app.use('/api/secure', verifyRequestSignature, secureRouter);
+app.use('/api/auth', verifyRequestSignature, authRouter);
+app.use('/api/profile', verifyRequestSignature, profileRouter);
+app.use('/api/ai', verifyRequestSignature, aiRouter);
+app.use('/api/notifications', verifyRequestSignature, notificationsRouter);
+
+// Internal ve public rotalar
 app.use('/api/internal', internalRouter);
 
 // Health check

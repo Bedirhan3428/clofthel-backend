@@ -109,6 +109,12 @@ export default function WatchScreen({ route, navigation }) {
         ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(err => {
           console.warn('[WatchScreen] ScreenOrientation lock portrait failed on unmount:', err);
         });
+        if (Platform.OS === 'android') {
+          try {
+            const NavigationBar = require('expo-navigation-bar');
+            NavigationBar.setVisibilityAsync("visible").catch(() => {});
+          } catch (e) {}
+        }
       }
     };
   }, []);
@@ -250,8 +256,25 @@ export default function WatchScreen({ route, navigation }) {
           try {
             if (data.isFullscreen) {
               await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+              if (Platform.OS === 'android') {
+                try {
+                  const NavigationBar = require('expo-navigation-bar');
+                  await NavigationBar.setVisibilityAsync("hidden");
+                  await NavigationBar.setBehaviorAsync("overlay-swipe");
+                } catch (navErr) {
+                  console.warn('[WatchScreen] Failed to hide navigation bar:', navErr);
+                }
+              }
             } else {
               await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+              if (Platform.OS === 'android') {
+                try {
+                  const NavigationBar = require('expo-navigation-bar');
+                  await NavigationBar.setVisibilityAsync("visible");
+                } catch (navErr) {
+                  console.warn('[WatchScreen] Failed to show navigation bar:', navErr);
+                }
+              }
             }
           } catch (orientationErr) {
             console.warn('[WatchScreen] Orientation lock failed:', orientationErr);

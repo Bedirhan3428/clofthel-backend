@@ -1,6 +1,7 @@
 import React, { createContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '../constants/config';
+import { apiFetch } from '../services/api';
 import { registerForPushNotificationsAsync, sendPushTokenToBackend } from '../services/pushNotifications';
 
 export const AuthContext = createContext();
@@ -16,7 +17,7 @@ export const AuthProvider = ({ children }) => {
       const token = await AsyncStorage.getItem('userToken');
       if (token) {
         // Token varsa doğrulamak için backend'e sor
-        const res = await fetch(`${API_BASE_URL}/auth/me`, {
+        const res = await apiFetch(`${API_BASE_URL}/auth/me`, {
           headers: {
             'Authorization': `Bearer ${token}`
           }
@@ -52,7 +53,7 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/auth/login`, {
+      const res = await apiFetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
@@ -78,7 +79,7 @@ export const AuthProvider = ({ children }) => {
 
   const register = async (name, email, password) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/auth/register`, {
+      const res = await apiFetch(`${API_BASE_URL}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, email, password })
@@ -98,7 +99,7 @@ export const AuthProvider = ({ children }) => {
 
   const verifyEmail = async (email, code) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/auth/verify-email`, {
+      const res = await apiFetch(`${API_BASE_URL}/auth/verify-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, code })
@@ -120,7 +121,7 @@ export const AuthProvider = ({ children }) => {
 
   const resendCode = async (email) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/auth/resend-code`, {
+      const res = await apiFetch(`${API_BASE_URL}/auth/resend-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email })
@@ -139,7 +140,7 @@ export const AuthProvider = ({ children }) => {
 
   const googleLogin = async (idToken, email, name, avatar) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/auth/google`, {
+      const res = await apiFetch(`${API_BASE_URL}/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ idToken, email, name, avatar })

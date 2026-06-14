@@ -13,8 +13,8 @@ const mongoose = require('mongoose');
 require('dotenv').config();
 const Anime = require('./models/Anime');
 
-// Her çalışmada kaç sayfa taranacağını belirler (İlk 10 sayfa)
-const MAX_PAGES_TO_SCRAPE = 10;
+// Her çalışmada kaç sayfa taranacağını belirler (İlk 30 sayfa)
+const MAX_PAGES_TO_SCRAPE = 30;
 
 async function notifyMainBackend(animeId, episodeNum) {
   try {
@@ -33,7 +33,7 @@ async function notifyMainBackend(animeId, episodeNum) {
       }
     });
   } catch (err) {
-    console.error(`[NOTIFY MAIN BACKEND ERROR] ${err.message}`);
+    console.error(`[NOTIFY MAIN BACKEND ERROR] ${err.message}`, err.response ? JSON.stringify(err.response.data) : '');
   }
 }
 

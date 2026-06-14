@@ -3,6 +3,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '../constants/config';
+import { apiFetch } from './api';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -54,7 +55,7 @@ export async function sendPushTokenToBackend(token) {
       const userToken = await AsyncStorage.getItem('userToken');
       if (!userToken) return;
 
-      await fetch(`${API_BASE_URL}/profile/push-token`, {
+      await apiFetch(`${API_BASE_URL}/profile/push-token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -2,8 +2,44 @@
  * Clofthel — Data Layer
  * Backend API fetch + AniList GraphQL enrichment.
  */
-import { API_BASE_URL, ANILIST_API_URL, DEFAULT_PAGE_SIZE, APP_VERSION } from '../constants/config';
+import { API_BASE_URL, ANILIST_API_URL, DEFAULT_PAGE_SIZE, APP_VERSION, MOBILE_APP_SECRET } from '../constants/config';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import CryptoJS from 'crypto-js';
+
+// Güvenli Rastgele Metin Üretici
+const generateNonce = () => {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (let i = 0; i < 16; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+};
+
+// Güvenli İstek Gönderici (HMAC-SHA256)
+export const apiFetch = async (url, options = {}) => {
+  if (url.startsWith(API_BASE_URL)) {
+    const timestamp = Date.now().toString();
+    const nonce = generateNonce();
+    
+    // İmza metni (Payload): URL + timestamp + nonce
+    const pathWithQuery = url.replace(API_BASE_URL, '/api');
+    const payload = `${pathWithQuery}|${timestamp}|${nonce}`;
+    
+    // HMAC-SHA256 ile imzala (Mobil App Secret ile)
+    const signature = CryptoJS.HmacSHA256(payload, MOBILE_APP_SECRET).toString(CryptoJS.enc.Hex);
+
+    const headers = {
+      ...options.headers,
+      'x-clofthel-timestamp': timestamp,
+      'x-clofthel-nonce': nonce,
+      'x-clofthel-signature': signature
+    };
+    return fetch(url, { ...options, headers });
+  }
+  return fetch(url, options);
+};
 
 // ── AniList GraphQL Query ──────────────────────────────────────
 const ANIME_QUERY = `
@@ -61,8 +97,9 @@ const SINGLE_ANIME_QUERY = `
 `;
 
 
-// ── API Caches ─────────────────────────────────────────────────
+// ── API Caches & Rate Limits ─────────────────────────────────
 const animeCache = new Map();
+let anilistRateLimitExpiry = 0;
 
 // ── Alternative API Fallbacks ──────────────────────────────────
 
@@ -161,8 +198,8 @@ async function fetchMediaBatch(animes) {
 
   const anilistIds = missingAnimes.map(a => a.anilist_id).filter(Boolean);
 
-  // 1. Try AniList batch
-  if (anilistIds.length > 0) {
+  // 1. Try AniList batch (Only if not rate limited)
+  if (anilistIds.length > 0 && Date.now() > anilistRateLimitExpiry) {
     try {
       const response = await fetch(ANILIST_API_URL, {
         method: 'POST',
@@ -170,7 +207,10 @@ async function fetchMediaBatch(animes) {
         body: JSON.stringify({ query: ANIME_QUERY, variables: { ids: anilistIds } }),
       });
 
-      if (response.ok) {
+      if (response.status === 429) {
+        console.warn('[AniList Batch] 429 Rate Limit hit. Entering 1 minute cooldown.');
+        anilistRateLimitExpiry = Date.now() + 60000; // 1 min cooldown
+      } else if (response.ok) {
         const json = await response.json();
         const mediaList = json?.data?.Page?.media || [];
         mediaList.forEach((m) => { 
@@ -190,7 +230,10 @@ async function fetchMediaBatch(animes) {
     return !result[key];
   });
 
-  if (stillMissing.length > 0) {
+  // Eğer çok sayıda missing varsa (örn. 3'ten fazla - arama listesi veya anasayfa yükleme durumları),
+  // Jikan ve Kitsu'yu rate-limit etmemek ve uygulamayı kilitlememek için fallback'leri atlıyoruz.
+  // Bu durumda veritabanındaki veriler doğrudan kullanılacaktır.
+  if (stillMissing.length > 0 && stillMissing.length <= 3) {
     await Promise.all(stillMissing.map(async (a) => {
       const title = a.anime_title;
       if (!title) return;
@@ -220,6 +263,11 @@ async function fetchMediaBatch(animes) {
 async function fetchAniListSingle(anilistId, searchTitle = null) {
   if (!anilistId && !searchTitle) return null;
 
+  // Rate limit aktifse hemen iptal et
+  if (Date.now() < anilistRateLimitExpiry) {
+    return null;
+  }
+
   try {
     const variables = {};
     if (anilistId) variables.id = anilistId;
@@ -230,6 +278,12 @@ async function fetchAniListSingle(anilistId, searchTitle = null) {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ query: SINGLE_ANIME_QUERY, variables }),
     });
+
+    if (response.status === 429) {
+      console.warn('[AniList Single] 429 Rate Limit hit. Entering 1 minute cooldown.');
+      anilistRateLimitExpiry = Date.now() + 60000; // 1 min cooldown
+      return null;
+    }
 
     if (!response.ok) return null;
 
@@ -249,7 +303,7 @@ async function fetchAniListSingle(anilistId, searchTitle = null) {
 
 export const getAiRecommendations = async (prompt) => {
   try {
-    const response = await fetch(`${API_BASE_URL}/ai/recommend`, {
+    const response = await apiFetch(`${API_BASE_URL}/ai/recommend`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt })
@@ -270,7 +324,7 @@ export const getProfileData = async () => {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return null;
     
-    const response = await fetch(`${API_BASE_URL}/profile`, {
+    const response = await apiFetch(`${API_BASE_URL}/profile`, {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     const data = await response.json();
@@ -348,7 +402,7 @@ export const toggleFavorite = async (animeId) => {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return null;
 
-    const response = await fetch(`${API_BASE_URL}/profile/favorite`, {
+    const response = await apiFetch(`${API_BASE_URL}/profile/favorite`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -369,7 +423,7 @@ export const addToHistory = async (animeId, episode, currentTime) => {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return null;
 
-    const response = await fetch(`${API_BASE_URL}/profile/history`, {
+    const response = await apiFetch(`${API_BASE_URL}/profile/history`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -390,7 +444,7 @@ export const createCustomList = async (name) => {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return null;
 
-    const response = await fetch(`${API_BASE_URL}/profile/lists`, {
+    const response = await apiFetch(`${API_BASE_URL}/profile/lists`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -411,7 +465,7 @@ export const updateAvatar = async (avatarUrl) => {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return null;
 
-    const response = await fetch(`${API_BASE_URL}/profile/avatar`, {
+    const response = await apiFetch(`${API_BASE_URL}/profile/avatar`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -432,7 +486,7 @@ export const deleteCustomList = async (listId) => {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return null;
 
-    const response = await fetch(`${API_BASE_URL}/profile/lists/${listId}`, {
+    const response = await apiFetch(`${API_BASE_URL}/profile/lists/${listId}`, {
       method: 'DELETE',
       headers: {
         'Authorization': `Bearer ${token}`
@@ -451,7 +505,7 @@ export const toggleAnimeInList = async (listId, animeId) => {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return null;
 
-    const response = await fetch(`${API_BASE_URL}/profile/lists/anime`, {
+    const response = await apiFetch(`${API_BASE_URL}/profile/lists/anime`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -569,7 +623,7 @@ function enrichAnime(mongoItem, anilistData) {
  */
 export async function fetchRecentAnimes(limit = DEFAULT_PAGE_SIZE) {
   try {
-    const response = await fetch(`${API_BASE_URL}/animes/recent?limit=${limit}`);
+    const response = await apiFetch(`${API_BASE_URL}/animes/recent?limit=${limit}`);
     const json = await response.json();
 
     if (!json.success) throw new Error('API error');
@@ -589,7 +643,7 @@ export async function fetchRecentAnimes(limit = DEFAULT_PAGE_SIZE) {
  */
 export async function fetchTrendingAnimes(limit = DEFAULT_PAGE_SIZE) {
   try {
-    const response = await fetch(`${API_BASE_URL}/animes/trending?limit=${limit}`);
+    const response = await apiFetch(`${API_BASE_URL}/animes/trending?limit=${limit}`);
     const json = await response.json();
 
     if (!json.success) throw new Error('API error');
@@ -609,7 +663,7 @@ export async function fetchTrendingAnimes(limit = DEFAULT_PAGE_SIZE) {
  */
 export async function fetchAnimeDetail(animeId) {
   try {
-    const response = await fetch(`${API_BASE_URL}/animes/${animeId}`);
+    const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}`);
     const json = await response.json();
 
     if (!json.success) throw new Error('API error');
@@ -637,7 +691,7 @@ export async function fetchAnimeDetail(animeId) {
 }
 export async function resetAnimeAnilistId(animeId) {
   try {
-    const response = await fetch(`${API_BASE_URL}/animes/${animeId}/reset-anilist`, { method: 'POST' });
+    const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}/reset-anilist`, { method: 'POST' });
     const json = await response.json();
     return json.success;
   } catch (error) {
@@ -648,7 +702,7 @@ export async function resetAnimeAnilistId(animeId) {
 
 export async function saveAnimeAnilistId(animeId, anilistId, coverImage, bannerImage, orijinalAd, format) {
   try {
-    const response = await fetch(`${API_BASE_URL}/animes/${animeId}/anilist-id`, {
+    const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}/anilist-id`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
@@ -673,7 +727,7 @@ export async function saveAnimeAnilistId(animeId, anilistId, coverImage, bannerI
  */
 export async function fetchEpisodes(animeId) {
   try {
-    const response = await fetch(`${API_BASE_URL}/animes/${animeId}/episodes`);
+    const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}/episodes`);
     const json = await response.json();
 
     if (!json.success) throw new Error('API error');
@@ -690,7 +744,7 @@ export async function fetchEpisodes(animeId) {
  */
 export async function fetchEpisodeVideoUrl(animeId, episodeNumber) {
   try {
-    const response = await fetch(`${API_BASE_URL}/animes/${animeId}/episodes/${episodeNumber}/video-url`);
+    const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}/episodes/${episodeNumber}/video-url`);
     const json = await response.json();
     return json;
   } catch (error) {
@@ -711,7 +765,7 @@ export async function cacheEpisodeVideoUrl(animeId, episodeNumber, videoUrl) {
     if (userToken) {
       headers['Authorization'] = `Bearer ${userToken}`;
     }
-    const response = await fetch(`${API_BASE_URL}/animes/${animeId}/episodes/${episodeNumber}/video-url`, {
+    const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}/episodes/${episodeNumber}/video-url`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ videoUrl })
@@ -730,7 +784,7 @@ export async function cacheEpisodeVideoUrl(animeId, episodeNumber, videoUrl) {
 export async function searchAnimes(query) {
   if (!query || query.trim() === '') return [];
   try {
-    const response = await fetch(`${API_BASE_URL}/animes/search?q=${encodeURIComponent(query)}`);
+    const response = await apiFetch(`${API_BASE_URL}/animes/search?q=${encodeURIComponent(query)}`);
     const json = await response.json();
 
     if (!json.success) throw new Error('API error');
@@ -751,7 +805,7 @@ export async function searchAnimes(query) {
 export async function fetchAnimesByGenre(genre) {
   if (!genre) return [];
   try {
-    const response = await fetch(`${API_BASE_URL}/animes/genre/${encodeURIComponent(genre)}`);
+    const response = await apiFetch(`${API_BASE_URL}/animes/genre/${encodeURIComponent(genre)}`);
     const json = await response.json();
 
     if (!json.success) throw new Error('API error');
@@ -786,7 +840,7 @@ export async function updateName(name) {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return { success: false, error: 'Oturum bulunamadı.' };
 
-    const response = await fetch(`${API_BASE_URL}/profile/update-name`, {
+    const response = await apiFetch(`${API_BASE_URL}/profile/update-name`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -809,7 +863,7 @@ export async function updateEmail(email) {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return { success: false, error: 'Oturum bulunamadı.' };
 
-    const response = await fetch(`${API_BASE_URL}/profile/update-email`, {
+    const response = await apiFetch(`${API_BASE_URL}/profile/update-email`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -832,7 +886,7 @@ export async function toggleFavoritesNotificationsApi(enabled) {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return null;
 
-    const response = await fetch(`${API_BASE_URL}/profile/settings/notifications/favorites`, {
+    const response = await apiFetch(`${API_BASE_URL}/profile/settings/notifications/favorites`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -855,7 +909,7 @@ export async function toggleListNotificationsApi(listId, enabled) {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return null;
 
-    const response = await fetch(`${API_BASE_URL}/profile/lists/${listId}/notifications`, {
+    const response = await apiFetch(`${API_BASE_URL}/profile/lists/${listId}/notifications`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -878,7 +932,7 @@ export async function getNotifications(page = 1, limit = 20) {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return null;
 
-    const response = await fetch(`${API_BASE_URL}/notifications?page=${page}&limit=${limit}`, {
+    const response = await apiFetch(`${API_BASE_URL}/notifications?page=${page}&limit=${limit}`, {
       headers: {
         'Authorization': `Bearer ${token}`
       }
@@ -898,7 +952,7 @@ export async function markNotificationAsRead(id) {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return null;
 
-    const response = await fetch(`${API_BASE_URL}/notifications/${id}/read`, {
+    const response = await apiFetch(`${API_BASE_URL}/notifications/${id}/read`, {
       method: 'PUT',
       headers: {
         'Authorization': `Bearer ${token}`
@@ -919,7 +973,7 @@ export async function markAllNotificationsAsRead() {
     const token = await AsyncStorage.getItem('userToken');
     if (!token) return null;
 
-    const response = await fetch(`${API_BASE_URL}/notifications/read-all`, {
+    const response = await apiFetch(`${API_BASE_URL}/notifications/read-all`, {
       method: 'PUT',
       headers: {
         'Authorization': `Bearer ${token}`
@@ -937,7 +991,7 @@ export async function markAllNotificationsAsRead() {
  */
 export async function checkAppUpdate() {
   try {
-    const response = await fetch(`${API_BASE_URL}/version`);
+    const response = await apiFetch(`${API_BASE_URL}/version`);
     if (!response.ok) throw new Error('Network response was not ok');
     return await response.json();
   } catch (err) {

@@ -61,4 +61,47 @@ const apiKeyAuth = (req, res, next) => {
   next();
 };
 
-module.exports = { protect, apiKeyAuth, JWT_SECRET };
+/**
+ * verifyRequestSignature — HMAC Tabanlı Dinamik İstek İmzalama (Request Signing)
+ * Frontend'den gelen x-clofthel-timestamp, x-clofthel-nonce ve x-clofthel-signature 
+ * değerlerini kontrol ederek isteğin bütünlüğünü ve yeniliğini doğrular.
+ */
+const crypto = require('crypto');
+
+const verifyRequestSignature = (req, res, next) => {
+  const timestamp = req.headers['x-clofthel-timestamp'];
+  const nonce = req.headers['x-clofthel-nonce'];
+  const signature = req.headers['x-clofthel-signature'];
+  const secret = process.env.MOBILE_APP_SECRET;
+
+  if (!secret) {
+    console.error('❌ MOBILE_APP_SECRET .env dosyasında tanımlı değil!');
+    return res.status(500).json({ success: false, error: 'Sunucu yapılandırma hatası.' });
+  }
+
+  if (!timestamp || !nonce || !signature) {
+    return res.status(403).json({ success: false, error: 'Güvenlik imzası eksik. Bu API sadece resmi Clofthel mobil uygulaması tarafından kullanılabilir.' });
+  }
+
+  // Replay Attack Koruması: 15 saniyeden (15000ms) eski istekleri reddet
+  const now = Date.now();
+  const requestTime = parseInt(timestamp, 10);
+  
+  if (isNaN(requestTime) || Math.abs(now - requestTime) > 15000) {
+    return res.status(401).json({ success: false, error: 'İstek zaman aşımına uğradı (Replay Attack Koruması).' });
+  }
+
+  // İmzayı yeniden hesapla: URL (orijinal url) | timestamp | nonce
+  // req.originalUrl, query parametreleri dahil tam path'i verir (örn: /api/animes?limit=10)
+  const payload = `${req.originalUrl}|${timestamp}|${nonce}`;
+  const expectedSignature = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+
+  if (signature !== expectedSignature) {
+    console.warn(`[GÜVENLİK] Geçersiz imza. URL: ${req.originalUrl}`);
+    return res.status(401).json({ success: false, error: 'İstek imzası geçersiz veya veri değiştirilmiş.' });
+  }
+
+  next();
+};
+
+module.exports = { protect, apiKeyAuth, verifyRequestSignature, JWT_SECRET };
