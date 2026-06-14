@@ -453,8 +453,8 @@ export default function Home() {
                 Windows (Yakında)
               </button>
               <a 
-                href="https://firebasestorage.googleapis.com/v0/b/sigalmedia.firebasestorage.app/o/app-release.apk?alt=media&token=7e60ce1f-9984-44e7-98f4-5117af8fbc2f" 
-                download
+                href="/api/download-apk" 
+                download="Clofthel-v1.2.0.apk"
                 className="flex items-center justify-center gap-3 bg-[#1e1e24] border border-white/10 text-white px-8 py-5 rounded-2xl font-black hover:bg-[#2a2a32] hover:scale-105 active:scale-95 transition-all shadow-xl w-full sm:w-auto text-lg group"
               >
                 <FaAndroid className="w-7 h-7 text-[#3DDC84] transition-transform group-hover:-translate-y-1" />
