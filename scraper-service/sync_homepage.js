@@ -18,7 +18,7 @@ const MAX_PAGES_TO_SCRAPE = 30;
 
 async function notifyMainBackend(animeId, episodeNum) {
   try {
-    const mainBackendUrl = process.env.MAIN_BACKEND_URL || 'http://127.0.0.1';
+    const mainBackendUrl = process.env.MAIN_BACKEND_URL || 'http://127.0.0.1:5000';
     const internalApiKey = process.env.INTERNAL_API_KEY || 'clofthel_internal_secret_key_2026';
     
     await axios.post(`${mainBackendUrl}/api/internal/notify-new-episode`, {
