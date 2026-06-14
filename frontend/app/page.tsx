@@ -5,39 +5,14 @@ import Link from 'next/link';
 import { FaWindows, FaAndroid, FaStar, FaChevronDown, FaTimes, FaRocket, FaCheckCircle, FaGlobe, FaCaretRight, FaExclamationTriangle, FaInstagram, FaSearch, FaHeart, FaEdit, FaCheck, FaTrash } from 'react-icons/fa';
 
 interface Anime {
-  _id: string;
-  tranimeizle_slug: string;
-  tranimeizle_url: string;
-  anilist_id: number | null;
-  orijinal_ad: string | null;
-  format: string | null;
-  total_episodes: number | null;
-}
-
-function formatSlug(slug: string): string {
-  if (!slug) return '';
-  return slug
-    .replace(/-izle(?:-[0-9]+)?(?:-hd|-fullhd)?$/, '')
-    .replace(/-hd$/, '')
-    .replace(/-/g, ' ')
-    .replace(/\b\w/g, c => c.toUpperCase());
-}
-
-function getCleanTitle(anime: { orijinal_ad: string | null; tranimeizle_slug: string }): string {
-  if (!anime.orijinal_ad) {
-    return formatSlug(anime.tranimeizle_slug);
-  }
-  const normTitle = anime.orijinal_ad.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const normSlug = anime.tranimeizle_slug.replace(/-izle(?:-[0-9]+)?(?:-hd|-fullhd)?$/, '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (normSlug !== normTitle) {
-    return formatSlug(anime.tranimeizle_slug);
-  }
-  return anime.orijinal_ad;
-}
-
-interface AniListMeta {
+  id: number;
+  title: string;
+  titleRomaji: string;
   cover: string;
   score: string;
+  episodes: number | null;
+  format: string;
+  genres: string[];
 }
 
 interface Comment {
@@ -276,7 +251,6 @@ function CommentsSection({ targetId }: { targetId: string }) {
 
 export default function Home() {
   const [animes, setAnimes] = useState<Anime[]>([]);
-  const [metaMap, setMetaMap] = useState<Record<string, AniListMeta>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -287,29 +261,17 @@ export default function Home() {
     setError(null);
     setIsSearching(false);
     try {
-      const res = await fetch('/api/proxy/animes/trending');
-      if (!res.ok) {
-        throw new Error('API bağlantısı başarısız oldu.');
-      }
+      const res = await fetch('/api/trending');
+      if (!res.ok) throw new Error('AniList bağlantısı başarısız oldu.');
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {
         setAnimes(json.data);
-        json.data.forEach(async (anime: Anime) => {
-          const metaKey = anime.anilist_id ? String(anime.anilist_id) : anime._id;
-          if (!metaMap[metaKey]) {
-            const meta = await fetchAniListMeta(anime.anilist_id);
-            setMetaMap(prev => ({
-              ...prev,
-              [metaKey]: meta
-            }));
-          }
-        });
       } else {
         setError('Veri formatı geçersiz.');
       }
     } catch (err: any) {
       console.error('Fetch error:', err);
-      setError('Express API sunucusuna bağlanılamadı. Lütfen backend sunucusunun çalıştığından emin olun.');
+      setError('Trend animeler yüklenemedi.');
     } finally {
       setLoading(false);
     }
@@ -319,34 +281,6 @@ export default function Home() {
     loadPopularAnimes();
   }, []);
 
-  async function fetchAniListMeta(anilistId: number | null): Promise<AniListMeta> {
-    if (!anilistId) {
-      return { cover: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&auto=format&fit=crop&q=60', score: 'N/A' };
-    }
-    try {
-      const query = `
-        query ($id: Int) {
-          Media (id: $id, type: ANIME) {
-            coverImage { large }
-            averageScore
-          }
-        }
-      `;
-      const response = await fetch('https://graphql.anilist.co', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ query, variables: { id: anilistId } })
-      });
-      const json = await response.json();
-      if (json.data && json.data.Media) {
-        return {
-          cover: json.data.Media.coverImage.large || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&auto=format&fit=crop&q=60',
-          score: json.data.Media.averageScore ? (json.data.Media.averageScore / 10).toFixed(1) : 'N/A'
-        };
-      }
-    } catch (err) {}
-    return { cover: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&auto=format&fit=crop&q=60', score: 'N/A' };
-  }
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -584,44 +518,36 @@ export default function Home() {
               </div>
             ) : animes.length > 0 ? (
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4 md:gap-6">
-                {animes.map((anime) => {
-                  const metaKey = anime.anilist_id ? String(anime.anilist_id) : anime._id;
-                  const cover = metaMap[metaKey]?.cover || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&auto=format&fit=crop&q=60';
-                  const score = metaMap[metaKey]?.score || 'N/A';
-                  const cleanTitle = getCleanTitle(anime);
-
-                  return (
-                    <Link
-                      key={anime._id}
-                      href={`/anime/${anime._id}`}
-                      className="group flex flex-col gap-3 relative"
-                    >
-                      <div className="aspect-[5/7] rounded-2xl overflow-hidden bg-black relative border border-white/5 group-hover:border-[#ff6b00]/50 transition-colors shadow-xl">
-                        <img 
-                          src={cover} 
-                          alt={cleanTitle} 
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/0 opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-center pb-6">
-                          <span className="bg-[#ff6b00] text-black font-black text-xs px-4 py-2 rounded-full transform translate-y-4 group-hover:translate-y-0 transition-transform">İncele</span>
-                        </div>
-                        <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded-lg text-xs font-bold border border-white/10 flex items-center gap-1">
-                          <FaStar className="text-[#ff6b00]" /> {score}
-                        </div>
+                {animes.map((anime) => (
+                  <Link
+                    key={anime.id}
+                    href={isSearching ? `/anime/${(anime as any)._id}` : `/anime/al/${anime.id}`}
+                    className="group flex flex-col gap-3 relative"
+                  >
+                    <div className="aspect-[5/7] rounded-2xl overflow-hidden bg-black relative border border-white/5 group-hover:border-[#ff6b00]/50 transition-colors shadow-xl">
+                      <img
+                        src={anime.cover || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&auto=format&fit=crop&q=60'}
+                        alt={anime.title}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/0 opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-center pb-6">
+                        <span className="bg-[#ff6b00] text-black font-black text-xs px-4 py-2 rounded-full transform translate-y-4 group-hover:translate-y-0 transition-transform">İncele</span>
                       </div>
-                      
-                      <div className="flex flex-col px-1">
-                        <h3 className="font-bold text-sm line-clamp-2 leading-tight group-hover:text-[#ff6b00] transition-colors" title={cleanTitle}>
-                          {cleanTitle}
-                        </h3>
-                        <div className="flex justify-between items-center mt-1">
-                          <span className="text-xs text-[#8e8e9f] font-medium">{anime.format || 'TV'}</span>
-                          <span className="text-xs text-[#8e8e9f] font-medium">{anime.total_episodes ? `${anime.total_episodes} Bölüm` : '? Bölüm'}</span>
-                        </div>
+                      <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded-lg text-xs font-bold border border-white/10 flex items-center gap-1">
+                        <FaStar className="text-[#ff6b00]" /> {anime.score}
                       </div>
-                    </Link>
-                  );
-                })}
+                    </div>
+                    <div className="flex flex-col px-1">
+                      <h3 className="font-bold text-sm line-clamp-2 leading-tight group-hover:text-[#ff6b00] transition-colors" title={anime.title}>
+                        {anime.title}
+                      </h3>
+                      <div className="flex justify-between items-center mt-1">
+                        <span className="text-xs text-[#8e8e9f] font-medium">{anime.format || 'TV'}</span>
+                        <span className="text-xs text-[#8e8e9f] font-medium">{anime.episodes ? `${anime.episodes} Bölüm` : '? Bölüm'}</span>
+                      </div>
+                    </div>
+                  </Link>
+                ))}
               </div>
             ) : (
               <div className="text-center py-20 bg-white/5 rounded-3xl border border-white/5">
