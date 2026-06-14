@@ -1599,7 +1599,6 @@ router.post('/:id/episodes/:episode_number/video-url', protect, async (req, res)
     }
     anime.markModified('episodes_cache');
     await anime.save();
-    
     console.log(`[SUCCESS] Saf link veritabanına başarıyla kaydedildi.`);
     res.json({ success: true, message: 'Video adresi önbelleğe kaydedildi.' });
     
@@ -1613,76 +1612,79 @@ router.post('/:id/episodes/:episode_number/video-url', protect, async (req, res)
  * POST /api/animes/resolve-source
  * TrAnimeIzle bölüm URL'sinden AitrVip/optraco ham m3u8 linkini çıkarır.
  *
- * Body: { episodeUrl: "https://www.tranimeizle.co/bölüm-slug" }
+ * Body: { episodeUrl: "https://www.tranimeizle.io/bölüm-slug" }
  * Response: { success: true, m3u8Url: "https://optraco.top/plateau/UUID/HASH.m3u8", explorerUrl: "..." }
  */
 router.post('/resolve-source', async (req, res) => {
-  const { episodeUrl } = req.body;
-  if (!episodeUrl) {
-    return res.status(400).json({ success: false, error: 'episodeUrl gerekli.' });
+  // episodeUrl: TrAnimeIzle bölüm sayfası URL'si
+  // dataId: AitrVip data-id değeri (HTML'den önceden ayıklanmışsa direkt gönder)
+  const { episodeUrl, dataId: directDataId } = req.body;
+
+  if (!episodeUrl && !directDataId) {
+    return res.status(400).json({ success: false, error: 'episodeUrl veya dataId gerekli.' });
   }
 
   try {
     const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+    let dataId = directDataId;
 
-    // 1. Bölüm sayfasını çek
-    const pageRes = await axios.get(episodeUrl, {
-      headers: {
-        'User-Agent': UA,
-        'Referer': 'https://www.tranimeizle.co/',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-      timeout: 10000,
-    });
+    // data-id bilinmiyorsa bölüm sayfasından çek
+    if (!dataId && episodeUrl) {
+      const pageRes = await axios.get(episodeUrl, {
+        headers: {
+          'User-Agent': UA,
+          'Referer': 'https://www.tranimeizle.io/',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        timeout: 10000,
+      });
 
-    const html = pageRes.data;
+      const html = pageRes.data;
 
-    // 2. AitrVip butonunun data-id ve data-eid'sini bul
-    // Önce "AitrVip" metnini içeren <li>'yi bul
-    const aitrVipMatch = html.match(
-      /<li[^>]*class=["']sourceBtn["'][^>]*data-id=["'](\d+)["'][^>]*data-eid=["'](\d+)["'][^>]*>[\s\S]*?AitrVip/i
-    ) || html.match(
-      /data-id=["'](\d+)["'][^>]*data-eid=["'](\d+)["'][^>]*>[\s\S]{0,200}?AitrVip/i
-    );
+      // AitrVip butonunu bul: data-id="{id}" ... AitrVip
+      const aitrVipMatch = html.match(
+        /data-id=["'](\d+)["'][^>]*data-eid=["']\d+["'][^>]*>[\s\S]{0,300}?AitrVip/i
+      ) || html.match(
+        /AitrVip[\s\S]{0,300}?data-id=["'](\d+)["']/i
+      );
 
-    if (!aitrVipMatch) {
-      return res.status(404).json({ success: false, error: 'AitrVip kaynağı bu bölümde bulunamadı.' });
+      if (!aitrVipMatch) {
+        return res.status(404).json({ success: false, error: 'AitrVip kaynağı bu bölümde bulunamadı.' });
+      }
+      dataId = aitrVipMatch[1];
     }
 
-    const dataId = aitrVipMatch[1];
-    const dataEid = aitrVipMatch[2];
-    console.log(`[resolve-source] data-id=${dataId} data-eid=${dataEid}`);
+    console.log(`[resolve-source] sourcePlayer isteği → data-id=${dataId}`);
 
-    // 3. TrAnimeIzle kaynak API'sine POST at
-    const sourceRes = await axios.post(
-      `https://www.tranimeizle.co/${dataId}/`,
-      new URLSearchParams({ id: dataId, eid: dataEid }).toString(),
+    // Doğrudan sourcePlayer API'sini çağır
+    const sourceRes = await axios.get(
+      `https://www.tranimeizle.io/api/sourcePlayer/${dataId}`,
       {
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
           'User-Agent': UA,
-          'Referer': episodeUrl,
-          'X-Requested-With': 'XMLHttpRequest',
+          'Referer': episodeUrl || 'https://www.tranimeizle.io/',
           'Accept': 'application/json, text/javascript, */*; q=0.01',
+          'X-Requested-With': 'XMLHttpRequest',
         },
         timeout: 8000,
       }
     );
 
     const sourceData = sourceRes.data;
-    const iframeSrc = typeof sourceData === 'string'
-      ? sourceData.match(/src=["']([^"']+optraco[^"']+)["']/i)?.[1]
-      : sourceData?.source?.match(/src=["']([^"']+optraco[^"']+)["']/i)?.[1];
+
+    // iframe src'den optraco URL'sini ayıkla
+    const rawSource = sourceData?.source || (typeof sourceData === 'string' ? sourceData : '');
+    const iframeSrc = rawSource.match(/src=["']([^"']*optraco[^"']*)["']/i)?.[1];
 
     if (!iframeSrc) {
       return res.status(502).json({ success: false, error: 'optraco iframe URL ayıklanamadı.', raw: sourceData });
     }
 
-    // 4. explorer → plateau + .m3u8
+    // explorer → plateau + .m3u8
     const m3u8Url = iframeSrc.replace('/explorer/', '/plateau/') + '.m3u8';
-    console.log(`[resolve-source] m3u8 URL: ${m3u8Url}`);
+    console.log(`[resolve-source] ✅ m3u8: ${m3u8Url}`);
 
-    res.json({ success: true, explorerUrl: iframeSrc, m3u8Url });
+    res.json({ success: true, explorerUrl: iframeSrc, m3u8Url, dataId });
   } catch (err) {
     console.error('[resolve-source] Hata:', err.message);
     res.status(500).json({ success: false, error: err.message });
