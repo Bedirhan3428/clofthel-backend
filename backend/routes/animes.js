@@ -997,9 +997,37 @@ router.get('/trending', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/animes/by-anilist/:anilist_id
+ * AniList ID'siyle veritabanında eşleşen animeyi bulur.
+ * Detay sayfasının DB'deki bölüm listesine ulaşması için kullanılır.
+ */
+router.get('/by-anilist/:anilist_id', async (req, res) => {
+  try {
+    const anilistId = parseInt(req.params.anilist_id, 10);
+    if (isNaN(anilistId)) {
+      return res.status(400).json({ success: false, error: 'Geçersiz AniList ID.' });
+    }
+    const animes = await Anime.find({ anilist_id: anilistId }).lean();
+    if (!animes || animes.length === 0) {
+      return res.status(404).json({ success: false, error: 'Bu anime veritabanında bulunamadı.' });
+    }
+    const primary = animes.sort((a, b) => (b.total_episodes || 0) - (a.total_episodes || 0))[0];
+    res.set('Cache-Control', 'public, max-age=600, s-maxage=1800');
+    res.json({
+      success: true,
+      data: formatAnimeDoc(primary),
+      variants: animes.map(formatAnimeDoc),
+    });
+  } catch (error) {
+    console.error('[GET /api/animes/by-anilist] Error:', error.message);
+    res.status(500).json({ success: false, error: 'Anime bulunamadı.' });
+  }
+});
 
 /**
  * GET /api/animes/genre/:genre
+
  * Fetches popular anime from AniList by genre, then lists matching items from our DB.
  */
 router.get('/genre/:genre', async (req, res) => {

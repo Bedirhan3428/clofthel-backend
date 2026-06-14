@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { FaAndroid, FaWindows, FaStar, FaExclamationTriangle } from 'react-icons/fa';
+import { FaAndroid, FaWindows, FaStar, FaExclamationTriangle, FaDatabase } from 'react-icons/fa';
 
 interface AniListAnime {
   id: number;
@@ -18,6 +18,13 @@ interface AniListAnime {
   description: string | null;
   startDate: { year: number | null };
   studios: { nodes: { name: string }[] };
+}
+
+interface DbAnime {
+  _id: string;
+  tranimeizle_slug: string;
+  total_episodes: number | null;
+  format: string | null;
 }
 
 const QUERY = `
@@ -50,6 +57,7 @@ const STATUS_LABEL: Record<string, string> = {
 export default function AniListDetailPage() {
   const { id } = useParams();
   const [anime, setAnime] = useState<AniListAnime | null>(null);
+  const [dbAnime, setDbAnime] = useState<DbAnime | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,16 +65,32 @@ export default function AniListDetailPage() {
     if (!id) return;
     async function load() {
       try {
-        const res = await fetch('https://graphql.anilist.co', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify({ query: QUERY, variables: { id: Number(id) } }),
-        });
-        const json = await res.json();
-        if (json?.data?.Media) setAnime(json.data.Media);
-        else setError('Anime bulunamadı.');
+        // AniList ve Backend sorgularını paralel çalıştır
+        const [aniRes, dbRes] = await Promise.allSettled([
+          fetch('https://graphql.anilist.co', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ query: QUERY, variables: { id: Number(id) } }),
+          }),
+          fetch(`/api/proxy/animes/by-anilist/${id}`),
+        ]);
+
+        // AniList sonucu
+        if (aniRes.status === 'fulfilled' && aniRes.value.ok) {
+          const json = await aniRes.value.json();
+          if (json?.data?.Media) setAnime(json.data.Media);
+          else setError('Anime bulunamadı.');
+        } else {
+          setError('AniList bağlantısı başarısız.');
+        }
+
+        // DB sonucu (opsiyonel, bulunamazsa sorun değil)
+        if (dbRes.status === 'fulfilled' && dbRes.value.ok) {
+          const json = await dbRes.value.json();
+          if (json?.success && json?.data) setDbAnime(json.data);
+        }
       } catch {
-        setError('AniList bağlantısı başarısız.');
+        setError('Bir hata oluştu.');
       } finally {
         setLoading(false);
       }
@@ -124,11 +148,9 @@ export default function AniListDetailPage() {
         {/* Üst Bilgi Paneli */}
         <section className="flex flex-col md:flex-row gap-8 md:gap-12 bg-[#121217]/80 border border-white/5 rounded-3xl p-6 md:p-10 backdrop-blur-xl shadow-2xl relative overflow-hidden">
           <div className="absolute top-0 right-0 w-96 h-96 bg-[#ff6b00]/10 blur-[120px] rounded-full pointer-events-none" />
-
           <div className="flex-shrink-0 mx-auto md:mx-0 w-56 md:w-64 aspect-[5/7] rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
             <img src={anime.coverImage.extraLarge || anime.coverImage.large} alt={title} className="w-full h-full object-cover" />
           </div>
-
           <div className="flex flex-col justify-center gap-4 text-center md:text-left z-10">
             <div className="flex flex-wrap justify-center md:justify-start gap-2">
               <span className="bg-[#ff6b00]/10 border border-[#ff6b00]/25 px-3 py-1 rounded-xl text-xs font-black text-[#ff6b00] uppercase tracking-wider">
@@ -137,35 +159,47 @@ export default function AniListDetailPage() {
               <span className="bg-[#ff6b00]/10 border border-[#ff6b00]/25 px-3 py-1 rounded-xl text-xs font-black text-[#ff6b00] uppercase tracking-wider flex items-center gap-1">
                 <FaStar className="w-3 h-3" /> {score}
               </span>
-              {anime.episodes && (
+              {(anime.episodes || dbAnime?.total_episodes) && (
                 <span className="bg-white/5 border border-white/10 px-3 py-1 rounded-xl text-xs font-black text-[#8e8e9f] uppercase tracking-wider">
-                  {anime.episodes} Bölüm
+                  {anime.episodes || dbAnime?.total_episodes} Bölüm
                 </span>
               )}
               <span className="bg-white/5 border border-white/10 px-3 py-1 rounded-xl text-xs font-black text-[#8e8e9f] uppercase tracking-wider">
                 {STATUS_LABEL[anime.status] || anime.status}
               </span>
+              {dbAnime && (
+                <span className="bg-green-500/10 border border-green-500/20 px-3 py-1 rounded-xl text-xs font-black text-green-400 uppercase tracking-wider flex items-center gap-1">
+                  <FaDatabase className="w-3 h-3" /> Arşivde Mevcut
+                </span>
+              )}
             </div>
-
             <h1 className="text-3xl md:text-5xl font-black tracking-tight leading-tight">{title}</h1>
             {anime.title.romaji && anime.title.english && (
               <p className="text-[#8e8e9f] text-sm font-medium">{anime.title.romaji}</p>
             )}
-
             <div className="flex flex-wrap gap-2 justify-center md:justify-start">
               {anime.genres.slice(0, 5).map(g => (
                 <span key={g} className="text-[10px] font-black uppercase tracking-wider bg-white/5 border border-white/10 px-2.5 py-1 rounded-lg text-[#8e8e9f]">{g}</span>
               ))}
             </div>
-
             <p className="text-[#8e8e9f] text-sm leading-relaxed max-w-2xl line-clamp-4">{description}</p>
-
             {(studio || anime.startDate?.year) && (
               <p className="text-[#8e8e9f]/60 text-xs font-medium">
                 {studio && <span>{studio}</span>}
                 {studio && anime.startDate?.year && <span> · </span>}
                 {anime.startDate?.year && <span>{anime.startDate.year}</span>}
               </p>
+            )}
+
+            {/* DB'de bulunduysa detay sayfasına link ver */}
+            {dbAnime && (
+              <Link
+                href={`/anime/${dbAnime._id}`}
+                className="inline-flex items-center gap-2 self-center md:self-start mt-2 px-5 py-2.5 bg-white/5 border border-white/10 hover:bg-white/10 hover:border-[#ff6b00]/30 rounded-xl transition-all text-sm font-black"
+              >
+                <FaDatabase className="text-[#ff6b00]" />
+                Tüm Bölümleri Gör →
+              </Link>
             )}
           </div>
         </section>
