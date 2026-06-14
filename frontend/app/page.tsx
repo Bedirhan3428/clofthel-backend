@@ -78,7 +78,8 @@ function CommentsSection({ targetId }: { targetId: string }) {
 
   const fetchComments = async (key: string) => {
     try {
-      const res = await fetch(`http://localhost:5000/api/comments/${targetId}?authorKey=${key}`);
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://api.clofthel.com.tr';
+      const res = await fetch(`${apiUrl}/api/comments/${targetId}?authorKey=${key}`);
       const data = await res.json();
       if (data.success) {
         setComments(data.comments);
@@ -97,7 +98,8 @@ function CommentsSection({ targetId }: { targetId: string }) {
     setError('');
     
     try {
-      const res = await fetch('http://localhost:5000/api/comments', {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://api.clofthel.com.tr';
+      const res = await fetch(`${apiUrl}/api/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targetId, authorName, content, authorKey })
@@ -123,7 +125,8 @@ function CommentsSection({ targetId }: { targetId: string }) {
 
   const handleLike = async (id: string) => {
     try {
-      const res = await fetch(`http://localhost:5000/api/comments/${id}/like`, { method: 'POST' });
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://api.clofthel.com.tr';
+      const res = await fetch(`${apiUrl}/api/comments/${id}/like`, { method: 'POST' });
       const data = await res.json();
       if (data.success) {
         setComments(comments.map(c => c._id === id ? { ...c, likeCount: data.likeCount } : c));
@@ -137,7 +140,8 @@ function CommentsSection({ targetId }: { targetId: string }) {
 
   const handleEdit = async (id: string) => {
     try {
-      const res = await fetch(`http://localhost:5000/api/comments/${id}`, {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://api.clofthel.com.tr';
+      const res = await fetch(`${apiUrl}/api/comments/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: editContent, authorKey })
@@ -157,7 +161,8 @@ function CommentsSection({ targetId }: { targetId: string }) {
   const handleDelete = async (id: string) => {
     if (!window.confirm("Bu yorumu silmek istediğinize emin misiniz?")) return;
     try {
-      const res = await fetch(`http://localhost:5000/api/comments/${id}`, {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://api.clofthel.com.tr';
+      const res = await fetch(`${apiUrl}/api/comments/${id}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ authorKey })
