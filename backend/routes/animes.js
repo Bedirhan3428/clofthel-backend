@@ -905,11 +905,11 @@ router.get('/trending', async (req, res) => {
       animes = found;
     }
 
-    // 2b. Yeterli yoksa DB fallback (bölüm sayısına göre değil anilist_id'si olanlara göre)
+    // 2b. Yeterli yoksa DB fallback
     if (animes.length < 10) {
       const fallback = await Anime.find({ anilist_id: { $ne: null } })
         .sort({ anilist_id: -1 })
-        .limit(limit)
+        .limit(limit * 3)
         .lean();
       const existingIds = new Set(animes.map(a => String(a._id)));
       for (const a of fallback) {
@@ -917,7 +917,40 @@ router.get('/trending', async (req, res) => {
       }
     }
 
-    animes = await resolveSiblings(animes.slice(0, limit));
+    // 2c. Tekilleştirme: Aynı animenin farklı sezonları tekrar göründüğünde
+    // sadece AniList sıralamasında en önde olanı (ilk geleni) tut.
+    // Base slug = "-2-sezon", "-3-sezon", "-izle" gibi ekleri kırp.
+    function getBaseKey(doc) {
+      let slug = (doc.tranimeizle_slug || '').toLowerCase();
+      // Sezon, kısım, film eklerini kaldır
+      slug = slug
+        .replace(/-\d+-sezon(?:u)?(?:-\d+-kisim)?(?:-izle)?$/, '')
+        .replace(/-sezon(?:u)?(?:-\d+)?(?:-izle)?$/, '')
+        .replace(/-\d+-kisim(?:-izle)?$/, '')
+        .replace(/-movie(?:-\d+)?(?:-izle)?$/, '')
+        .replace(/-film(?:-izle)?$/, '')
+        .replace(/-ova(?:-\d+)?(?:-izle)?$/, '')
+        .replace(/-ona(?:-izle)?$/, '')
+        .replace(/-special(?:-\d+)?(?:-izle)?$/, '')
+        .replace(/-izle$/, '')
+        .replace(/-hd$/, '')
+        .replace(/-fullhd$/, '');
+      return slug.trim();
+    }
+
+    const seenBase = new Set();
+    const dedupedAnimes = [];
+    for (const anime of animes) {
+      const key = getBaseKey(anime);
+      if (!seenBase.has(key)) {
+        seenBase.add(key);
+        dedupedAnimes.push(anime);
+      }
+      if (dedupedAnimes.length >= limit) break;
+    }
+    animes = dedupedAnimes;
+
+    animes = await resolveSiblings(animes);
     lazyResolveAnilistInfo(animes);
     animes = animes.filter(doc => !isGhostEntry(doc) && (doc.format || '').toUpperCase() !== 'MUSIC');
 
