@@ -14,6 +14,7 @@ import {
   TouchableWithoutFeedback,
   FlatList,
   Modal,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -21,7 +22,10 @@ import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } fro
 import { fetchAnimeDetail, fetchEpisodes, resetAnimeAnilistId, saveAnimeAnilistId, addToHistory } from '../services/api';
 import { API_BASE_URL } from '../constants/config';
 import * as ScreenOrientation from 'expo-screen-orientation';
-import { getPerformanceProfile, getPlayerPreferences, savePlayerPreferences } from '../utils/preferences';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import * as Clipboard from 'expo-clipboard';
+import { getPerformanceProfile, getPlayerPreferences, savePlayerPreferences, storage } from '../utils/preferences';
 import { profileDevice } from '../utils/performanceProfiler';
 import GestureLayer from '../components/player/GestureLayer';
 import ControlLayer from '../components/player/ControlLayer';
@@ -73,6 +77,41 @@ export default function WatchScreen({ route, navigation }) {
     doubleTapEnabled: true,
     swipeSeekEnabled: true
   });
+
+  const [downloadStatus, setDownloadStatus] = useState('none'); // 'none' | 'downloading' | 'downloaded'
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const downloadResumableRef = useRef(null);
+  const isCancelRequestedRef = useRef(false);
+
+  const [activeVideoUrl, setActiveVideoUrl] = useState(videoUrl);
+  const [isVideoLocal, setIsVideoLocal] = useState(false);
+
+  useEffect(() => {
+    const initVideoSource = async () => {
+      const downloadKey = `download_${animeId}_${currentEpisodeNumber}`;
+      const raw = storage.getString(downloadKey);
+      if (raw) {
+        try {
+          const info = JSON.parse(raw);
+          const fileInfo = await FileSystem.getInfoAsync(info.localUri);
+          if (fileInfo.exists) {
+            setActiveVideoUrl(info.localUri);
+            setIsVideoLocal(true);
+            setDownloadStatus('downloaded');
+            return;
+          } else {
+            storage.delete(downloadKey);
+          }
+        } catch (e) {
+          console.warn('Failed to parse download info:', e);
+        }
+      }
+      setActiveVideoUrl(videoUrl);
+      setIsVideoLocal(false);
+      setDownloadStatus('none');
+    };
+    initVideoSource();
+  }, [currentEpisodeNumber, videoUrl]);
 
   const [episodes, setEpisodes] = useState([]);
   const [seasons, setSeasons] = useState([]);
@@ -423,6 +462,158 @@ export default function WatchScreen({ route, navigation }) {
     resetControlsTimeout();
   };
 
+  const deleteDownload = async () => {
+    const downloadDir = FileSystem.documentDirectory + `downloads/${animeId}_ep${currentEpisodeNumber}/`;
+    try {
+      await FileSystem.deleteAsync(downloadDir, { idempotent: true });
+    } catch (e) {
+      console.warn('Failed to delete download directory:', e);
+    }
+    const downloadKey = `download_${animeId}_${currentEpisodeNumber}`;
+    storage.delete(downloadKey);
+    setDownloadStatus('none');
+    setActiveVideoUrl(videoUrl);
+    setIsVideoLocal(false);
+    showAlert('Başarılı', 'Bölüm cihazınızdan silindi.');
+  };
+
+  const handleVideoDownload = async () => {
+    if (downloadStatus === 'downloaded') {
+      showAlert(
+        'Bölümü Sil',
+        'Bu bölüm zaten cihazınıza indirilmiş. Cihazınızdan silmek istiyor musunuz?',
+        [
+          { text: 'Evet, Sil', onPress: deleteDownload },
+          { text: 'Vazgeç', style: 'cancel' }
+        ]
+      );
+      return;
+    }
+
+    if (!videoUrl) {
+      showAlert('Hata', 'İndirilecek video adresi bulunamadı.');
+      return;
+    }
+
+    const isHls = videoUrl.includes('.m3u8') || (!videoUrl.toLowerCase().includes('.mp4') && !videoUrl.includes('sibnet.ru'));
+    const downloadDir = FileSystem.documentDirectory + `downloads/${animeId}_ep${currentEpisodeNumber}/`;
+
+    try {
+      setDownloadStatus('downloading');
+      setDownloadProgress(0);
+      isCancelRequestedRef.current = false;
+
+      // Auto-pause video during download to preserve bandwidth
+      if (isPlaying) {
+        handleNativePlayPause();
+      }
+
+      // Ensure directory exists
+      await FileSystem.makeDirectoryAsync(downloadDir, { intermediates: true });
+
+      if (isHls) {
+        const cancelToken = { cancelled: false };
+        downloadResumableRef.current = {
+          cancelAsync: async () => {
+            cancelToken.cancelled = true;
+            isCancelRequestedRef.current = true;
+          }
+        };
+
+        const localPlaylistPath = await downloadHlsVideo(videoUrl, downloadDir, (p) => {
+          setDownloadProgress(p);
+        }, cancelToken);
+
+        const downloadKey = `download_${animeId}_${currentEpisodeNumber}`;
+        const downloadInfo = {
+          animeId,
+          episodeNumber: currentEpisodeNumber,
+          animeTitle: currentAnime?.title || route.params.animeTitle || 'Anime',
+          episodeTitle: currentEpisodeTitle,
+          localUri: localPlaylistPath,
+          isMp4: false,
+          downloadedAt: new Date().toISOString()
+        };
+        
+        storage.set(downloadKey, JSON.stringify(downloadInfo));
+        setDownloadStatus('downloaded');
+        setActiveVideoUrl(localPlaylistPath);
+        setIsVideoLocal(true);
+        showAlert('Başarılı', 'Bölüm başarıyla çevrimdışı izleme için indirildi.');
+      } else {
+        // Direct MP4
+        const localPath = downloadDir + 'video.mp4';
+        
+        const downloadCallback = (progressData) => {
+          const progress = progressData.totalBytesWritten / progressData.totalBytesExpectedToWrite;
+          setDownloadProgress(isNaN(progress) ? 0 : progress);
+        };
+        
+        const downloadResumable = FileSystem.createDownloadResumable(
+          videoUrl,
+          localPath,
+          {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Referer': getRefererForUrl(videoUrl)
+            }
+          },
+          downloadCallback
+        );
+        
+        downloadResumableRef.current = downloadResumable;
+        
+        const result = await downloadResumable.downloadAsync();
+        
+        if (result && result.uri) {
+          const downloadKey = `download_${animeId}_${currentEpisodeNumber}`;
+          const downloadInfo = {
+            animeId,
+            episodeNumber: currentEpisodeNumber,
+            animeTitle: currentAnime?.title || route.params.animeTitle || 'Anime',
+            episodeTitle: currentEpisodeTitle,
+            localUri: result.uri,
+            isMp4: true,
+            downloadedAt: new Date().toISOString()
+          };
+          
+          storage.set(downloadKey, JSON.stringify(downloadInfo));
+          setDownloadStatus('downloaded');
+          setActiveVideoUrl(result.uri);
+          setIsVideoLocal(true);
+          showAlert('Başarılı', 'Bölüm başarıyla çevrimdışı izleme için indirildi.');
+        }
+      }
+    } catch (err) {
+      // Clean up download directory if cancelled or error
+      try {
+        await FileSystem.deleteAsync(downloadDir, { idempotent: true });
+      } catch (e) {}
+
+      setDownloadStatus('none');
+      downloadResumableRef.current = null;
+      
+      if (err.message && err.message.includes('cancel')) {
+        showAlert('İptal Edildi', 'İndirme işlemi iptal edildi.');
+      } else {
+        console.error('[Download Error]', err);
+        showAlert('Hata', 'Video indirilirken bir sorun oluştu.');
+      }
+    }
+  };
+
+  const cancelVideoDownload = async () => {
+    if (downloadResumableRef.current) {
+      try {
+        await downloadResumableRef.current.cancelAsync();
+      } catch (e) {
+        console.warn('[Cancel Download Warning]', e);
+      }
+    }
+    setDownloadStatus('none');
+    downloadResumableRef.current = null;
+  };
+
   const handlePresetSelection = (presetId) => {
     savePlayerPreferences({ aiQuality: presetId });
     setUserPrefs(prev => ({ ...prev, aiQuality: presetId }));
@@ -490,7 +681,8 @@ export default function WatchScreen({ route, navigation }) {
         <View style={[styles.videoPlayerBox, isFullscreen && styles.videoPlayerBoxFullscreen]}>
           {IS_WEB ? (
             <WebVideoPlayer
-              videoUrl={videoUrl}
+              videoUrl={activeVideoUrl}
+              isVideoLocal={isVideoLocal}
               onMessage={handleWebViewMessage}
               webViewRef={webViewRef}
               deviceProfile={deviceProfile}
@@ -499,7 +691,8 @@ export default function WatchScreen({ route, navigation }) {
             />
           ) : (
             <VideoPlayerWrapper
-              videoUrl={videoUrl}
+              videoUrl={activeVideoUrl}
+              isVideoLocal={isVideoLocal}
               onMessage={handleWebViewMessage}
               webViewRef={webViewRef}
               deviceProfile={deviceProfile}
@@ -539,7 +732,33 @@ export default function WatchScreen({ route, navigation }) {
               setIsSettingsOpen(true);
               setSettingsTab('main');
             }}
+            onDownload={handleVideoDownload}
+            downloadStatus={downloadStatus}
           />
+          
+          {/* Download Progress Overlay */}
+          {downloadStatus === 'downloading' && (
+            <View style={styles.downloadProgressOverlay}>
+              <View style={styles.downloadProgressContent}>
+                <ActivityIndicator size="large" color="#FF6B00" />
+                <Text style={styles.downloadProgressTitle}>Video İndiriliyor</Text>
+                <Text style={styles.downloadProgressText}>
+                  {Math.round(downloadProgress * 100)}%
+                </Text>
+                {/* Progress bar */}
+                <View style={styles.downloadProgressBarTrack}>
+                  <View style={[styles.downloadProgressBarFill, { width: `${downloadProgress * 100}%` }]} />
+                </View>
+                <TouchableOpacity 
+                  style={styles.btnCancelDownload} 
+                  onPress={cancelVideoDownload}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.btnCancelDownloadText}>İptal Et</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
           
           {/* Overlay Back Button on Video */}
           {controlsVisible && (
@@ -877,7 +1096,7 @@ export default function WatchScreen({ route, navigation }) {
                   <Text style={styles.sheetHeaderText}>Hız Seçin</Text>
                 </TouchableOpacity>
 
-                {[0.5, 1.0, 1.25, 1.5, 2.0].map((speed) => (
+                {[0.5, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0].map((speed) => (
                   <TouchableOpacity
                     key={speed}
                     style={[styles.sheetOption, selectedSpeed === speed && styles.sheetOptionActive]}
@@ -1000,6 +1219,105 @@ export default function WatchScreen({ route, navigation }) {
   );
 }
 
+const downloadHlsVideo = async (url, downloadDir, onProgress, cancelToken) => {
+  const response = await fetch(url);
+  const text = await response.text();
+  
+  if (text.includes('#EXT-X-STREAM-INF')) {
+    const lines = text.split('\n');
+    let bestSubPlaylistUrl = null;
+    let maxResolution = 0;
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith('#EXT-X-STREAM-INF')) {
+        const resMatch = line.match(/RESOLUTION=(\d+)x(\d+)/i);
+        const resolution = resMatch ? parseInt(resMatch[2], 10) : 0;
+        
+        let nextLine = lines[i + 1]?.trim();
+        if (nextLine && !nextLine.startsWith('#')) {
+          if (resolution > maxResolution || !bestSubPlaylistUrl) {
+            maxResolution = resolution;
+            bestSubPlaylistUrl = nextLine;
+          }
+        }
+      }
+    }
+    
+    if (bestSubPlaylistUrl) {
+      let absoluteSubUrl = bestSubPlaylistUrl;
+      const m3u8BaseUrl = url.substring(0, url.lastIndexOf('/') + 1);
+      if (!bestSubPlaylistUrl.startsWith('http') && !bestSubPlaylistUrl.startsWith('//')) {
+        absoluteSubUrl = m3u8BaseUrl + bestSubPlaylistUrl;
+      } else if (bestSubPlaylistUrl.startsWith('//')) {
+        const proto = url.startsWith('https') ? 'https:' : 'http:';
+        absoluteSubUrl = proto + bestSubPlaylistUrl;
+      }
+      return downloadHlsVideo(absoluteSubUrl, downloadDir, onProgress, cancelToken);
+    }
+  }
+  
+  const m3u8BaseUrl = url.substring(0, url.lastIndexOf('/') + 1);
+  const lines = text.split('\n');
+  const segmentUrls = [];
+  const reconstructedLines = [];
+  let segmentIndex = 0;
+  
+  for (let line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    
+    if (trimmed.startsWith('#')) {
+      reconstructedLines.push(trimmed);
+    } else {
+      let absoluteUrl = trimmed;
+      if (!trimmed.startsWith('http') && !trimmed.startsWith('//')) {
+        absoluteUrl = m3u8BaseUrl + trimmed;
+      } else if (trimmed.startsWith('//')) {
+        const proto = url.startsWith('https') ? 'https:' : 'http:';
+        absoluteUrl = proto + trimmed;
+      }
+      
+      segmentUrls.push(absoluteUrl);
+      reconstructedLines.push(`seg_${segmentIndex}.ts`);
+      segmentIndex++;
+    }
+  }
+  
+  const total = segmentUrls.length;
+  if (total === 0) {
+    throw new Error('HLS akışında segment bulunamadı.');
+  }
+  
+  const batchSize = 4;
+  for (let i = 0; i < total; i += batchSize) {
+    if (cancelToken.cancelled) {
+      throw new Error('cancel');
+    }
+    
+    const batch = segmentUrls.slice(i, i + batchSize);
+    const promises = batch.map((segUrl, index) => {
+      const segIndex = i + index;
+      const segPath = downloadDir + `seg_${segIndex}.ts`;
+      return FileSystem.downloadAsync(segUrl, segPath, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': getRefererForUrl(url)
+        }
+      });
+    });
+    
+    await Promise.all(promises);
+    onProgress((i + batch.length) / total);
+  }
+  
+  const localPlaylistContent = reconstructedLines.join('\n');
+  const localPlaylistPath = downloadDir + 'local.m3u8';
+  await FileSystem.writeAsStringAsync(localPlaylistPath, localPlaylistContent);
+  
+  return localPlaylistPath;
+};
+
 const getRefererForUrl = (url) => {
   if (!url) return 'https://optraco.top/';
   try {
@@ -1020,7 +1338,7 @@ const getRefererForUrl = (url) => {
   return 'https://optraco.top/';
 };
 
-const generatePlayerHtml = (videoUrl, isMp4, deviceProfile = 'mid', activePreset = 'balanced', startAt = 0) => {
+const generatePlayerHtml = (videoUrl, isMp4, isVideoLocal = false, deviceProfile = 'mid', activePreset = 'balanced', startAt = 0) => {
   return `
     <!DOCTYPE html>
     <html lang="tr">
@@ -1271,30 +1589,25 @@ const generatePlayerHtml = (videoUrl, isMp4, deviceProfile = 'mid', activePreset
   `;
 };
 
-function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, deviceProfile, activePreset, startAt }) {
-  const refererUrl = getRefererForUrl(videoUrl);
-  console.log('[WatchScreen] Playing video directly with Referer baseUrl:', refererUrl);
+function VideoPlayerWrapper({ videoUrl, isVideoLocal, onMessage, webViewRef, deviceProfile, activePreset, startAt }) {
+  const refererUrl = isVideoLocal ? null : getRefererForUrl(videoUrl);
+  console.log('[WatchScreen] Playing video. Local:', isVideoLocal, 'Referer:', refererUrl);
 
-  const isSibnet = videoUrl && (videoUrl.includes('sibnet.ru') || videoUrl.toLowerCase().includes('.mp4'));
-  let videoSourceUrl = videoUrl;
-  let isMp4 = false;
+  const isSibnet = !isVideoLocal && videoUrl && (videoUrl.includes('sibnet.ru') || videoUrl.toLowerCase().includes('.mp4'));
+  const isMp4 = isVideoLocal ? videoUrl.toLowerCase().includes('.mp4') : isSibnet;
 
-  if (isSibnet) {
-    isMp4 = true;
-    console.log('[WatchScreen] Playing Sibnet tokenized video via custom player:', videoSourceUrl);
-  } else if (videoUrl && videoUrl.toLowerCase().includes('.mp4')) {
-    isMp4 = true;
-  }
-
-  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, deviceProfile, activePreset, startAt));
+  const [initialHtml] = useState(() => generatePlayerHtml(videoUrl, isMp4, isVideoLocal, deviceProfile, activePreset, startAt));
 
   return (
     <WebView
       ref={webViewRef}
-      source={{ html: initialHtml, baseUrl: refererUrl }}
+      source={{ html: initialHtml, baseUrl: isVideoLocal ? 'file:///' : refererUrl }}
       originWhitelist={['*']}
       javaScriptEnabled={true}
       domStorageEnabled={true}
+      allowFileAccess={true}
+      allowUniversalAccessFromFileURLs={true}
+      allowFileAccessFromFileURLs={true}
       allowsFullscreenVideo={true}
       mediaPlaybackRequiresUserAction={false}
       allowsInlineMediaPlayback={true}
@@ -1306,18 +1619,11 @@ function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, deviceProfile, ac
   );
 }
 
-function WebVideoPlayer({ videoUrl, onMessage, webViewRef, deviceProfile, activePreset, startAt }) {
-  const isSibnet = videoUrl && (videoUrl.includes('sibnet.ru') || videoUrl.toLowerCase().includes('.mp4'));
-  let videoSourceUrl = videoUrl;
-  let isMp4 = false;
+function WebVideoPlayer({ videoUrl, isVideoLocal, onMessage, webViewRef, deviceProfile, activePreset, startAt }) {
+  const isSibnet = !isVideoLocal && videoUrl && (videoUrl.includes('sibnet.ru') || videoUrl.toLowerCase().includes('.mp4'));
+  const isMp4 = isVideoLocal ? videoUrl.toLowerCase().includes('.mp4') : isSibnet;
 
-  if (isSibnet) {
-    isMp4 = true;
-  } else if (videoUrl && videoUrl.toLowerCase().includes('.mp4')) {
-    isMp4 = true;
-  }
-
-  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, deviceProfile, activePreset, startAt));
+  const [initialHtml] = useState(() => generatePlayerHtml(videoUrl, isMp4, isVideoLocal, deviceProfile, activePreset, startAt));
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -1670,5 +1976,60 @@ const styles = StyleSheet.create({
   episodeCardTitleActive: {
     color: COLORS.accent,
     fontWeight: FONT_WEIGHTS.bold,
+  },
+  downloadProgressOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 100,
+  },
+  downloadProgressContent: {
+    backgroundColor: COLORS.bgElevated || '#121217',
+    borderRadius: BORDER_RADIUS.lg,
+    padding: 24,
+    width: '80%',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  downloadProgressTitle: {
+    color: '#FFF',
+    fontSize: FONT_SIZES.subtitle || 16,
+    fontWeight: FONT_WEIGHTS.bold || 'bold',
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  downloadProgressText: {
+    color: '#FF6B00',
+    fontSize: FONT_SIZES.title || 20,
+    fontWeight: FONT_WEIGHTS.black || '900',
+    marginVertical: 8,
+  },
+  downloadProgressBarTrack: {
+    width: '100%',
+    height: 6,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 3,
+    overflow: 'hidden',
+    marginBottom: 20,
+  },
+  downloadProgressBarFill: {
+    height: '100%',
+    backgroundColor: '#FF6B00',
+    borderRadius: 3,
+  },
+  btnCancelDownload: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: BORDER_RADIUS.md || 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+  },
+  btnCancelDownloadText: {
+    color: '#FFF',
+    fontWeight: FONT_WEIGHTS.semibold || '600',
+    fontSize: FONT_SIZES.body || 14,
   },
 });

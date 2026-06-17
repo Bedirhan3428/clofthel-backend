@@ -30,7 +30,9 @@ export default function ControlLayer({
   onSeek,
   onOpenSettings,
   onTogglePlaySpeed,
-  onToggleUltraClarity
+  onToggleUltraClarity,
+  onDownload,
+  downloadStatus = 'none'
 }) {
   const [sliderWidth, setSliderWidth] = useState(0);
   const isDraggingSliderRef = useRef(false);
@@ -120,6 +122,22 @@ export default function ControlLayer({
         </View>
         
         <View style={styles.topRightControls}>
+          <TouchableOpacity 
+            style={[styles.btnCircle, dynamicStyles.controlButton]} 
+            onPress={onDownload}
+            activeOpacity={0.7}
+            disabled={downloadStatus === 'downloading'}
+          >
+            {downloadStatus === 'downloading' ? (
+              <Text style={{ color: '#FF6B00', fontSize: 10, fontWeight: 'bold' }}>...</Text>
+            ) : (
+              <Ionicons 
+                name={downloadStatus === 'downloaded' ? "download" : "download-outline"} 
+                size={dynamicStyles.iconSize} 
+                color={downloadStatus === 'downloaded' ? '#FF6B00' : '#FFF'} 
+              />
+            )}
+          </TouchableOpacity>
           <TouchableOpacity 
             style={[styles.btnCircle, dynamicStyles.controlButton]} 
             onPress={onOpenSettings}

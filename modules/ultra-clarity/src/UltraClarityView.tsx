@@ -9,7 +9,7 @@ export type UltraClarityViewProps = {
   onStatusChange?: (event: { nativeEvent: { isPlaying?: boolean, isBuffering?: boolean, isEnded?: boolean } }) => void;
 };
 
-const NativeView: React.ComponentType<UltraClarityViewProps> =
+const NativeView: React.ComponentType<UltraClarityViewProps & { ref?: any }> =
   requireNativeViewManager('UltraClarity');
 
 export default React.forwardRef((props: UltraClarityViewProps, ref) => {

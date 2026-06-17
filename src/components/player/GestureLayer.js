@@ -23,7 +23,6 @@ export default function GestureLayer({
   swipeSeekEnabled = true,
   children
 }) {
-  const [swipeProgress, setSwipeProgress] = useState(null);
   const [doubleTapSide, setDoubleTapSide] = useState(null); // 'left' | 'right' | null
   
   // Animation refs
@@ -33,6 +32,7 @@ export default function GestureLayer({
   const lastTapRef = useRef(0);
   const startDragTimeRef = useRef(0);
   const isDraggingRef = useRef(false);
+  const hasSwipedRef = useRef(false);
 
   // Trigger double tap skip animation
   const animateDoubleTap = (side) => {
@@ -82,28 +82,32 @@ export default function GestureLayer({
       onPanResponderGrant: () => {
         startDragTimeRef.current = currentTime;
         isDraggingRef.current = false;
+        hasSwipedRef.current = false;
       },
       onPanResponderMove: (_, gestureState) => {
         if (!swipeSeekEnabled) return;
         
         isDraggingRef.current = true;
         
-        // Calculate seek change based on swipe distance
-        // 1 full screen swipe = skip entire video duration (or 3 minutes max for fine control)
-        const range = Math.min(duration, 180); // 3 minutes max range for a single swipe to make it precise
-        const timeChange = (gestureState.dx / SCREEN_WIDTH) * range;
-        const targetTime = Math.max(0, Math.min(duration, startDragTimeRef.current + timeChange));
-        
-        setSwipeProgress({
-          targetTime,
-          timeDifference: targetTime - startDragTimeRef.current
-        });
+        if (!hasSwipedRef.current) {
+          const dx = gestureState.dx;
+          if (Math.abs(dx) > 45) {
+            hasSwipedRef.current = true;
+            const isLeftSwipe = dx < 0; // Right-to-Left (swipe left) is skip forward
+            const target = isLeftSwipe
+              ? Math.min(duration, currentTime + skipInterval)
+              : Math.max(0, currentTime - skipInterval);
+            
+            animateDoubleTap(isLeftSwipe ? 'right' : 'left');
+            onSeek(target);
+          }
+        }
       },
       onPanResponderRelease: (e, gestureState) => {
-        if (isDraggingRef.current && swipeProgress) {
-          // Commit swipe seek
-          onSeek(swipeProgress.targetTime);
-          setSwipeProgress(null);
+        if (hasSwipedRef.current) {
+          hasSwipedRef.current = false;
+          isDraggingRef.current = false;
+        } else if (isDraggingRef.current) {
           isDraggingRef.current = false;
         } else {
           // Handle tap / double tap logic
@@ -137,25 +141,7 @@ export default function GestureLayer({
     <View style={styles.container} {...panResponder.panHandlers}>
       {children}
 
-      {/* Swipe Seek Overlay */}
-      {swipeProgress && (
-        <View style={styles.swipeOverlay}>
-          <View style={styles.swipeContainer}>
-            <Ionicons 
-              name={swipeProgress.timeDifference >= 0 ? "arrow-forward" : "arrow-back"} 
-              size={32} 
-              color="#FF6B00" 
-            />
-            <Text style={styles.swipeTimeText}>
-              {formatTime(swipeProgress.targetTime)}
-            </Text>
-            <Text style={styles.swipeDiffText}>
-              {swipeProgress.timeDifference >= 0 ? '+' : ''}
-              {Math.round(swipeProgress.timeDifference)}s
-            </Text>
-          </View>
-        </View>
-      )}
+
 
       {/* Double Tap Visual Indicator */}
       {doubleTapSide && (
