@@ -22,6 +22,7 @@ import { AlertProvider } from './src/context/AlertContext';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import LegalGuard from './src/components/LegalGuard';
+import { profileDevice } from './src/utils/performanceProfiler';
 
 const Stack = createNativeStackNavigator();
 const navigationRef = React.createRef();
@@ -57,6 +58,18 @@ export default function App() {
       }, 1000);
     }
   }, [lastNotificationResponse]);
+
+  React.useEffect(() => {
+    // Run performance profiling asynchronously on app launch
+    const runProfiler = async () => {
+      try {
+        profileDevice();
+      } catch (err) {
+        console.warn('[App] Failed to profile device on launch:', err);
+      }
+    };
+    runProfiler();
+  }, []);
 
   return (
     <AlertProvider>

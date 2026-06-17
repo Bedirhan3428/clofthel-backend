@@ -2,12 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://api.clofthel.com.tr';
-const MOBILE_APP_SECRET = process.env.MOBILE_APP_SECRET || 'mX8!qV2#kL5n*pR9_yM1$wF8&jY3@cB6-sX4%dG8_vH2';
+const MOBILE_APP_SECRET = process.env.MOBILE_APP_SECRET;
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
+  if (!MOBILE_APP_SECRET) {
+    console.error('MOBILE_APP_SECRET is not defined in environment variables');
+    return NextResponse.json({ success: false, error: 'Server configuration error.' }, { status: 500 });
+  }
+
   // Await params per Next.js 15+ requirements
   const resolvedParams = await params;
   const pathArray = resolvedParams.path || [];
@@ -32,6 +37,7 @@ export async function GET(
         'x-clofthel-timestamp': timestamp,
         'x-clofthel-nonce': nonce,
         'x-clofthel-signature': signature,
+        'x-clofthel-client': 'web',
         'Accept': 'application/json',
       },
     });

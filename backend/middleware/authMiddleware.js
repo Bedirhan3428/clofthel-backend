@@ -73,6 +73,11 @@ const verifyRequestSignature = (req, res, next) => {
   const nonce = req.headers['x-clofthel-nonce'];
   const signature = req.headers['x-clofthel-signature'];
   const secret = process.env.MOBILE_APP_SECRET;
+  const clientType = req.headers['x-clofthel-client'];
+
+  if (clientType === 'web') {
+    req.isWebClient = true;
+  }
 
   // Stream ve Proxy endpointleri için imzayı bypass et (Video Player'lar HMAC header gönderemez)
   const bypassPaths = ['/stream.m3u8', '/chunk.ts', '/sibnet-proxy', '/resolve-source'];

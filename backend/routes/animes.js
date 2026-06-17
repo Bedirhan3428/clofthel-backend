@@ -4,6 +4,20 @@ const Anime = require('../models/Anime');
 const axios = require('axios');
 const { resolveSibnetId } = require('../utils/resolver');
 const { apiKeyAuth, protect } = require('../middleware/authMiddleware');
+const rateLimit = require('express-rate-limit');
+
+// Rate limiter for search requests from the web app client
+const webSearchLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 5, // max 5 searches per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => !req.isWebClient, // skip rate limit for mobile app client
+  message: {
+    success: false,
+    error: 'Çok fazla arama yapıldı. Lütfen 1 dakika sonra tekrar deneyin.'
+  }
+});
 
 // ── Basit TTL Cache (AniList verilerini tekrar çekmemek için) ──────────────
 const memCache = {}; // { key: { data, expiresAt } }
@@ -615,7 +629,7 @@ function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-router.get('/search', async (req, res) => {
+router.get('/search', webSearchLimiter, async (req, res) => {
   try {
     const queryStr = (req.query.q || '').trim();
     if (!queryStr) {
@@ -729,7 +743,8 @@ router.get('/search', async (req, res) => {
         return 0; // maintain original chronological order from group sorting
       });
 
-      const limitedAnimes = validAnimes.slice(0, 30);
+      const searchLimit = req.isWebClient ? 5 : 30;
+      const limitedAnimes = validAnimes.slice(0, searchLimit);
 
     const formattedAnimes = limitedAnimes.map(doc => {
       const formatted = formatAnimeDoc(doc);
@@ -839,7 +854,8 @@ router.get('/', async (req, res) => {
  */
 router.get('/recent', async (req, res) => {
   try {
-    const limit = Math.min(30, parseInt(req.query.limit) || 20);
+    const defaultLimit = req.isWebClient ? 10 : 20;
+    const limit = Math.min(req.isWebClient ? 10 : 30, parseInt(req.query.limit) || defaultLimit);
     let animes = await Anime.find()
       .sort({ _id: -1 })
       .limit(limit)
@@ -865,7 +881,8 @@ router.get('/recent', async (req, res) => {
  */
 router.get('/trending', async (req, res) => {
   try {
-    const limit = Math.min(30, parseInt(req.query.limit) || 20);
+    const defaultLimit = req.isWebClient ? 10 : 20;
+    const limit = Math.min(req.isWebClient ? 10 : 30, parseInt(req.query.limit) || defaultLimit);
 
     // 1. AniList'ten trend + popüler animeleri çek
     const anilistQuery = `
@@ -1267,6 +1284,11 @@ router.get('/sibnet-proxy', async (req, res) => {
             validateStatus: (status) => (status >= 200 && status < 300) || status === 206
         });
 
+        // Set caching headers for successful response (200 and 206)
+        if (response.status === 200 || response.status === 206) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+
         // Copy critical response headers
         if (response.headers['content-type']) {
             res.setHeader('Content-Type', response.headers['content-type']);
@@ -1476,7 +1498,7 @@ router.get('/:id/episodes/:episode_number/video-url', async (req, res) => {
       const type = cached.type || (typeof cached === 'string' ? (cached.includes('.m3u8') ? 'aitrvip' : 'sibnet') : 'aitrvip');
       const resolvedAt = typeof cached === 'string' ? 0 : (cached.resolvedAt || 0);
       const ageMs = Date.now() - resolvedAt;
-      const maxAgeMs = type === 'aitrvip' ? 2 * 60 * 60 * 1000 : 12 * 60 * 60 * 1000; // 2 hours for AitrVip, 12 hours for Sibnet
+      const maxAgeMs = type === 'aitrvip' ? 7 * 24 * 60 * 60 * 1000 : 3 * 60 * 60 * 1000; // 1 week for AitrVip, 3 hours for Sibnet
 
       if (type === 'aitrvip' || type === 'sibnet-direct') {
         const videoUrl = typeof cached === 'string' ? cached : cached.videoUrl;
@@ -1788,6 +1810,7 @@ router.get('/chunk.ts', async (req, res) => {
             responseType: 'stream'
         });
 
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         res.setHeader('Content-Type', 'video/MP2T');
         res.setHeader('Access-Control-Allow-Origin', '*');
         response.data.pipe(res);

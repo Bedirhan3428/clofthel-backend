@@ -21,8 +21,10 @@ import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } fro
 import { fetchAnimeDetail, fetchEpisodes, resetAnimeAnilistId, saveAnimeAnilistId, addToHistory } from '../services/api';
 import { API_BASE_URL } from '../constants/config';
 import * as ScreenOrientation from 'expo-screen-orientation';
-import { UltraClarityView } from '../../modules/ultra-clarity/src';
-import { getQualitySettings, saveQualitySettings } from '../utils/qualitySettings';
+import { getPerformanceProfile, getPlayerPreferences, savePlayerPreferences } from '../utils/preferences';
+import { profileDevice } from '../utils/performanceProfiler';
+import GestureLayer from '../components/player/GestureLayer';
+import ControlLayer from '../components/player/ControlLayer';
 import { useAlert } from '../context/AlertContext';
 
 let WebView = null;
@@ -45,7 +47,7 @@ export default function WatchScreen({ route, navigation }) {
   const [currentEpisodeTitle, setCurrentEpisodeTitle] = useState(initialEpisodeTitle);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState('main'); // 'main' | 'quality' | 'speed'
+  const [settingsTab, setSettingsTab] = useState('main'); // 'main' | 'quality' | 'speed' | 'advanced'
   const [qualityLevels, setQualityLevels] = useState([]);
   const [selectedQuality, setSelectedQuality] = useState(-1);
   const [selectedSpeed, setSelectedSpeed] = useState(1.0);
@@ -55,6 +57,22 @@ export default function WatchScreen({ route, navigation }) {
   const [isLandscape, setIsLandscape] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isUltraClarityEnabled, setIsUltraClarityEnabled] = useState(false);
+
+  // Native player states
+  const [isPlaying, setIsPlaying] = useState(true);
+  const [currentTime, setCurrentTime] = useState(startAt || 0);
+  const [duration, setDuration] = useState(0);
+  const [bufferedPosition, setBufferedPosition] = useState(0);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const [deviceProfile, setDeviceProfile] = useState('mid');
+  const [userPrefs, setUserPrefs] = useState({
+    aiQuality: 'balanced',
+    buttonSize: 'medium',
+    skipInterval: 15,
+    doubleTapEnabled: true,
+    swipeSeekEnabled: true
+  });
 
   const [episodes, setEpisodes] = useState([]);
   const [seasons, setSeasons] = useState([]);
@@ -66,6 +84,45 @@ export default function WatchScreen({ route, navigation }) {
   const currentVideoTimeRef = useRef(startAt || 0);
   const wasPausedBySettings = useRef(false);
   const saveIntervalRef = useRef(null);
+  const controlsTimerRef = useRef(null);
+
+  // Inactivity controls timeout
+  const resetControlsTimeout = () => {
+    if (controlsTimerRef.current) {
+      clearTimeout(controlsTimerRef.current);
+    }
+    setControlsVisible(true);
+    
+    if (isPlaying && !isSettingsOpen) {
+      controlsTimerRef.current = setTimeout(() => {
+        setControlsVisible(false);
+      }, 3000);
+    }
+  };
+
+  useEffect(() => {
+    resetControlsTimeout();
+    return () => {
+      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    };
+  }, [isPlaying, isSettingsOpen]);
+
+  // Load preferences and profile device on mount
+  useEffect(() => {
+    const profile = profileDevice();
+    setDeviceProfile(profile);
+
+    const prefs = getPlayerPreferences();
+    setUserPrefs(prefs);
+
+    if (profile === 'low') {
+      setIsUltraClarityEnabled(false);
+    } else if (profile === 'high') {
+      setIsUltraClarityEnabled(prefs.aiQuality === 'directors-cut');
+    } else {
+      setIsUltraClarityEnabled(prefs.aiQuality === 'balanced');
+    }
+  }, []);
 
   useEffect(() => {
     const updateDimensions = () => {
@@ -240,7 +297,18 @@ export default function WatchScreen({ route, navigation }) {
         console.warn('[WatchScreen] Failed to post message to web player:', e);
       }
     } else {
-      webViewRef.current?.injectJavaScript(`${command}(${val}); true;`);
+      webViewRef.current?.injectJavaScript(`
+        (function() {
+          try {
+            window.dispatchEvent(new MessageEvent('message', {
+              data: JSON.stringify({ type: "${command}", value: ${JSON.stringify(val)} })
+            }));
+          } catch(e) {
+            console.error('injectJavaScript error:', e);
+          }
+        })();
+        true;
+      `);
     }
   };
 
@@ -282,13 +350,19 @@ export default function WatchScreen({ route, navigation }) {
         }
       }
 
-      if (data.type === 'openSettings') {
-        setIsSettingsOpen(true);
-        setSettingsTab('main');
+      if (data.type === 'statusChange') {
+        if (data.isPlaying !== undefined) setIsPlaying(data.isPlaying);
+        if (data.isBuffering !== undefined) setIsBuffering(data.isBuffering);
       }
 
       if (data.type === 'qualityLevels') {
-        setQualityLevels(data.levels || []);
+        let levels = data.levels || [];
+        if (deviceProfile === 'low') {
+          levels = levels.filter(lvl => !lvl.height || lvl.height <= 720);
+        } else if (deviceProfile === 'mid') {
+          levels = levels.filter(lvl => !lvl.height || lvl.height <= 1080);
+        }
+        setQualityLevels(levels);
       }
 
       if (data.type === 'qualitySelected') {
@@ -302,12 +376,25 @@ export default function WatchScreen({ route, navigation }) {
       }
 
       if (data.type === 'timeupdate') {
+        setCurrentTime(data.currentTime);
         currentVideoTimeRef.current = data.currentTime;
       }
 
-      if (data.type === 'playerReady' && startAt > 0) {
-        // Video hazır olduğunda kaldığı yerden devam ettir
-        sendControlCommand('seekTo', startAt);
+      if (data.type === 'bufferupdate') {
+        setBufferedPosition(data.bufferedPosition);
+      }
+
+      if (data.type === 'duration') {
+        setDuration(data.duration);
+      }
+
+      if (data.type === 'playerReady') {
+        setIsBuffering(false);
+        if (startAt > 0) {
+          sendControlCommand('seekTo', startAt);
+        }
+        sendControlCommand('toggleUltraClarity', isUltraClarityEnabled);
+        sendControlCommand('setPlaySpeed', selectedSpeed);
       }
 
       if (data.type === 'backgroundClick') {
@@ -315,6 +402,82 @@ export default function WatchScreen({ route, navigation }) {
       }
     } catch (err) {
       console.error('[WebView Message Parse Error]', err);
+    }
+  };
+
+  const handleNativeSeek = (seconds) => {
+    setCurrentTime(seconds);
+    currentVideoTimeRef.current = seconds;
+    sendControlCommand('seekTo', seconds);
+    resetControlsTimeout();
+  };
+
+  const handleNativePlayPause = () => {
+    if (isPlaying) {
+      sendControlCommand('pauseVideo', null);
+      setIsPlaying(false);
+    } else {
+      sendControlCommand('playVideo', null);
+      setIsPlaying(true);
+    }
+    resetControlsTimeout();
+  };
+
+  const handlePresetSelection = (presetId) => {
+    savePlayerPreferences({ aiQuality: presetId });
+    setUserPrefs(prev => ({ ...prev, aiQuality: presetId }));
+    
+    let enableClarity = false;
+    if (presetId === 'directors-cut') {
+      enableClarity = true;
+    } else if (presetId === 'balanced') {
+      enableClarity = deviceProfile !== 'low';
+    }
+    setIsUltraClarityEnabled(enableClarity);
+    
+    sendControlCommand('changePreset', presetId);
+    sendControlCommand('toggleUltraClarity', enableClarity);
+    sendControlCommand('selectQuality', -1);
+    setSelectedQuality(-1);
+    setCurrentQualityLabel('Otomatik');
+  };
+
+  const handleClarityToggle = (nextEnabled) => {
+    setIsUltraClarityEnabled(nextEnabled);
+    sendControlCommand('toggleUltraClarity', nextEnabled);
+    
+    let nextPreset = 'balanced';
+    if (nextEnabled) {
+      nextPreset = deviceProfile === 'high' ? 'directors-cut' : 'balanced';
+    } else {
+      nextPreset = 'battery-saver';
+    }
+    
+    savePlayerPreferences({ aiQuality: nextPreset });
+    setUserPrefs(prev => ({ ...prev, aiQuality: nextPreset }));
+    sendControlCommand('changePreset', nextPreset);
+  };
+
+  const handleQualitySelection = (levelIndex, levelHeight) => {
+    setSelectedQuality(levelIndex);
+    setCurrentQualityLabel(levelHeight ? `${levelHeight}p` : 'Otomatik');
+    sendControlCommand('selectQuality', levelIndex);
+    
+    if (levelHeight && levelHeight > 1080) {
+      savePlayerPreferences({ aiQuality: 'directors-cut' });
+      setUserPrefs(prev => ({ ...prev, aiQuality: 'directors-cut' }));
+      sendControlCommand('changePreset', 'directors-cut');
+      setIsUltraClarityEnabled(true);
+      sendControlCommand('toggleUltraClarity', true);
+    } else if (levelHeight && levelHeight > 720) {
+      if (userPrefs.aiQuality === 'battery-saver') {
+        savePlayerPreferences({ aiQuality: 'balanced' });
+        setUserPrefs(prev => ({ ...prev, aiQuality: 'balanced' }));
+        sendControlCommand('changePreset', 'balanced');
+        const enableClarity = deviceProfile !== 'low';
+        setIsUltraClarityEnabled(enableClarity);
+        sendControlCommand('toggleUltraClarity', enableClarity);
+      }
     }
   };
 
@@ -330,7 +493,8 @@ export default function WatchScreen({ route, navigation }) {
               videoUrl={videoUrl}
               onMessage={handleWebViewMessage}
               webViewRef={webViewRef}
-              isUltraClarityEnabled={isUltraClarityEnabled}
+              deviceProfile={deviceProfile}
+              activePreset={userPrefs.aiQuality}
               startAt={currentVideoTimeRef.current}
             />
           ) : (
@@ -338,19 +502,55 @@ export default function WatchScreen({ route, navigation }) {
               videoUrl={videoUrl}
               onMessage={handleWebViewMessage}
               webViewRef={webViewRef}
-              isUltraClarityEnabled={isUltraClarityEnabled}
+              deviceProfile={deviceProfile}
+              activePreset={userPrefs.aiQuality}
               startAt={currentVideoTimeRef.current}
             />
           )}
+
+          {/* RN Custom Gesture Interception Layer */}
+          <GestureLayer
+            currentTime={currentTime}
+            duration={duration}
+            onSeek={handleNativeSeek}
+            onPlayPause={handleNativePlayPause}
+            skipInterval={userPrefs.skipInterval}
+            doubleTapEnabled={userPrefs.doubleTapEnabled}
+            swipeSeekEnabled={userPrefs.swipeSeekEnabled}
+          />
+
+          {/* RN Custom Control UI Layer */}
+          <ControlLayer
+            isPlaying={isPlaying}
+            currentTime={currentTime}
+            duration={duration}
+            bufferedPosition={bufferedPosition}
+            isBuffering={isBuffering}
+            isSettingsOpen={isSettingsOpen}
+            isUltraClarityEnabled={isUltraClarityEnabled}
+            currentQualityLabel={currentQualityLabel}
+            currentSpeedLabel={currentSpeedLabel}
+            buttonSize={userPrefs.buttonSize}
+            skipInterval={userPrefs.skipInterval}
+            visible={controlsVisible}
+            onPlayPause={handleNativePlayPause}
+            onSeek={handleNativeSeek}
+            onOpenSettings={() => {
+              setIsSettingsOpen(true);
+              setSettingsTab('main');
+            }}
+          />
           
           {/* Overlay Back Button on Video */}
-          <TouchableOpacity
-            style={styles.videoBackButton}
-            activeOpacity={0.7}
-            onPress={() => navigation.goBack()}
-          >
-            <Ionicons name="chevron-back" size={24} color="#FFF" />
-          </TouchableOpacity>
+          {controlsVisible && (
+            <TouchableOpacity
+              style={styles.videoBackButton}
+              activeOpacity={0.7}
+              onPress={() => navigation.goBack()}
+            >
+              <Ionicons name="chevron-back" size={24} color="#FFF" />
+            </TouchableOpacity>
+          )}
         </View>
         
         {/* Details ScrollView */}
@@ -546,29 +746,91 @@ export default function WatchScreen({ route, navigation }) {
             isFullscreen && styles.bottomSheetLandscape,
             { transform: [{ translateY: slideAnim }] }
           ]}>
-            <ScrollView bounces={false} showsVerticalScrollIndicator={false}>
+            <ScrollView bounces={false}>
             {settingsTab === 'main' && (
               <View>
                 <View style={styles.sheetHeader}>
                   <Text style={styles.sheetHeaderText}>Oynatma Ayarları</Text>
                 </View>
-                {/* Disable Web-only controls when native UltraClarityView is active */}
-                {!isUltraClarityEnabled && (
-                  <>
-                    <TouchableOpacity style={styles.sheetItem} onPress={() => setSettingsTab('quality')}>
-                      <Text style={styles.sheetItemText}>Kalite</Text>
-                      <Text style={styles.sheetItemValue}>{currentQualityLabel}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.sheetItem} onPress={() => setSettingsTab('speed')}>
-                      <Text style={styles.sheetItemText}>Oynatma Hızı</Text>
-                      <Text style={styles.sheetItemValue}>{currentSpeedLabel}</Text>
-                    </TouchableOpacity>
-                  </>
-                )}
-                <TouchableOpacity style={styles.sheetItem} onPress={() => setIsUltraClarityEnabled(!isUltraClarityEnabled)}>
-                  <Text style={styles.sheetItemText}>Ultra-Clarity (AI Native)</Text>
-                  <Text style={[styles.sheetItemValue, isUltraClarityEnabled ? {color: COLORS.accent} : {}]}>{isUltraClarityEnabled ? 'Açık (4K HDR)' : 'Kapalı'}</Text>
+                
+                <TouchableOpacity style={styles.sheetItem} onPress={() => setSettingsTab('preset')}>
+                  <Text style={styles.sheetItemText}>Oynatma Modu</Text>
+                  <Text style={styles.sheetItemValue}>
+                    {userPrefs.aiQuality === 'battery-saver' && 'Ekonomik Mod'}
+                    {userPrefs.aiQuality === 'balanced' && 'Dengeli Mod'}
+                    {userPrefs.aiQuality === 'directors-cut' && 'Director\'s Cut'}
+                  </Text>
                 </TouchableOpacity>
+
+                <TouchableOpacity style={styles.sheetItem} onPress={() => setSettingsTab('quality')}>
+                  <Text style={styles.sheetItemText}>Kalite</Text>
+                  <Text style={styles.sheetItemValue}>{currentQualityLabel}</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.sheetItem} onPress={() => setSettingsTab('speed')}>
+                  <Text style={styles.sheetItemText}>Oynatma Hızı</Text>
+                  <Text style={styles.sheetItemValue}>{currentSpeedLabel}</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={[styles.sheetItem, deviceProfile === 'low' && { opacity: 0.5 }]} 
+                  disabled={deviceProfile === 'low'}
+                  onPress={() => {
+                    handleClarityToggle(!isUltraClarityEnabled);
+                  }}
+                >
+                  <Text style={styles.sheetItemText}>Ultra-Clarity (AI Native)</Text>
+                  <Text style={[styles.sheetItemValue, isUltraClarityEnabled ? {color: COLORS.accent} : {}]}>
+                    {deviceProfile === 'low' 
+                      ? 'Desteklenmiyor (Düşük Donanım)' 
+                      : (isUltraClarityEnabled ? 'Açık (4K HDR)' : 'Kapalı')}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.sheetItem} onPress={() => setSettingsTab('advanced')}>
+                  <Text style={styles.sheetItemText}>Gelişmiş Oynatıcı Ayarları</Text>
+                  <Ionicons name="chevron-forward" size={16} color="#555" />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {settingsTab === 'preset' && (
+              <View>
+                <TouchableOpacity style={styles.sheetSubHeader} onPress={() => setSettingsTab('main')}>
+                  <Ionicons name="chevron-back" size={20} color="#FFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.sheetHeaderText}>Oynatma Modu</Text>
+                </TouchableOpacity>
+                
+                {[
+                  { id: 'battery-saver', name: 'Ekonomik Mod', desc: 'Pil ve Veri tasarrufu, 720p limit, AI Kapalı' },
+                  { id: 'balanced', name: 'Dengeli Mod', desc: 'Dengeli pil/performans, 1080p limit, AI Otomatik' },
+                  { id: 'directors-cut', name: 'Director\'s Cut', desc: 'Premium 4K HDR netlik, Sınırsız, AI Açık' }
+                ].map((preset) => {
+                  const isActive = userPrefs.aiQuality === preset.id;
+                  const isDisabled = deviceProfile === 'low' && preset.id === 'directors-cut';
+                  return (
+                    <TouchableOpacity
+                      key={preset.id}
+                      style={[
+                        styles.sheetOption, 
+                        isActive && styles.sheetOptionActive,
+                        isDisabled && { opacity: 0.4 }
+                      ]}
+                      disabled={isDisabled}
+                      onPress={() => {
+                        handlePresetSelection(preset.id);
+                        setIsSettingsOpen(false);
+                        sendControlCommand('playVideo', null);
+                      }}
+                    >
+                      <View style={{ flex: 1, paddingRight: 10 }}>
+                        <Text style={styles.sheetOptionText}>{preset.name}</Text>
+                        <Text style={styles.sheetOptionDesc}>{preset.desc}</Text>
+                      </View>
+                      {isActive && <Ionicons name="checkmark" size={18} color="#FFF" />}
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             )}
             
@@ -582,10 +844,9 @@ export default function WatchScreen({ route, navigation }) {
                 <TouchableOpacity
                   style={[styles.sheetOption, selectedQuality === -1 && styles.sheetOptionActive]}
                   onPress={() => {
-                    setSelectedQuality(-1);
-                    setCurrentQualityLabel('Otomatik');
-                    sendControlCommand('selectQuality', -1);
+                    handleQualitySelection(-1, null);
                     setIsSettingsOpen(false);
+                    sendControlCommand('playVideo', null);
                   }}
                 >
                   <Text style={styles.sheetOptionText}>Otomatik</Text>
@@ -597,9 +858,7 @@ export default function WatchScreen({ route, navigation }) {
                     key={lvl.index}
                     style={[styles.sheetOption, selectedQuality === lvl.index && styles.sheetOptionActive]}
                     onPress={() => {
-                      setSelectedQuality(lvl.index);
-                      setCurrentQualityLabel(lvl.height ? `${lvl.height}p` : `Kalite ${lvl.index + 1}`);
-                      sendControlCommand('selectQuality', lvl.index);
+                      handleQualitySelection(lvl.index, lvl.height);
                       setIsSettingsOpen(false);
                       sendControlCommand('playVideo', null);
                     }}
@@ -636,6 +895,103 @@ export default function WatchScreen({ route, navigation }) {
                 ))}
               </View>
             )}
+
+            {settingsTab === 'advanced' && (
+              <View>
+                <TouchableOpacity style={styles.sheetSubHeader} onPress={() => setSettingsTab('main')}>
+                  <Ionicons name="chevron-back" size={20} color="#FFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.sheetHeaderText}>Gelişmiş Ayarlar</Text>
+                </TouchableOpacity>
+
+                <View style={styles.settingGroup}>
+                  <Text style={styles.settingGroupTitle}>Buton Boyutları</Text>
+                  <View style={styles.optionsRow}>
+                    {['small', 'medium', 'large'].map((size) => {
+                      const labelMap = { small: 'Küçük', medium: 'Orta', large: 'Büyük' };
+                      const isActive = userPrefs.buttonSize === size;
+                      return (
+                        <TouchableOpacity
+                          key={size}
+                          style={[styles.optionBadge, isActive && styles.optionBadgeActive]}
+                          onPress={() => {
+                            savePlayerPreferences({ buttonSize: size });
+                            setUserPrefs(prev => ({ ...prev, buttonSize: size }));
+                          }}
+                        >
+                          <Text style={[styles.optionBadgeText, isActive && styles.optionBadgeTextActive]}>
+                            {labelMap[size]}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                <View style={styles.settingGroup}>
+                  <Text style={styles.settingGroupTitle}>Geri/İleri Atlama Süresi</Text>
+                  <View style={styles.optionsRow}>
+                    {[10, 15, 30].map((interval) => {
+                      const isActive = userPrefs.skipInterval === interval;
+                      return (
+                        <TouchableOpacity
+                          key={interval}
+                          style={[styles.optionBadge, isActive && styles.optionBadgeActive]}
+                          onPress={() => {
+                            savePlayerPreferences({ skipInterval: interval });
+                            setUserPrefs(prev => ({ ...prev, skipInterval: interval }));
+                          }}
+                        >
+                          <Text style={[styles.optionBadgeText, isActive && styles.optionBadgeTextActive]}>
+                            {interval}s
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                <TouchableOpacity
+                  style={styles.sheetItem}
+                  onPress={() => {
+                    const nextVal = !userPrefs.doubleTapEnabled;
+                    savePlayerPreferences({ doubleTapEnabled: nextVal });
+                    setUserPrefs(prev => ({ ...prev, doubleTapEnabled: nextVal }));
+                  }}
+                >
+                  <Text style={styles.sheetItemText}>Çift Tıklayarak Atla</Text>
+                  <Text style={[styles.sheetItemValue, userPrefs.doubleTapEnabled ? {color: COLORS.accent} : {}]}>
+                    {userPrefs.doubleTapEnabled ? 'Açık' : 'Kapalı'}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.sheetItem}
+                  onPress={() => {
+                    const nextVal = !userPrefs.swipeSeekEnabled;
+                    savePlayerPreferences({ swipeSeekEnabled: nextVal });
+                    setUserPrefs(prev => ({ ...prev, swipeSeekEnabled: nextVal }));
+                  }}
+                >
+                  <Text style={styles.sheetItemText}>Kaydırarak Sar</Text>
+                  <Text style={[styles.sheetItemValue, userPrefs.swipeSeekEnabled ? {color: COLORS.accent} : {}]}>
+                    {userPrefs.swipeSeekEnabled ? 'Açık' : 'Kapalı'}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.sheetItem, { marginTop: 12, borderBottomWidth: 0 }]}
+                  onPress={() => {
+                    const profile = profileDevice(true);
+                    setDeviceProfile(profile);
+                    setIsSettingsOpen(false);
+                    showAlert("Benchmark Tamamlandı", `Cihazınız ${profile.toUpperCase()} sınıfı olarak tespit edildi.`);
+                  }}
+                >
+                  <Text style={[styles.sheetItemText, { color: '#FF6B00', fontWeight: 'bold' }]}>Donanım Testini Yeniden Çalıştır</Text>
+                  <Text style={styles.sheetItemValue}>{deviceProfile.toUpperCase()}</Text>
+                </TouchableOpacity>
+              </View>
+            )}
             </ScrollView>
           </Animated.View>
         </View>
@@ -659,272 +1015,47 @@ const getRefererForUrl = (url) => {
       return `${baseUrl}/explorer/${uuid}/${hash}`;
     }
   } catch (e) {
-    console.error('[getRefererForUrl] Error:', e);
+    console.error('Error generating referer:', e);
   }
   return 'https://optraco.top/';
 };
 
-const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, startAt = 0) => {
+const generatePlayerHtml = (videoUrl, isMp4, deviceProfile = 'mid', activePreset = 'balanced', startAt = 0) => {
   return `
     <!DOCTYPE html>
     <html lang="tr">
     <head>
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-      <title>Premium Video Player</title>
+      <title>Clofthel Video Player</title>
       <script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.12/dist/hls.min.js"></script>
-      <script src="https://unpkg.com/lucide@latest"></script>
       <style>
-        :root {
-          --accent-color: #FF6B00;
-        }
-        * {
-          -webkit-tap-highlight-color: transparent;
-          outline: none;
-        }
         body, html {
           margin: 0; padding: 0; width: 100%; height: 100%;
           background-color: #000; overflow: hidden;
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-          user-select: none; -webkit-user-select: none;
-        }
-        .player-container {
-          position: relative; width: 100%; height: 100%;
-          background: #000; display: flex; justify-content: center; align-items: center;
-          overflow: hidden;
         }
         video {
-          width: 100%; height: 100%; object-fit: contain; z-index: 1;
-          ${isUltraClarityEnabled ? `
-            /* 4K modu için açık renkler daha canlı olsun: renk doygunluğu yüksek tutuldu, parlaklık ve kontrast gözü yormayacak şekilde hafifçe kısıldı */
-            filter: url(#ultra-sharpen) contrast(1.20) saturate(1.35) brightness(1.01);
-            image-rendering: -webkit-optimize-contrast;
-            image-rendering: crisp-edges;
-          ` : ''}
-        }
-        .click-backdrop {
-          position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-          z-index: 5; background: transparent; pointer-events: auto;
-        }
-        .loading-overlay {
-          position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-          background: #000; z-index: 50; display: flex; flex-direction: column;
-          justify-content: center; align-items: center; pointer-events: none;
-          transition: opacity 0.3s;
-        }
-        .spinner {
-          width: 44px; height: 44px; border: 3px solid rgba(255,255,255,0.1);
-          border-top-color: var(--accent-color); border-radius: 50%;
-          animation: spin 1s linear infinite;
-          margin-bottom: 12px;
-        }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-        .loading-text {
-          color: #fff; font-size: 14px; font-weight: 500; opacity: 0.8;
-          font-family: system-ui, -apple-system, sans-serif; letter-spacing: 0.5px;
-        }
-        .controls-overlay {
-          position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-          z-index: 10; opacity: 1; visibility: visible;
-          transition: opacity 0.3s cubic-bezier(0.25, 1, 0.5, 1), visibility 0.3s;
-          pointer-events: auto;
-          background: rgba(0, 0, 0, 0.45);
-        }
-        .controls-overlay.hidden {
-          opacity: 0; visibility: hidden; pointer-events: none !important;
-        }
-        .controls-overlay.hidden * {
-          pointer-events: none !important;
-        }
-        .top-controls {
-          position: absolute; top: 16px; right: 16px;
-          display: flex; align-items: center; gap: 12px; z-index: 20;
-        }
-        .control-btn {
-          background: transparent; border: none; color: #fff; cursor: pointer;
-          padding: 8px; border-radius: 50%; display: flex; align-items: center;
-          justify-content: center; transition: background 0.2s, opacity 0.2s, transform 0.1s;
-          outline: none;
-        }
-        .control-btn svg, .control-btn .lucide {
-          width: 24px; height: 24px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
-          transition: transform 0.3s ease;
-        }
-        .control-btn:hover {
-          background: rgba(255, 255, 255, 0.15);
-        }
-        .control-btn:active {
-          transform: scale(0.95);
-        }
-        #btn-settings:active svg, #btn-settings:active .lucide {
-          transform: rotate(30deg);
-        }
-        .center-controls {
-          position: absolute; top: 50%; left: 50%;
-          transform: translate(-50%, -50%); display: flex; align-items: center;
-          gap: 36px; z-index: 15;
-        }
-        .center-btn {
-          opacity: 0.6; transition: opacity 0.2s, background 0.2s, transform 0.2s;
-          background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.15);
-          width: 58px; height: 58px; border-radius: 50%;
-          position: relative; display: flex; align-items: center; justify-content: center;
-        }
-        .center-btn:hover {
-          opacity: 1.0; background: rgba(0, 0, 0, 0.85);
-        }
-        .center-btn svg, .center-btn .lucide {
-          width: 28px; height: 28px;
-        }
-        .center-btn .btn-label {
-          position: absolute;
-          font-size: 8px;
-          font-weight: 800;
-          color: #fff;
-          top: 53%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          font-family: system-ui, -apple-system, sans-serif;
-          letter-spacing: -0.5px;
-        }
-        .play-btn {
-          width: 68px; height: 68px;
-        }
-        .play-btn svg, .play-btn .lucide {
-          width: 34px; height: 34px;
-        }
-        .bottom-controls {
-          position: absolute;
-          bottom: 16px;
-          left: 0; width: 100%;
-          display: flex; flex-direction: column; z-index: 15;
-          padding: 0 16px;
-          box-sizing: border-box;
-        }
-        .time-display {
-          color: #fff; font-size: 13px; font-weight: 500;
-          margin-bottom: 8px; pointer-events: none;
-          text-shadow: 0 1px 3px rgba(0,0,0,0.8); letter-spacing: 0.5px;
-        }
-        .progress-bar-container {
-          position: relative; width: 100%; height: 6px;
-          background: rgba(255, 255, 255, 0.2); cursor: pointer;
-          transition: height 0.15s ease, background 0.15s; pointer-events: auto;
-          border-radius: 4px;
-        }
-        .progress-bar-container:hover {
-          height: 8px;
-          background: rgba(255, 255, 255, 0.25);
-        }
-        .progress-fill {
-          position: absolute; top: 0; left: 0; height: 100%; width: 0%;
-          background: var(--accent-color); z-index: 2;
-          border-radius: 4px;
-          box-shadow: 0 0 8px var(--accent-color);
-        }
-        .buffer-fill {
-          position: absolute; top: 0; left: 0; height: 100%; width: 0%;
-          background: rgba(255, 255, 255, 0.35); z-index: 1;
-          border-radius: 4px;
-        }
-        .progress-knob {
-          position: absolute;
-          top: 50%;
-          left: 0%;
-          width: 14px;
-          height: 14px;
-          border-radius: 50%;
-          background: #fff;
-          border: 2px solid var(--accent-color);
-          box-shadow: 0 2px 6px rgba(0,0,0,0.4);
-          z-index: 5;
-          transform: translate(-50%, -50%) scale(0);
-          transition: transform 0.15s ease;
-        }
-        .progress-bar-container:hover .progress-knob,
-        .progress-bar-container.seeking .progress-knob {
-          transform: translate(-50%, -50%) scale(1);
-        }
-        .progress-tooltip {
-          position: absolute;
-          bottom: 20px;
-          background: rgba(0, 0, 0, 0.85);
-          color: #fff;
-          padding: 6px 10px;
-          border-radius: 6px;
-          font-size: 12px;
-          font-weight: 600;
-          font-family: system-ui, -apple-system, sans-serif;
-          pointer-events: none;
-          display: none;
-          z-index: 100;
-          transform: translateX(-50%);
-          border: 1px solid rgba(255, 255, 255, 0.15);
-          box-shadow: 0 4px 10px rgba(0,0,0,0.5);
-          white-space: nowrap;
+          width: 100%; height: 100%; object-fit: contain;
         }
       </style>
     </head>
     <body>
-      <div class="player-container" id="player-container">
-        <!-- SVG Filter for 4K Ultra Clarity Sharpening -->
-        <svg xmlns="http://www.w3.org/2000/svg" style="display:none; width:0; height:0;">
-          <defs>
-            <filter id="ultra-sharpen">
-              <feConvolveMatrix order="3" kernelMatrix="-0.2 -0.8 -0.2 -0.8 5.0 -0.8 -0.2 -0.8 -0.2" preserveAlpha="true"/>
-            </filter>
-          </defs>
-        </svg>
-        <video id="player" playsinline></video>
-        <div class="loading-overlay" id="loading-overlay">
-          <div class="spinner"></div>
-          <div class="loading-text">Yükleniyor...</div>
-        </div>
-        <div class="click-backdrop" id="click-backdrop"></div>
-        <div class="controls-overlay" id="controls-overlay">
-          <div class="top-controls">
-            <button class="control-btn" id="btn-settings" aria-label="Ayarlar">
-              <i data-lucide="settings"></i>
-            </button>
-            <button class="control-btn" id="btn-fullscreen" aria-label="Tam Ekran">
-              <i data-lucide="maximize" id="fs-icon-maximize"></i>
-              <i data-lucide="minimize" id="fs-icon-minimize" style="display: none;"></i>
-            </button>
-          </div>
-          
-          <div class="center-controls">
-            <button class="control-btn center-btn" id="btn-rewind" aria-label="10 Saniye Geri">
-              <i data-lucide="rotate-ccw"></i>
-              <span class="btn-label">10</span>
-            </button>
-            <button class="control-btn center-btn play-btn" id="btn-play-pause" aria-label="Oynat/Duraklat">
-              <i data-lucide="play" id="play-icon"></i>
-              <i data-lucide="pause" id="pause-icon" style="display: none;"></i>
-            </button>
-            <button class="control-btn center-btn" id="btn-forward" aria-label="10 Saniye İleri">
-              <i data-lucide="rotate-cw"></i>
-              <span class="btn-label">10</span>
-            </button>
-          </div>
-          
-          <div class="bottom-controls">
-            <div class="time-display" id="time-display">00:00 / 00:00</div>
-            <div class="progress-bar-container" id="progress-bar">
-              <div class="buffer-fill" id="buffer-fill"></div>
-              <div class="progress-fill" id="progress-fill"></div>
-              <div class="progress-knob" id="progress-knob"></div>
-              <div class="progress-tooltip" id="progress-tooltip">00:00</div>
-            </div>
-          </div>
-        </div>
-      </div>
-      
-      <script>
-        lucide.createIcons();
+      <!-- SVG Filter for 4K Ultra Clarity Sharpening -->
+      <svg xmlns="http://www.w3.org/2000/svg" style="display:none; width:0; height:0;">
+        <defs>
+          <filter id="ultra-sharpen">
+            <feConvolveMatrix order="3" kernelMatrix="-0.2 -0.8 -0.2 -0.8 5.0 -0.8 -0.2 -0.8 -0.2" preserveAlpha="true"/>
+          </filter>
+        </defs>
+      </svg>
+      <video id="player" playsinline></video>
 
+      <script>
         const video = document.getElementById('player');
         const videoUrl = '${videoUrl}';
         const isMp4 = ${isMp4};
+        let deviceProfile = '${deviceProfile}';
+        let activePreset = '${activePreset}';
         
         let hlsInstance = null;
         
@@ -935,37 +1066,67 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
             window.parent.postMessage(JSON.stringify(obj), '*');
           }
         }
+
+        // Notify parent React Native app of player state changes
+        video.addEventListener('play', () => {
+          sendToParent({ type: 'statusChange', isPlaying: true, isBuffering: false });
+        });
         
-        const loadingOverlay = document.getElementById('loading-overlay');
-        let hasStartedPlaying = false;
+        video.addEventListener('pause', () => {
+          sendToParent({ type: 'statusChange', isPlaying: false });
+        });
         
         video.addEventListener('waiting', () => {
-          if (!hasStartedPlaying) {
-            loadingOverlay.style.opacity = '1';
-          }
+          sendToParent({ type: 'statusChange', isBuffering: true });
         });
         
         video.addEventListener('playing', () => {
-          loadingOverlay.style.opacity = '0';
-          hasStartedPlaying = true;
+          sendToParent({ type: 'statusChange', isPlaying: true, isBuffering: false });
         });
         
-        video.addEventListener('canplay', () => {
-          loadingOverlay.style.opacity = '0';
+        video.addEventListener('durationchange', () => {
+          sendToParent({ type: 'duration', duration: video.duration });
         });
         
-        function initPlayer() {
-          if (isMp4) {
-            video.src = videoUrl;
-            video.addEventListener('loadedmetadata', function() {
-              if (${startAt} > 0) video.currentTime = ${startAt};
-              video.play().catch(e => console.log('Autoplay blocked:', e));
-            });
-            sendToParent({ type: 'qualityLevels', levels: [] });
-            sendToParent({ type: 'qualitySelected', index: -1, label: 'Otomatik' });
-            sendToParent({ type: 'speedSelected', speed: 1.0, label: 'Normal (1.0x)' });
-          } else if (Hls.isSupported()) {
-            const hlsOptions = ${isUltraClarityEnabled} ? {
+        video.addEventListener('loadedmetadata', () => {
+          sendToParent({ type: 'duration', duration: video.duration });
+          sendToParent({ type: 'playerReady' });
+        });
+        
+        video.addEventListener('timeupdate', () => {
+          sendToParent({ type: 'timeupdate', currentTime: video.currentTime });
+        });
+        
+        video.addEventListener('progress', () => {
+          if (video.duration > 0 && video.buffered.length > 0) {
+            const bufferedEnd = video.buffered.end(video.buffered.length - 1);
+            sendToParent({ type: 'bufferupdate', bufferedPosition: bufferedEnd });
+          }
+        });
+
+        // Apply Ultra Clarity filters on video element
+        function applyUltraClarity(enabled) {
+          if (enabled) {
+            video.style.filter = 'url(#ultra-sharpen) contrast(1.20) saturate(1.35) brightness(1.01)';
+            video.style.imageRendering = '-webkit-optimize-contrast';
+          } else {
+            video.style.filter = 'none';
+            video.style.imageRendering = 'auto';
+          }
+        }
+
+        // Configure HLS options based on dynamic resource presets
+        function getHlsOptions() {
+          let hlsOpts = {
+            maxMaxBufferLength: 30,
+            maxBufferLength: 30,
+            maxBufferSize: 60 * 1024 * 1024,
+            capLevelToPlayerSize: true,
+            lowLatencyMode: true
+          };
+
+          if (activePreset === 'directors-cut') {
+            hlsOpts = {
               maxMaxBufferLength: 180,
               maxBufferLength: 60,
               maxBufferSize: 200 * 1024 * 1024,
@@ -973,24 +1134,55 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
               lowLatencyMode: false,
               maxStarvationDelay: 4,
               maxLoadingDelay: 4
-            } : {
-              maxMaxBufferLength: 30,
-              capLevelToPlayerSize: true,
-              lowLatencyMode: true
             };
-            const hls = new Hls(hlsOptions);
+          } else if (activePreset === 'balanced') {
+            hlsOpts = {
+              maxMaxBufferLength: 60,
+              maxBufferLength: 60,
+              maxBufferSize: 120 * 1024 * 1024,
+              capLevelToPlayerSize: false,
+              lowLatencyMode: false
+            };
+          }
+          return hlsOpts;
+        }
+
+        function initPlayer() {
+          const shouldEnableClarity = activePreset === 'directors-cut' || 
+            (activePreset === 'balanced' && deviceProfile !== 'low');
+          applyUltraClarity(shouldEnableClarity);
+
+          if (isMp4) {
+            video.src = videoUrl;
+            if (${startAt} > 0) video.currentTime = ${startAt};
+            video.play().catch(e => console.log('Autoplay blocked:', e));
+            sendToParent({ type: 'qualityLevels', levels: [] });
+          } else if (Hls.isSupported()) {
+            const options = getHlsOptions();
+            const hls = new Hls(options);
             hlsInstance = hls;
             hls.loadSource(videoUrl);
             hls.attachMedia(video);
             
             hls.on(Hls.Events.MANIFEST_PARSED, function() {
-              populateQualityLevels(hls.levels);
-              if (${isUltraClarityEnabled}) {
+              // Filter levels based on device limits
+              let levels = hls.levels || [];
+              if (deviceProfile === 'low' || activePreset === 'battery-saver') {
+                levels = levels.map((lvl, idx) => ({ ...lvl, index: idx })).filter(lvl => !lvl.height || lvl.height <= 720);
+              } else if (deviceProfile === 'mid' || activePreset === 'balanced') {
+                levels = levels.map((lvl, idx) => ({ ...lvl, index: idx })).filter(lvl => !lvl.height || lvl.height <= 1080);
+              } else {
+                levels = levels.map((lvl, idx) => ({ ...lvl, index: idx }));
+              }
+
+              populateQualityLevels(levels);
+
+              if (shouldEnableClarity && hls.levels.length > 0) {
                 selectQuality(hls.levels.length - 1);
               } else {
                 sendToParent({ type: 'qualitySelected', index: -1, label: 'Otomatik' });
               }
-              sendToParent({ type: 'speedSelected', speed: 1.0, label: 'Normal (1.0x)' });
+
               if (${startAt} > 0) {
                 video.currentTime = ${startAt};
               }
@@ -1011,19 +1203,14 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
             });
           } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
             video.src = videoUrl;
-            video.addEventListener('loadedmetadata', function() {
-              if (${startAt} > 0) video.currentTime = ${startAt};
-              video.play().catch(e => console.log('Autoplay blocked:', e));
-            });
-            sendToParent({ type: 'qualityLevels', levels: [] });
-            sendToParent({ type: 'qualitySelected', index: -1, label: 'Otomatik' });
-            sendToParent({ type: 'speedSelected', speed: 1.0, label: 'Normal (1.0x)' });
+            if (${startAt} > 0) video.currentTime = ${startAt};
+            video.play().catch(e => console.log('Autoplay blocked:', e));
           }
         }
-        
+
         function populateQualityLevels(levels) {
-          const formattedLevels = levels.map((lvl, idx) => ({
-            index: idx,
+          const formattedLevels = levels.map((lvl) => ({
+            index: lvl.index,
             height: lvl.height
           }));
           sendToParent({ type: 'qualityLevels', levels: formattedLevels });
@@ -1032,7 +1219,7 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
         function selectQuality(index) {
           if (hlsInstance) {
             hlsInstance.nextLevel = index;
-            const label = index === -1 ? 'Otomatik' : (hlsInstance.levels[index].height ? hlsInstance.levels[index].height + 'p' : 'Seviye ' + (index + 1));
+            const label = index === -1 ? 'Otomatik' : (hlsInstance.levels[index] && hlsInstance.levels[index].height ? hlsInstance.levels[index].height + 'p' : 'Seviye ' + (index + 1));
             sendToParent({ type: 'qualitySelected', index: index, label: label });
           }
         }
@@ -1041,321 +1228,7 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
           video.playbackRate = speed;
           sendToParent({ type: 'speedSelected', speed: speed, label: speed === 1.0 ? 'Normal (1.0x)' : speed + 'x' });
         }
-        
-        const btnPlayPause = document.getElementById('btn-play-pause');
-        const playIcon = document.getElementById('play-icon');
-        const pauseIcon = document.getElementById('pause-icon');
-        
-        btnPlayPause.addEventListener('click', (e) => {
-          e.stopPropagation();
-          togglePlay();
-        });
-        
-        function togglePlay() {
-          if (video.paused) {
-            video.play().catch(e => console.log('Playback error:', e));
-          } else {
-            video.pause();
-          }
-          resetControlsTimeout();
-        }
-        
-        video.addEventListener('play', () => {
-          playIcon.style.display = 'none';
-          pauseIcon.style.display = 'block';
-          resetControlsTimeout();
-        });
-        
-        video.addEventListener('pause', () => {
-          playIcon.style.display = 'block';
-          pauseIcon.style.display = 'none';
-          showControls();
-        });
-        
-        const btnRewind = document.getElementById('btn-rewind');
-        const btnForward = document.getElementById('btn-forward');
-        
-        btnRewind.addEventListener('click', (e) => {
-          e.stopPropagation();
-          video.currentTime = Math.max(0, video.currentTime - 10);
-          resetControlsTimeout();
-        });
-        
-        btnForward.addEventListener('click', (e) => {
-          e.stopPropagation();
-          video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
-          resetControlsTimeout();
-        });
-        
-        const btnFullscreen = document.getElementById('btn-fullscreen');
-        const container = document.getElementById('player-container');
-        
-        btnFullscreen.addEventListener('click', (e) => {
-          e.stopPropagation();
-          toggleFullscreen();
-        });
-        
-        let _isFullscreenLocal = false;
-        function toggleFullscreen() {
-          if (window.ReactNativeWebView) {
-            _isFullscreenLocal = !_isFullscreenLocal;
-            updateFullscreenIcons(_isFullscreenLocal);
-            sendToParent({ type: 'fullscreen', isFullscreen: _isFullscreenLocal });
-          } else {
-            if (!document.fullscreenElement &&
-                !document.mozFullScreenElement &&
-                !document.webkitFullscreenElement &&
-                !document.msFullscreenElement) {
-              if (container.requestFullscreen) {
-                container.requestFullscreen();
-              } else if (container.msRequestFullscreen) {
-                container.msRequestFullscreen();
-              } else if (container.mozRequestFullScreen) {
-                container.mozRequestFullScreen();
-              } else if (container.webkitRequestFullscreen) {
-                container.webkitRequestFullscreen(Element.ALLOW_KEYBOARD_INPUT);
-              }
-            } else {
-              if (document.exitFullscreen) {
-                document.exitFullscreen();
-              } else if (document.msExitFullscreen) {
-                document.msExitFullscreen();
-              } else if (document.mozCancelFullScreen) {
-                document.mozCancelFullScreen();
-              } else if (document.webkitExitFullscreen) {
-                document.webkitExitFullscreen();
-              }
-            }
-          }
-          resetControlsTimeout();
-        }
 
-        function updateFullscreenIcons(isFS) {
-          const maxIcon = document.getElementById('fs-icon-maximize');
-          const minIcon = document.getElementById('fs-icon-minimize');
-          if (maxIcon && minIcon) {
-            if (isFS) {
-              maxIcon.style.display = 'none';
-              minIcon.style.display = 'block';
-            } else {
-              maxIcon.style.display = 'block';
-              minIcon.style.display = 'none';
-            }
-          }
-        }
-
-        function onFullscreenChange() {
-          const isFS = document.fullscreenElement ||
-                       document.webkitFullscreenElement ||
-                       document.mozFullScreenElement ||
-                       document.msFullscreenElement;
-          updateFullscreenIcons(isFS);
-          sendToParent({ type: 'fullscreen', isFullscreen: !!isFS });
-        }
-
-        document.addEventListener('fullscreenchange', onFullscreenChange);
-        document.addEventListener('webkitfullscreenchange', onFullscreenChange);
-        document.addEventListener('mozfullscreenchange', onFullscreenChange);
-        document.addEventListener('MSFullscreenChange', onFullscreenChange);
-        
-        const timeDisplay = document.getElementById('time-display');
-        const progressFill = document.getElementById('progress-fill');
-        const bufferFill = document.getElementById('buffer-fill');
-        const progressBar = document.getElementById('progress-bar');
-        const progressKnob = document.getElementById('progress-knob');
-        
-        function formatTime(seconds) {
-          if (isNaN(seconds) || seconds === Infinity) return '00:00';
-          const s = Math.floor(seconds % 60);
-          const m = Math.floor((seconds / 60) % 60);
-          const h = Math.floor(seconds / 3600);
-          const pad = (n) => n.toString().padStart(2, '0');
-          if (h > 0) return pad(h) + ':' + pad(m) + ':' + pad(s);
-          return pad(m) + ':' + pad(s);
-        }
-        
-        let lastSentTime = 0;
-        video.addEventListener('timeupdate', () => {
-          const current = video.currentTime;
-          const duration = video.duration || 0;
-          timeDisplay.textContent = formatTime(current) + ' / ' + formatTime(duration);
-          
-          if (duration > 0) {
-            const pct = (current / duration) * 100;
-            progressFill.style.width = pct + '%';
-            if (!isSeeking) {
-              progressKnob.style.left = pct + '%';
-            }
-          }
-
-          if (Math.abs(current - lastSentTime) > 1) {
-            sendToParent({ type: 'timeupdate', currentTime: current });
-            lastSentTime = current;
-          }
-        });
-        
-        video.addEventListener('progress', () => {
-          const duration = video.duration || 0;
-          if (duration > 0 && video.buffered.length > 0) {
-            const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-            bufferFill.style.width = (bufferedEnd / duration) * 100 + '%';
-          }
-        });
-        
-        video.addEventListener('loadedmetadata', () => {
-          timeDisplay.textContent = '00:00 / ' + formatTime(video.duration || 0);
-        });
-        
-        let isSeeking = false;
-        const progressTooltip = document.getElementById('progress-tooltip');
-        
-        function seekTo(event) {
-          const rect = progressBar.getBoundingClientRect();
-          let pct = (event.clientX - rect.left) / rect.width;
-          pct = Math.max(0, Math.min(1, pct));
-          const duration = video.duration || 0;
-          const targetTime = pct * duration;
-          video.currentTime = targetTime;
-          progressFill.style.width = (pct * 100) + '%';
-          progressKnob.style.left = (pct * 100) + '%';
-          resetControlsTimeout();
-          
-          updateTooltip(event.clientX, rect.left, rect.width, targetTime);
-        }
-
-        function updateTooltip(clientX, rectLeft, rectWidth, time) {
-          progressTooltip.style.display = 'block';
-          progressTooltip.textContent = formatTime(time);
-          
-          const relativeX = clientX - rectLeft;
-          const posX = Math.max(0, Math.min(rectWidth, relativeX));
-          progressTooltip.style.left = posX + 'px';
-        }
-
-        function hideTooltip() {
-          progressTooltip.style.display = 'none';
-        }
-        
-        progressBar.addEventListener('click', (e) => {
-          e.stopPropagation();
-          seekTo(e);
-          setTimeout(hideTooltip, 1000);
-        });
-        
-        progressBar.addEventListener('mousedown', (e) => {
-          e.stopPropagation();
-          isSeeking = true;
-          progressBar.classList.add('seeking');
-          seekTo(e);
-        });
-        
-        progressBar.addEventListener('mousemove', (e) => {
-          if (!isSeeking) {
-            const rect = progressBar.getBoundingClientRect();
-            let pct = (e.clientX - rect.left) / rect.width;
-            pct = Math.max(0, Math.min(1, pct));
-            const duration = video.duration || 0;
-            updateTooltip(e.clientX, rect.left, rect.width, pct * duration);
-          }
-        });
-        
-        progressBar.addEventListener('mouseleave', () => {
-          if (!isSeeking) hideTooltip();
-        });
- 
-        document.addEventListener('mousemove', (e) => {
-          if (isSeeking) seekTo(e);
-        });
-        
-        document.addEventListener('mouseup', () => {
-          if (isSeeking) {
-            isSeeking = false;
-            progressBar.classList.remove('seeking');
-            hideTooltip();
-          }
-        });
-        
-        progressBar.addEventListener('touchstart', (e) => {
-          e.stopPropagation();
-          isSeeking = true;
-          progressBar.classList.add('seeking');
-          seekTo(e.touches[0]);
-        }, { passive: true });
-        
-        document.addEventListener('touchmove', (e) => {
-          if (isSeeking) seekTo(e.touches[0]);
-        }, { passive: false });
-        
-        document.addEventListener('touchend', () => {
-          if (isSeeking) {
-            isSeeking = false;
-            progressBar.classList.remove('seeking');
-            hideTooltip();
-          }
-        });
-        
-        const btnSettings = document.getElementById('btn-settings');
-        btnSettings.addEventListener('click', (e) => {
-          e.stopPropagation();
-          video.pause();
-          sendToParent({ type: 'openSettings' });
-          resetControlsTimeout();
-        });
-        
-        const controlsOverlay = document.getElementById('controls-overlay');
-        const clickBackdrop = document.getElementById('click-backdrop');
-        let controlsTimer = null;
-        
-        function showControls() {
-          controlsOverlay.classList.remove('hidden');
-          resetControlsTimeout();
-        }
-        
-        function hideControls() {
-          if (!video.paused) {
-            controlsOverlay.classList.add('hidden');
-          }
-        }
-        
-        function resetControlsTimeout() {
-          clearTimeout(controlsTimer);
-          if (!video.paused) {
-            controlsTimer = setTimeout(hideControls, 3000);
-          }
-        }
-        
-        let lastTap = 0;
-        function handleBackgroundClick(e) {
-          const currentTime = new Date().getTime();
-          const tapLength = currentTime - lastTap;
-          
-          if (tapLength < 300 && tapLength > 0) {
-            e.preventDefault();
-            toggleFullscreen();
-            lastTap = currentTime;
-            return;
-          }
-          
-          lastTap = currentTime;
-          
-          const isInteractive = e.target.closest('button, .progress-bar-container');
-          if (isInteractive) return;
-          
-          sendToParent({ type: 'backgroundClick' });
-          
-          if (controlsOverlay.classList.contains('hidden')) {
-            showControls();
-          } else {
-            hideControls();
-          }
-        }
-        
-        clickBackdrop.addEventListener('click', handleBackgroundClick);
-        controlsOverlay.addEventListener('click', handleBackgroundClick);
-        
-        controlsOverlay.addEventListener('mousemove', resetControlsTimeout);
-        controlsOverlay.addEventListener('touchstart', resetControlsTimeout, { passive: true });
-        
         window.addEventListener('message', (event) => {
           try {
             let data = event.data;
@@ -1368,58 +1241,37 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
               } else if (data.type === 'setPlaySpeed') {
                 setPlaySpeed(data.value);
               } else if (data.type === 'toggleUltraClarity') {
-                if (window.toggleUltraClarity) window.toggleUltraClarity(data.value);
+                applyUltraClarity(data.value);
               } else if (data.type === 'playVideo') {
-                if (window.playVideo) window.playVideo();
+                video.play().catch(() => {});
+              } else if (data.type === 'pauseVideo') {
+                video.pause();
+              } else if (data.type === 'seekTo') {
+                video.currentTime = data.value;
+              } else if (data.type === 'changePreset') {
+                activePreset = data.value;
+                if (hlsInstance) {
+                  const opts = getHlsOptions();
+                  Object.assign(hlsInstance.config, opts);
+                }
+                const shouldEnableClarity = activePreset === 'directors-cut' || 
+                  (activePreset === 'balanced' && deviceProfile !== 'low');
+                applyUltraClarity(shouldEnableClarity);
               }
             }
           } catch (e) {
             console.error('Error handling parent message in iframe:', e);
           }
         });
-        
-        window.playVideo = function() {
-          const vid = document.getElementById('player');
-          if (vid && vid.paused) vid.play();
-        };
-
-        window.toggleUltraClarity = function(enabled) {
-          const vid = document.getElementById('player');
-          if (enabled) {
-            /* 4K modu için açık renkler daha canlı olsun: renk doygunluğu yüksek tutuldu, parlaklık ve kontrast gözü yormayacak şekilde hafifçe kısıldı */
-            vid.style.filter = 'url(#ultra-sharpen) contrast(1.20) saturate(1.35) brightness(1.01)';
-            vid.style.imageRendering = '-webkit-optimize-contrast';
-            if (hlsInstance) {
-              hlsInstance.config.maxMaxBufferLength = 180;
-              hlsInstance.config.maxBufferLength = 60;
-              hlsInstance.config.maxBufferSize = 200 * 1024 * 1024;
-              hlsInstance.config.capLevelToPlayerSize = false;
-              hlsInstance.config.lowLatencyMode = false;
-              selectQuality(hlsInstance.levels.length - 1);
-            }
-          } else {
-            vid.style.filter = 'none';
-            vid.style.imageRendering = 'auto';
-            if (hlsInstance) {
-              hlsInstance.config.maxMaxBufferLength = 30;
-              hlsInstance.config.maxBufferLength = 30;
-              hlsInstance.config.maxBufferSize = 60 * 1024 * 1024;
-              hlsInstance.config.capLevelToPlayerSize = true;
-              hlsInstance.config.lowLatencyMode = true;
-              selectQuality(-1);
-            }
-          }
-        };
 
         initPlayer();
-        showControls();
       <\/script>
     </body>
     </html>
   `;
 };
 
-function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, isUltraClarityEnabled, startAt }) {
+function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, deviceProfile, activePreset, startAt }) {
   const refererUrl = getRefererForUrl(videoUrl);
   console.log('[WatchScreen] Playing video directly with Referer baseUrl:', refererUrl);
 
@@ -1434,13 +1286,7 @@ function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, isUltraClarityEna
     isMp4 = true;
   }
 
-  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, isUltraClarityEnabled, startAt));
-
-  useEffect(() => {
-    if (webViewRef.current) {
-      webViewRef.current.injectJavaScript(`if(window.toggleUltraClarity) { window.toggleUltraClarity(${isUltraClarityEnabled}); } true;`);
-    }
-  }, [isUltraClarityEnabled]);
+  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, deviceProfile, activePreset, startAt));
 
   return (
     <WebView
@@ -1460,7 +1306,7 @@ function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, isUltraClarityEna
   );
 }
 
-function WebVideoPlayer({ videoUrl, onMessage, webViewRef, isUltraClarityEnabled, startAt }) {
+function WebVideoPlayer({ videoUrl, onMessage, webViewRef, deviceProfile, activePreset, startAt }) {
   const isSibnet = videoUrl && (videoUrl.includes('sibnet.ru') || videoUrl.toLowerCase().includes('.mp4'));
   let videoSourceUrl = videoUrl;
   let isMp4 = false;
@@ -1471,13 +1317,7 @@ function WebVideoPlayer({ videoUrl, onMessage, webViewRef, isUltraClarityEnabled
     isMp4 = true;
   }
 
-  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, isUltraClarityEnabled, startAt));
-
-  useEffect(() => {
-    if (webViewRef.current && webViewRef.current.contentWindow) {
-      webViewRef.current.contentWindow.postMessage(JSON.stringify({ type: 'toggleUltraClarity', value: isUltraClarityEnabled }), '*');
-    }
-  }, [isUltraClarityEnabled]);
+  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, deviceProfile, activePreset, startAt));
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -1755,6 +1595,11 @@ const styles = StyleSheet.create({
   sheetOptionText: {
     color: '#FFF',
     fontSize: FONT_SIZES.body,
+  },
+  sheetOptionDesc: {
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.body - 3,
+    marginTop: 2,
   },
   seasonsGrid: {
     flexDirection: 'row',
