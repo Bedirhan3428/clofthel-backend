@@ -297,17 +297,18 @@ export default function Home() {
       if (!res.ok) throw new Error('Arama başarısız oldu.');
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {
-        setAnimes(json.data);
-        json.data.forEach(async (anime: Anime) => {
-          const metaKey = anime.anilist_id ? String(anime.anilist_id) : anime._id;
-          if (!metaMap[metaKey]) {
-            const meta = await fetchAniListMeta(anime.anilist_id);
-            setMetaMap(prev => ({
-              ...prev,
-              [metaKey]: meta
-            }));
-          }
-        });
+        const mappedAnimes = json.data.map((item: any) => ({
+          id: item.anilist_id || 0,
+          _id: item._id,
+          title: item.anime_title || 'Bilinmeyen',
+          titleRomaji: item.anime_title || '',
+          cover: item.cover_image || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&auto=format&fit=crop&q=60',
+          score: item.average_score ? (item.average_score / 10).toFixed(1) : 'N/A',
+          episodes: item.total_episodes || null,
+          format: item.format || 'TV',
+          genres: item.genres || [],
+        }));
+        setAnimes(mappedAnimes as any);
       } else {
         setAnimes([]);
       }
