@@ -1507,16 +1507,9 @@ router.get('/:id/episodes/:episode_number/video-url', async (req, res) => {
         if (typeof cached !== 'string' && ageMs < maxAgeMs) {
           console.log(`[SUCCESS] Doğrudan akış linki (${type}) DB'de bulundu. Dönülüyor.`);
           
-          let proxiedUrl = videoUrl;
-          if (isAitrVip) {
-            proxiedUrl = `http://${req.headers.host}/api/animes/stream.m3u8?url=${encodeURIComponent(videoUrl)}`;
-          } else if (type === 'sibnet-direct') {
-            proxiedUrl = `http://${req.headers.host}/api/animes/sibnet-proxy?url=${encodeURIComponent(videoUrl)}`;
-          }
-
           return res.json({
             success: true,
-            videoUrl: proxiedUrl,
+            videoUrl: videoUrl,
             cached: true
           });
         } else {
@@ -1529,10 +1522,9 @@ router.get('/:id/episodes/:episode_number/video-url', async (req, res) => {
             // Fast resolve via Sibnet shell.php
             const directMp4Url = await resolveSibnetId(sibnetId);
             console.log(`[SUCCESS] Sibnet Video ID'si ile hızlıca güncel link çözüldü.`);
-            const proxiedUrl = `http://${req.headers.host}/api/animes/sibnet-proxy?url=${encodeURIComponent(directMp4Url)}`;
             return res.json({
               success: true,
-              videoUrl: proxiedUrl,
+              videoUrl: directMp4Url,
               cached: true
             });
           } catch (sibnetErr) {
