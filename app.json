@@ -5,11 +5,11 @@
     "scheme": "clofthel",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/iconMain.png",
+    "icon": "./assets/iconMain.jpg",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/iconMain.png",
+      "image": "./assets/iconMain.jpg",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -18,7 +18,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/iconMain.png",
+        "foregroundImage": "./assets/iconMain.jpg",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
