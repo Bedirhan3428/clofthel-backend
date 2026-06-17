@@ -1498,13 +1498,13 @@ router.get('/:id/episodes/:episode_number/video-url', async (req, res) => {
       const type = cached.type || (typeof cached === 'string' ? (cached.includes('.m3u8') ? 'aitrvip' : 'sibnet') : 'aitrvip');
       const resolvedAt = typeof cached === 'string' ? 0 : (cached.resolvedAt || 0);
       const ageMs = Date.now() - resolvedAt;
-      const maxAgeMs = type === 'aitrvip' ? 7 * 24 * 60 * 60 * 1000 : 3 * 60 * 60 * 1000; // 1 week for AitrVip, 3 hours for Sibnet
+      const maxAgeMs = 3 * 60 * 60 * 1000; // All links cached for 3 hours max to prevent token expiration
 
       if (type === 'aitrvip' || type === 'sibnet-direct') {
         const videoUrl = typeof cached === 'string' ? cached : cached.videoUrl;
         const isAitrVip = type === 'aitrvip';
         
-        if (typeof cached === 'string' || ageMs < maxAgeMs) {
+        if (typeof cached !== 'string' && ageMs < maxAgeMs) {
           console.log(`[SUCCESS] Doğrudan akış linki (${type}) DB'de bulundu. Dönülüyor.`);
           
           let proxiedUrl = videoUrl;
