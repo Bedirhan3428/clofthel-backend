@@ -36,7 +36,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Expo Prebuild
-        run: npx expo prebuild --platform android --no-install
+        run: npx expo prebuild --platform android --no-install --clean
 
       - name: Build Android Release APK
         env:
