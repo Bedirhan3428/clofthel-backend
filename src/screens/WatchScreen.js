@@ -1143,7 +1143,7 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
             sendToParent({ type: 'qualitySelected', index: -1, label: 'Otomatik' });
             sendToParent({ type: 'speedSelected', speed: defaultSpeed, label: defaultSpeed === 1.0 ? 'Normal (1.0x)' : defaultSpeed + 'x' });
           } else if (Hls.isSupported()) {
-            const hlsOptions = ${isUltraClarityEnabled} ? {
+            const hlsOptions = ${activeClarity === 'ai-native'} ? {
               maxMaxBufferLength: 180,
               maxBufferLength: 60,
               maxBufferSize: 200 * 1024 * 1024,
@@ -1163,7 +1163,7 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
             
             hls.on(Hls.Events.MANIFEST_PARSED, function() {
               populateQualityLevels(hls.levels);
-              if (${isUltraClarityEnabled}) {
+              if (${activeClarity === 'ai-native'}) {
                 selectQuality(hls.levels.length - 1);
               } else {
                 sendToParent({ type: 'qualitySelected', index: -1, label: 'Otomatik' });
