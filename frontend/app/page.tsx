@@ -391,19 +391,19 @@ export default function Home() {
             <div id="download-section" className="flex flex-col sm:flex-row items-center gap-6 mt-10 mb-16 w-full justify-center">
               <a 
                 href="/api/download-apk?type=android" 
-                download="Clofthel-v1.3.0.apk"
+                download="Clofthel-v1.3.0-arm64.apk"
                 className="flex items-center justify-center gap-3 bg-[#1e1e24] border border-white/10 text-white px-8 py-5 rounded-2xl font-black hover:bg-[#2a2a32] hover:scale-105 active:scale-95 transition-all shadow-xl w-full sm:w-auto text-lg group"
               >
                 <FaAndroid className="w-7 h-7 text-[#3DDC84] transition-transform group-hover:-translate-y-1" />
-                Android (APK) İndir
+                Android İndir (ARM64)
               </a>
               <a 
                 href="/api/download-apk?type=emulator" 
-                download="Clofthel-v1.3.0-emulator.apk"
+                download="Clofthel-v1.3.0-x86_64.apk"
                 className="flex items-center justify-center gap-3 bg-[#1e1e24] border border-[#ff6b00]/30 text-white px-8 py-5 rounded-2xl font-black hover:bg-[#2a2a32] hover:scale-105 active:scale-95 transition-all shadow-xl w-full sm:w-auto text-lg group"
               >
                 <FaAndroid className="w-7 h-7 text-[#ff6b00] transition-transform group-hover:-translate-y-1" />
-                Emülatör (x86) İndir
+                Emülatör İndir (x86_64)
               </a>
               <button disabled className="flex items-center justify-center gap-3 bg-white/5 text-[#8e8e9f] px-8 py-5 rounded-2xl font-black w-full sm:w-auto text-lg cursor-not-allowed border border-white/10">
                 <FaWindows className="w-7 h-7 opacity-50" />

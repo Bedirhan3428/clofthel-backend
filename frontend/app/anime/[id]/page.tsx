@@ -215,7 +215,7 @@ export default function AnimePage() {
             <img src="/mainLogo.png" alt="Clofthel Logo" className="h-10 w-auto transition-transform group-hover:scale-105" />
             <span className="font-extrabold text-2xl tracking-tight bg-gradient-to-r from-[#ff6b00] to-[#ff8e3c] bg-clip-text text-transparent hidden sm:block">Clofthel</span>
           </Link>
-          <a href="/api/download-apk" download="Clofthel-v1.3.0.apk" className="px-5 py-2.5 bg-gradient-to-r from-[#ff6b00] to-[#ff8e3c] text-black font-black text-xs md:text-sm rounded-xl shadow-lg shadow-[#ff6b00]/20 hover:scale-105 active:scale-95 transition-all">↓ Uygulamayı İndir</a>
+          <a href="/api/download-apk" download="Clofthel-v1.3.0-arm64.apk" className="px-5 py-2.5 bg-gradient-to-r from-[#ff6b00] to-[#ff8e3c] text-black font-black text-xs md:text-sm rounded-xl shadow-lg shadow-[#ff6b00]/20 hover:scale-105 active:scale-95 transition-all">↓ Uygulamayı İndir</a>
         </div>
       </header>
 
@@ -341,7 +341,7 @@ export default function AnimePage() {
           </div>
           <div className="flex flex-col sm:flex-row gap-4 relative z-10 w-full md:w-auto">
             <button disabled className="flex items-center justify-center gap-3 bg-black/10 text-black/50 px-8 py-4 rounded-2xl font-black cursor-not-allowed border border-black/10"><FaWindows className="w-6 h-6 opacity-50" /> Windows (Yakında)</button>
-            <a href="/api/download-apk" download="Clofthel-v1.3.0.apk" className="flex items-center justify-center gap-3 bg-white text-black px-8 py-4 rounded-2xl font-black hover:bg-white/90 active:scale-95 transition-all shadow-xl"><FaAndroid className="w-6 h-6 text-[#3DDC84]" /> Android (APK) İndir</a>
+            <a href="/api/download-apk" download="Clofthel-v1.3.0-arm64.apk" className="flex items-center justify-center gap-3 bg-white text-black px-8 py-4 rounded-2xl font-black hover:bg-white/90 active:scale-95 transition-all shadow-xl"><FaAndroid className="w-6 h-6 text-[#3DDC84]" /> Android (APK) İndir</a>
           </div>
         </section>
 

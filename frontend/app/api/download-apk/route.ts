@@ -5,11 +5,11 @@ export async function GET(request: Request) {
   const type = searchParams.get('type') || 'android';
 
   let apkUrl = 'https://firebasestorage.googleapis.com/v0/b/sigalmedia.firebasestorage.app/o/android.apk?alt=media&token=37f75d11-fa9d-4a12-b183-b7460b8c3747';
-  let fileName = 'Clofthel-v1.3.0.apk';
+  let fileName = 'Clofthel-v1.3.0-arm64.apk';
 
   if (type === 'emulator') {
     apkUrl = 'https://firebasestorage.googleapis.com/v0/b/sigalmedia.firebasestorage.app/o/emulator.apk?alt=media&token=4ab1dec8-cffe-4b1d-a2e2-dc16a03478e6';
-    fileName = 'Clofthel-v1.3.0-emulator.apk';
+    fileName = 'Clofthel-v1.3.0-x86_64.apk';
   }
   
   try {
