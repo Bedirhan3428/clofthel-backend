@@ -1,8 +1,4 @@
-import { MMKV } from 'react-native-mmkv';
-
-export const storage = new MMKV({
-  id: 'clofthel-preferences'
-});
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const PROFILE_KEY = 'device_performance_profile';
 const PREFS_KEY = 'user_player_preferences';
@@ -15,12 +11,39 @@ const DEFAULT_PREFS = {
   swipeSeekEnabled: true
 };
 
+// In-memory cache for synchronous reads
+let performanceProfileCache = null;
+let playerPreferencesCache = { ...DEFAULT_PREFS };
+let isCacheLoaded = false;
+
+// Preload the cache immediately
+(async () => {
+  try {
+    const [profile, prefs] = await Promise.all([
+      AsyncStorage.getItem(PROFILE_KEY),
+      AsyncStorage.getItem(PREFS_KEY)
+    ]);
+    if (profile) performanceProfileCache = profile;
+    if (prefs) {
+      try {
+        playerPreferencesCache = { ...DEFAULT_PREFS, ...JSON.parse(prefs) };
+      } catch (e) {
+        console.warn('[Preferences] JSON parse error:', e);
+      }
+    }
+    isCacheLoaded = true;
+    console.log('[Preferences] Cache loaded successfully');
+  } catch (e) {
+    console.warn('[Preferences] Failed to preload AsyncStorage cache:', e);
+  }
+})();
+
 /**
  * Gets the classified hardware performance profile of the device.
  * @returns {'low' | 'mid' | 'high' | null}
  */
 export function getPerformanceProfile() {
-  return storage.getString(PROFILE_KEY) || null;
+  return performanceProfileCache;
 }
 
 /**
@@ -28,7 +51,10 @@ export function getPerformanceProfile() {
  * @param {'low' | 'mid' | 'high'} profile 
  */
 export function setPerformanceProfile(profile) {
-  storage.set(PROFILE_KEY, profile);
+  performanceProfileCache = profile;
+  AsyncStorage.setItem(PROFILE_KEY, profile).catch(e => {
+    console.warn('[Preferences] Error saving performance profile:', e);
+  });
 }
 
 /**
@@ -36,15 +62,7 @@ export function setPerformanceProfile(profile) {
  * @returns {typeof DEFAULT_PREFS}
  */
 export function getPlayerPreferences() {
-  try {
-    const raw = storage.getString(PREFS_KEY);
-    if (raw) {
-      return { ...DEFAULT_PREFS, ...JSON.parse(raw) };
-    }
-  } catch (e) {
-    console.warn('[Preferences] Error reading player preferences:', e);
-  }
-  return DEFAULT_PREFS;
+  return playerPreferencesCache;
 }
 
 /**
@@ -52,11 +70,37 @@ export function getPlayerPreferences() {
  * @param {Partial<typeof DEFAULT_PREFS>} prefs 
  */
 export function savePlayerPreferences(prefs) {
-  try {
-    const current = getPlayerPreferences();
-    const updated = { ...current, ...prefs };
-    storage.set(PREFS_KEY, JSON.stringify(updated));
-  } catch (e) {
+  playerPreferencesCache = { ...playerPreferencesCache, ...prefs };
+  AsyncStorage.setItem(PREFS_KEY, JSON.stringify(playerPreferencesCache)).catch(e => {
     console.warn('[Preferences] Error saving player preferences:', e);
-  }
+  });
 }
+
+/**
+ * Storage compatibility wrapper for WatchScreen.js using AsyncStorage
+ */
+export const storage = {
+  getString: async (key) => {
+    try {
+      return await AsyncStorage.getItem(key);
+    } catch (e) {
+      console.warn('[Storage] getString error:', e);
+      return null;
+    }
+  },
+  set: async (key, value) => {
+    try {
+      await AsyncStorage.setItem(key, value);
+    } catch (e) {
+      console.warn('[Storage] set error:', e);
+    }
+  },
+  delete: async (key) => {
+    try {
+      await AsyncStorage.removeItem(key);
+    } catch (e) {
+      console.warn('[Storage] delete error:', e);
+    }
+  }
+};
+

@@ -89,7 +89,7 @@ export default function WatchScreen({ route, navigation }) {
   useEffect(() => {
     const initVideoSource = async () => {
       const downloadKey = `download_${animeId}_${currentEpisodeNumber}`;
-      const raw = storage.getString(downloadKey);
+      const raw = await storage.getString(downloadKey);
       if (raw) {
         try {
           const info = JSON.parse(raw);
@@ -100,7 +100,7 @@ export default function WatchScreen({ route, navigation }) {
             setDownloadStatus('downloaded');
             return;
           } else {
-            storage.delete(downloadKey);
+            await storage.delete(downloadKey);
           }
         } catch (e) {
           console.warn('Failed to parse download info:', e);
@@ -470,7 +470,7 @@ export default function WatchScreen({ route, navigation }) {
       console.warn('Failed to delete download directory:', e);
     }
     const downloadKey = `download_${animeId}_${currentEpisodeNumber}`;
-    storage.delete(downloadKey);
+    await storage.delete(downloadKey);
     setDownloadStatus('none');
     setActiveVideoUrl(videoUrl);
     setIsVideoLocal(false);
@@ -535,7 +535,7 @@ export default function WatchScreen({ route, navigation }) {
           downloadedAt: new Date().toISOString()
         };
         
-        storage.set(downloadKey, JSON.stringify(downloadInfo));
+        await storage.set(downloadKey, JSON.stringify(downloadInfo));
         setDownloadStatus('downloaded');
         setActiveVideoUrl(localPlaylistPath);
         setIsVideoLocal(true);
@@ -577,7 +577,7 @@ export default function WatchScreen({ route, navigation }) {
             downloadedAt: new Date().toISOString()
           };
           
-          storage.set(downloadKey, JSON.stringify(downloadInfo));
+          await storage.set(downloadKey, JSON.stringify(downloadInfo));
           setDownloadStatus('downloaded');
           setActiveVideoUrl(result.uri);
           setIsVideoLocal(true);
