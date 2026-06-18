@@ -83,7 +83,7 @@ export default function PrivacyPage() {
 
         {/* Policy links */}
         <div className="mt-16 border-t border-white/5 pt-10 flex flex-wrap justify-center gap-6 text-sm text-[#8e8e9f]">
-          <Link href="/terms-of-services" className="hover:text-white transition-colors">Hizmet Şartları</Link>
+          <Link href="/terms-of-service" className="hover:text-white transition-colors">Hizmet Şartları</Link>
           <span className="text-white/20">·</span>
           <Link href="/security-policy" className="hover:text-white transition-colors">Güvenlik Politikası</Link>
           <span className="text-white/20">·</span>

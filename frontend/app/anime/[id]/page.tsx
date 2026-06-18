@@ -351,7 +351,7 @@ export default function AnimePage() {
         <div className="max-w-4xl mx-auto px-6 flex flex-col gap-4 items-center">
           <img src="/mainLogo.png" alt="Clofthel" className="h-12 w-auto" />
           <div className="flex flex-wrap justify-center gap-5 text-xs text-[#8e8e9f]/60 font-medium">
-            <Link href="/terms-of-services" className="hover:text-[#8e8e9f] transition-colors">Hizmet Şartları</Link>
+            <Link href="/terms-of-service" className="hover:text-[#8e8e9f] transition-colors">Hizmet Şartları</Link>
             <span className="text-white/10">·</span>
             <Link href="/privacy-policy" className="hover:text-[#8e8e9f] transition-colors">Gizlilik Politikası</Link>
             <span className="text-white/10">·</span>
