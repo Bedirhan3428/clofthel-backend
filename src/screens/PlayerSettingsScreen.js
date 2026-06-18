@@ -51,7 +51,7 @@ export default function PlayerSettingsScreen({ navigation }) {
   }
 
   const skipIntervalOptions = [5, 10, 15, 30, 85];
-  const speedOptions = [0.5, 1.0, 1.25, 1.5, 2.0];
+  const speedOptions = [0.5, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 5.0];
   const buttonSizeOptions = [
     { label: 'Küçük', value: 'small' },
     { label: 'Normal', value: 'medium' },
@@ -167,17 +167,26 @@ export default function PlayerSettingsScreen({ navigation }) {
         </View>
 
         <View style={styles.settingCard}>
-          <View style={styles.settingRow}>
-            <View style={styles.settingTextWrapper}>
-              <Text style={styles.settingLabel}>Varsayılan Ultra-Clarity (AI)</Text>
-              <Text style={styles.settingDescription}>Videoları otomatik olarak 4K AI keskinleştirme modu aktif olarak açar.</Text>
-            </View>
-            <Switch
-              value={preferences.ultraClarityEnabled}
-              onValueChange={(val) => updatePreference('ultraClarityEnabled', val)}
-              trackColor={{ false: COLORS.bgSecondary, true: COLORS.accentGlow }}
-              thumbColor={preferences.ultraClarityEnabled ? COLORS.accent : COLORS.textMuted}
-            />
+          <Text style={styles.settingLabel}>Video Netlik / AI Filtre Modu</Text>
+          <Text style={[styles.settingDescription, { marginBottom: SPACING.md }]}>Videoların otomatik olarak başlayacağı netlik/keskinleştirme filtresi düzeyi.</Text>
+          <View style={styles.pillContainer}>
+            {[
+              { label: 'Kapalı', value: 'off' },
+              { label: 'Performans', value: 'performance' },
+              { label: 'Dengeli', value: 'balanced' },
+              { label: 'AI Native', value: 'ai-native' }
+            ].map((option) => {
+              const isSelected = preferences.clarityMode === option.value;
+              return (
+                <TouchableOpacity
+                  key={option.value}
+                  style={[styles.pillButton, isSelected && styles.pillButtonActive]}
+                  onPress={() => updatePreference('clarityMode', option.value)}
+                >
+                  <Text style={[styles.pillText, isSelected && styles.pillTextActive]}>{option.label}</Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
         </View>
 

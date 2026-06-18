@@ -8,7 +8,7 @@ export const DEFAULT_PREFERENCES = {
   skipInterval: 10,
   buttonSize: 'medium',
   defaultSpeed: 1.0,
-  ultraClarityEnabled: false,
+  clarityMode: 'off',
 };
 
 export const getPlayerPreferences = async () => {

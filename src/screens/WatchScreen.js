@@ -55,7 +55,7 @@ export default function WatchScreen({ route, navigation }) {
 
   const [isLandscape, setIsLandscape] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isUltraClarityEnabled, setIsUltraClarityEnabled] = useState(false);
+  const [clarityMode, setClarityMode] = useState('off');
 
   const [episodes, setEpisodes] = useState([]);
   const [seasons, setSeasons] = useState([]);
@@ -68,7 +68,7 @@ export default function WatchScreen({ route, navigation }) {
       try {
         const prefs = await getPlayerPreferences();
         setPlayerPrefs(prefs);
-        setIsUltraClarityEnabled(prefs.ultraClarityEnabled);
+        setClarityMode(prefs.clarityMode);
         setSelectedSpeed(prefs.defaultSpeed);
         setCurrentSpeedLabel(prefs.defaultSpeed === 1.0 ? 'Normal (1.0x)' : `${prefs.defaultSpeed}x`);
       } catch (err) {
@@ -348,7 +348,7 @@ export default function WatchScreen({ route, navigation }) {
                 videoUrl={videoUrl}
                 onMessage={handleWebViewMessage}
                 webViewRef={webViewRef}
-                isUltraClarityEnabled={isUltraClarityEnabled}
+                clarityMode={clarityMode}
                 startAt={currentVideoTimeRef.current}
                 playerPrefs={playerPrefs}
               />
@@ -357,7 +357,7 @@ export default function WatchScreen({ route, navigation }) {
                 videoUrl={videoUrl}
                 onMessage={handleWebViewMessage}
                 webViewRef={webViewRef}
-                isUltraClarityEnabled={isUltraClarityEnabled}
+                clarityMode={clarityMode}
                 startAt={currentVideoTimeRef.current}
                 playerPrefs={playerPrefs}
               />
@@ -577,22 +577,22 @@ export default function WatchScreen({ route, navigation }) {
                 <View style={styles.sheetHeader}>
                   <Text style={styles.sheetHeaderText}>Oynatma Ayarları</Text>
                 </View>
-                {/* Disable Web-only controls when native UltraClarityView is active */}
-                {!isUltraClarityEnabled && (
-                  <>
-                    <TouchableOpacity style={styles.sheetItem} onPress={() => setSettingsTab('quality')}>
-                      <Text style={styles.sheetItemText}>Kalite</Text>
-                      <Text style={styles.sheetItemValue}>{currentQualityLabel}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.sheetItem} onPress={() => setSettingsTab('speed')}>
-                      <Text style={styles.sheetItemText}>Oynatma Hızı</Text>
-                      <Text style={styles.sheetItemValue}>{currentSpeedLabel}</Text>
-                    </TouchableOpacity>
-                  </>
-                )}
-                <TouchableOpacity style={styles.sheetItem} onPress={() => setIsUltraClarityEnabled(!isUltraClarityEnabled)}>
-                  <Text style={styles.sheetItemText}>Ultra-Clarity (AI Native)</Text>
-                  <Text style={[styles.sheetItemValue, isUltraClarityEnabled ? {color: COLORS.accent} : {}]}>{isUltraClarityEnabled ? 'Açık (4K HDR)' : 'Kapalı'}</Text>
+                <TouchableOpacity style={styles.sheetItem} onPress={() => setSettingsTab('quality')}>
+                  <Text style={styles.sheetItemText}>Kalite</Text>
+                  <Text style={styles.sheetItemValue}>{currentQualityLabel}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.sheetItem} onPress={() => setSettingsTab('speed')}>
+                  <Text style={styles.sheetItemText}>Oynatma Hızı</Text>
+                  <Text style={styles.sheetItemValue}>{currentSpeedLabel}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.sheetItem} onPress={() => setSettingsTab('clarity')}>
+                  <Text style={styles.sheetItemText}>Görüntü Netliği (AI)</Text>
+                  <Text style={[styles.sheetItemValue, clarityMode !== 'off' ? {color: COLORS.accent} : {}]}>
+                    {clarityMode === 'off' && 'Kapalı'}
+                    {clarityMode === 'performance' && 'Performans'}
+                    {clarityMode === 'balanced' && 'Dengeli'}
+                    {clarityMode === 'ai-native' && 'AI Native'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -643,7 +643,7 @@ export default function WatchScreen({ route, navigation }) {
                   <Text style={styles.sheetHeaderText}>Hız Seçin</Text>
                 </TouchableOpacity>
 
-                {[0.5, 1.0, 1.25, 1.5, 2.0].map((speed) => (
+                {[0.5, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 5.0].map((speed) => (
                   <TouchableOpacity
                     key={speed}
                     style={[styles.sheetOption, selectedSpeed === speed && styles.sheetOptionActive]}
@@ -657,6 +657,36 @@ export default function WatchScreen({ route, navigation }) {
                   >
                     <Text style={styles.sheetOptionText}>{speed === 1.0 ? 'Normal (1.0x)' : `${speed}x`}</Text>
                     {selectedSpeed === speed && <Ionicons name="checkmark" size={18} color="#FFF" />}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {settingsTab === 'clarity' && (
+              <View>
+                <TouchableOpacity style={styles.sheetSubHeader} onPress={() => setSettingsTab('main')}>
+                  <Ionicons name="chevron-back" size={20} color="#FFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.sheetHeaderText}>Netlik Modu Seçin</Text>
+                </TouchableOpacity>
+
+                {[
+                  { label: 'Kapalı (Orijinal)', value: 'off' },
+                  { label: 'Performans (Düşük Güç)', value: 'performance' },
+                  { label: 'Dengeli (Önerilen)', value: 'balanced' },
+                  { label: 'AI Native (Maksimum)', value: 'ai-native' }
+                ].map((mode) => (
+                  <TouchableOpacity
+                    key={mode.value}
+                    style={[styles.sheetOption, clarityMode === mode.value && styles.sheetOptionActive]}
+                    onPress={() => {
+                      setClarityMode(mode.value);
+                      sendControlCommand('setClarityMode', mode.value);
+                      setIsSettingsOpen(false);
+                      sendControlCommand('playVideo', null);
+                    }}
+                  >
+                    <Text style={styles.sheetOptionText}>{mode.label}</Text>
+                    {clarityMode === mode.value && <Ionicons name="checkmark" size={18} color="#FFF" />}
                   </TouchableOpacity>
                 ))}
               </View>
@@ -689,19 +719,22 @@ const getRefererForUrl = (url) => {
   return 'https://optraco.top/';
 };
 
-const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, startAt = 0, playerPrefs = {}) => {
+const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, playerPrefs = {}) => {
   const prefs = {
     doubleTapEnabled: true,
     swipeSeekEnabled: true,
     skipInterval: 10,
     buttonSize: 'medium',
     defaultSpeed: 1.0,
-    ultraClarityEnabled: false,
+    clarityMode: 'off',
     ...playerPrefs
   };
   let btnSizeMultiplier = 1.0;
   if (prefs.buttonSize === 'small') btnSizeMultiplier = 0.8;
   if (prefs.buttonSize === 'large') btnSizeMultiplier = 1.25;
+
+  // Resolve active clarity mode: use passed clarityMode or preference fallback
+  const activeClarity = clarityMode || prefs.clarityMode || 'off';
 
   return `
     <!DOCTYPE html>
@@ -734,11 +767,19 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
         }
         video {
           width: 100%; height: 100%; object-fit: contain; z-index: 1;
-          ${isUltraClarityEnabled ? `
-            /* 4K modu için açık renkler daha canlı olsun: renk doygunluğu yüksek tutuldu, parlaklık ve kontrast gözü yormayacak şekilde hafifçe kısıldı */
+          image-rendering: -webkit-optimize-contrast;
+          image-rendering: crisp-edges;
+          ${activeClarity === 'performance' ? `
+            filter: contrast(1.08) saturate(1.15);
+          ` : ''}
+          ${activeClarity === 'balanced' ? `
+            filter: url(#balanced-sharpen) contrast(1.12) saturate(1.22);
+          ` : ''}
+          ${activeClarity === 'ai-native' ? `
             filter: url(#ultra-sharpen) contrast(1.20) saturate(1.35) brightness(1.01);
-            image-rendering: -webkit-optimize-contrast;
-            image-rendering: crisp-edges;
+          ` : ''}
+          ${activeClarity === 'off' ? `
+            filter: none;
           ` : ''}
         }
         .click-backdrop {
@@ -974,6 +1015,9 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
           <defs>
             <filter id="ultra-sharpen">
               <feConvolveMatrix order="3" kernelMatrix="-0.2 -0.8 -0.2 -0.8 5.0 -0.8 -0.2 -0.8 -0.2" preserveAlpha="true"/>
+            </filter>
+            <filter id="balanced-sharpen">
+              <feConvolveMatrix order="3" kernelMatrix="-0.1 -0.4 -0.1 -0.4 3.0 -0.4 -0.1 -0.4 -0.1" preserveAlpha="true"/>
             </filter>
           </defs>
         </svg>
@@ -1593,7 +1637,8 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
             e.preventDefault();
             const rect = clickBackdrop.getBoundingClientRect();
             const swipeSensitivity = 180; 
-            const deltaSeconds = (deltaX / rect.width) * swipeSensitivity;
+            // Invert deltaX horizontal scrubbing direction by multiplying by -1
+            const deltaSeconds = -(deltaX / rect.width) * swipeSensitivity;
             swipeCurrentTargetTime = Math.max(0, Math.min(video.duration || 0, swipeInitialTime + deltaSeconds));
             showSwipeHud(swipeCurrentTargetTime, deltaSeconds);
           }
@@ -1631,8 +1676,8 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
                 selectQuality(data.value);
               } else if (data.type === 'setPlaySpeed') {
                 setPlaySpeed(data.value);
-              } else if (data.type === 'toggleUltraClarity') {
-                if (window.toggleUltraClarity) window.toggleUltraClarity(data.value);
+              } else if (data.type === 'setClarityMode') {
+                if (window.setClarityMode) window.setClarityMode(data.value);
               } else if (data.type === 'playVideo') {
                 if (window.playVideo) window.playVideo();
               }
@@ -1647,10 +1692,28 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
           if (vid && vid.paused) vid.play();
         };
 
-        window.toggleUltraClarity = function(enabled) {
+        window.setClarityMode = function(mode) {
           const vid = document.getElementById('player');
-          if (enabled) {
-            /* 4K modu için açık renkler daha canlı olsun: renk doygunluğu yüksek tutuldu, parlaklık ve kontrast gözü yormayacak şekilde hafifçe kısıldı */
+          if (!vid) return;
+          
+          // Clear current filters
+          vid.style.filter = 'none';
+          vid.style.imageRendering = 'auto';
+          
+          if (mode === 'performance') {
+            vid.style.filter = 'contrast(1.08) saturate(1.15)';
+            vid.style.imageRendering = '-webkit-optimize-contrast';
+          } else if (mode === 'balanced') {
+            vid.style.filter = 'url(#balanced-sharpen) contrast(1.12) saturate(1.22)';
+            vid.style.imageRendering = '-webkit-optimize-contrast';
+            if (hlsInstance) {
+              hlsInstance.config.maxMaxBufferLength = 90;
+              hlsInstance.config.maxBufferLength = 45;
+              hlsInstance.config.maxBufferSize = 120 * 1024 * 1024;
+              hlsInstance.config.capLevelToPlayerSize = false;
+              hlsInstance.config.lowLatencyMode = false;
+            }
+          } else if (mode === 'ai-native') {
             vid.style.filter = 'url(#ultra-sharpen) contrast(1.20) saturate(1.35) brightness(1.01)';
             vid.style.imageRendering = '-webkit-optimize-contrast';
             if (hlsInstance) {
@@ -1662,6 +1725,7 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
               selectQuality(hlsInstance.levels.length - 1);
             }
           } else {
+            // off
             vid.style.filter = 'none';
             vid.style.imageRendering = 'auto';
             if (hlsInstance) {
@@ -1683,7 +1747,7 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
   `;
 };
 
-function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, isUltraClarityEnabled, startAt, playerPrefs }) {
+function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, clarityMode, startAt, playerPrefs }) {
   const refererUrl = getRefererForUrl(videoUrl);
   console.log('[WatchScreen] Playing video directly with Referer baseUrl:', refererUrl);
 
@@ -1698,13 +1762,13 @@ function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, isUltraClarityEna
     isMp4 = true;
   }
 
-  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, isUltraClarityEnabled, startAt, playerPrefs));
+  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, clarityMode, startAt, playerPrefs));
 
   useEffect(() => {
     if (webViewRef.current) {
-      webViewRef.current.injectJavaScript(`if(window.toggleUltraClarity) { window.toggleUltraClarity(${isUltraClarityEnabled}); } true;`);
+      webViewRef.current.injectJavaScript(`if(window.setClarityMode) { window.setClarityMode('${clarityMode}'); } true;`);
     }
-  }, [isUltraClarityEnabled]);
+  }, [clarityMode]);
 
   return (
     <WebView
@@ -1724,7 +1788,7 @@ function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, isUltraClarityEna
   );
 }
 
-function WebVideoPlayer({ videoUrl, onMessage, webViewRef, isUltraClarityEnabled, startAt, playerPrefs }) {
+function WebVideoPlayer({ videoUrl, onMessage, webViewRef, clarityMode, startAt, playerPrefs }) {
   const isSibnet = videoUrl && (videoUrl.includes('sibnet.ru') || videoUrl.toLowerCase().includes('.mp4'));
   let videoSourceUrl = videoUrl;
   let isMp4 = false;
@@ -1735,13 +1799,13 @@ function WebVideoPlayer({ videoUrl, onMessage, webViewRef, isUltraClarityEnabled
     isMp4 = true;
   }
 
-  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, isUltraClarityEnabled, startAt, playerPrefs));
+  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, clarityMode, startAt, playerPrefs));
 
   useEffect(() => {
     if (webViewRef.current && webViewRef.current.contentWindow) {
-      webViewRef.current.contentWindow.postMessage(JSON.stringify({ type: 'toggleUltraClarity', value: isUltraClarityEnabled }), '*');
+      webViewRef.current.contentWindow.postMessage(JSON.stringify({ type: 'setClarityMode', value: clarityMode }), '*');
     }
-  }, [isUltraClarityEnabled]);
+  }, [clarityMode]);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
