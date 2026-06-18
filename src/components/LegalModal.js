@@ -44,7 +44,7 @@ export default function LegalModal({ visible, onAccept }) {
             <TouchableOpacity 
               style={styles.linkRow} 
               activeOpacity={0.7}
-              onPress={() => openLink('https://clofthel.com.tr/terms-of-service')}
+              onPress={() => openLink('https://clofthel.com.tr/terms-of-services')}
             >
               <View style={styles.linkLeft}>
                 <View style={styles.iconWrapper}>

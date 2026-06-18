@@ -628,11 +628,11 @@ export default function Home() {
             Amacımız, en saf, reklamsız ve kesintisiz anime deneyimini ücretsiz olarak sizlere sunmaktır. Çevirilerdeki tüm emek ilgili fansublara aittir.
           </p>
           <div className="flex flex-wrap justify-center gap-6 text-xs text-[#8e8e9f]/60 mt-6 font-medium">
-            <Link href="/terms" className="hover:text-[#8e8e9f] transition-colors">Hizmet Şartları</Link>
+            <Link href="/terms-of-services" className="hover:text-[#8e8e9f] transition-colors">Hizmet Şartları</Link>
             <span className="text-white/10">·</span>
-            <Link href="/privacy" className="hover:text-[#8e8e9f] transition-colors">Gizlilik Politikası</Link>
+            <Link href="/privacy-policy" className="hover:text-[#8e8e9f] transition-colors">Gizlilik Politikası</Link>
             <span className="text-white/10">·</span>
-            <Link href="/security" className="hover:text-[#8e8e9f] transition-colors">Güvenlik Politikası</Link>
+            <Link href="/security-policy" className="hover:text-[#8e8e9f] transition-colors">Güvenlik Politikası</Link>
           </div>
           <p className="text-xs font-bold mt-4 opacity-40 tracking-wider">
             © 2026 CLOFTHEL. BU WEB SİTESİ UYGULAMA İNDİRME VE İÇERİK KEŞFİ İÇİNDİR.
