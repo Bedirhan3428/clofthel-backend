@@ -156,15 +156,15 @@ export default function ResolveScreen({ route, navigation }) {
       if (data.type === 'log') {
         console.log('[WebView Log]', data.message);
         const msg = data.message.toLowerCase();
-        if (msg.includes('sayfa')) setProgressPercent(prev => Math.max(prev, 15));
-        else if (msg.includes('iframe') || msg.includes('yok')) setProgressPercent(prev => Math.max(prev, 30));
-        else if (msg.includes('captcha tespit')) setProgressPercent(prev => Math.max(prev, 45));
-        else if (msg.includes('tekrar')) setProgressPercent(prev => Math.max(prev, 55));
-        else if (msg.includes('farkli') || msg.includes('farklı')) setProgressPercent(prev => Math.max(prev, 70));
-        else if (msg.includes('tiklaniyor') || msg.includes('tıklanıyor') || msg.includes('basildi')) setProgressPercent(prev => Math.max(prev, 85));
+        if (msg.includes('sayfa')) setProgressPercent(15);
+        else if (msg.includes('iframe') || msg.includes('yok')) setProgressPercent(30);
+        else if (msg.includes('captcha tespit')) setProgressPercent(45);
+        else if (msg.includes('tekrar')) setProgressPercent(55);
+        else if (msg.includes('farkli') || msg.includes('farklı')) setProgressPercent(70);
+        else if (msg.includes('tiklaniyor') || msg.includes('tıklanıyor') || msg.includes('basildi')) setProgressPercent(85);
         
       } else if (data.type === 'resolved') {
-        setProgressPercent(prev => Math.max(prev, 100));
+        setProgressPercent(100);
         let finalUrl = data.videoUrl;
         
         // Cache in backend database
@@ -213,94 +213,6 @@ export default function ResolveScreen({ route, navigation }) {
       (function() {
         if (window.__scraper_initialized) return;
         window.__scraper_initialized = true;
-
-        // --- PERFORMANCE OPTIMIZATION: SUBRESOURCE BLOCKING ---
-        try {
-          var originalSetAttribute = Element.prototype.setAttribute;
-          Element.prototype.setAttribute = function(name, value) {
-            var tagName = this.tagName.toLowerCase();
-            if (name === 'src' && tagName === 'img') {
-              if (value && typeof value === 'string' && !value.toLowerCase().includes('captcha')) {
-                return;
-              }
-            }
-            if (name === 'href' && tagName === 'link') {
-              if (value && typeof value === 'string' && (value.includes('.css') || this.rel === 'stylesheet')) {
-                return;
-              }
-            }
-            if (name === 'src' && tagName === 'iframe') {
-              if (value && typeof value === 'string') {
-                var valLower = value.toLowerCase();
-                var isAllowed = valLower.includes('optraco.top') || 
-                                  valLower.includes('sibnet.ru') || 
-                                  valLower.includes('captcha') || 
-                                  valLower.includes('challenge') || 
-                                  valLower.includes('tranimeizle.io') ||
-                                  valLower.startsWith('about:blank') ||
-                                  valLower.startsWith('javascript:');
-                if (!isAllowed) {
-                  return;
-                }
-              }
-            }
-            return originalSetAttribute.call(this, name, value);
-          };
-
-          Object.defineProperty(HTMLImageElement.prototype, 'src', {
-            set: function(value) {
-              if (value && typeof value === 'string' && !value.toLowerCase().includes('captcha')) {
-                return;
-              }
-              this.setAttribute('src', value);
-            },
-            get: function() {
-              return this.getAttribute('src');
-            }
-          });
-
-          Object.defineProperty(HTMLLinkElement.prototype, 'href', {
-            set: function(value) {
-              if (value && typeof value === 'string' && (value.includes('.css') || this.rel === 'stylesheet')) {
-                return;
-              }
-              this.setAttribute('href', value);
-            },
-            get: function() {
-              return this.getAttribute('href');
-            }
-          });
-
-          Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
-            set: function(value) {
-              if (value && typeof value === 'string') {
-                var valLower = value.toLowerCase();
-                var isAllowed = valLower.includes('optraco.top') || 
-                                  valLower.includes('sibnet.ru') || 
-                                  valLower.includes('captcha') || 
-                                  valLower.includes('challenge') || 
-                                  valLower.includes('tranimeizle.io') ||
-                                  valLower.startsWith('about:blank') ||
-                                  valLower.startsWith('javascript:');
-                if (!isAllowed) {
-                  return;
-                }
-              }
-              this.setAttribute('src', value);
-            },
-            get: function() {
-              return this.getAttribute('src');
-            }
-          });
-
-          var styleEl = document.createElement('style');
-          styleEl.innerHTML = "img:not([src*='captcha']):not([src*='Captcha']):not(.captcha-image) { display: none !important; } " +
-                              "iframe:not([src*='optraco']):not([src*='sibnet']):not([src*='captcha']):not([src*='challenge']) { display: none !important; }";
-          var targetNode = document.head || document.documentElement;
-          if (targetNode) {
-            targetNode.appendChild(styleEl);
-          }
-        } catch(e) {}
 
         // --- GÜVENLİK (BOT) KORUMASI ATLATMA (PROXY SPOOFING) & REKLAM ENGELLEME ---
         try {
