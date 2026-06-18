@@ -38,6 +38,7 @@ jobs:
       - name: Expo Prebuild
         run: |
           npx expo prebuild --platform android --no-install --clean
+          cp debug.keystore android/app/debug.keystore
           sed -i 's/org.gradle.jvmargs=-Xmx4096m/org.gradle.jvmargs=-Xmx2048m/g' android/gradle.properties
           echo "kotlin.daemon.jvmopts=-Xmx1024m" >> android/gradle.properties
 
@@ -85,6 +86,7 @@ jobs:
       - name: Expo Prebuild
         run: |
           npx expo prebuild --platform android --no-install --clean
+          cp debug.keystore android/app/debug.keystore
           sed -i 's/org.gradle.jvmargs=-Xmx4096m/org.gradle.jvmargs=-Xmx2048m/g' android/gradle.properties
           echo "kotlin.daemon.jvmopts=-Xmx1024m" >> android/gradle.properties
 
