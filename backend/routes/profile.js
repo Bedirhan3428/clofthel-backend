@@ -373,4 +373,20 @@ router.post('/push-token', protect, async (req, res) => {
   }
 });
 
+/**
+ * POST /api/profile/accept-legal
+ * Kullanıcının yasal onay durumunu kabul edildi olarak günceller
+ */
+router.post('/accept-legal', protect, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    user.hasAcceptedLegal = true;
+    await user.save();
+    res.status(200).json({ success: true, message: 'Yasal onay kaydedildi.' });
+  } catch (error) {
+    console.error('[Accept Legal Route Error]', error);
+    res.status(500).json({ success: false, error: 'Yasal onay kaydedilemedi.' });
+  }
+});
+
 module.exports = router;

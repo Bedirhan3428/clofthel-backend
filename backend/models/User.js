@@ -95,6 +95,10 @@ const UserSchema = new mongoose.Schema({
       default: Date.now
     }
   }],
+  hasAcceptedLegal: {
+    type: Boolean,
+    default: true
+  },
   createdAt: {
     type: Date,
     default: Date.now

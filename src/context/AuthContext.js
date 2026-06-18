@@ -1,7 +1,7 @@
 import React, { createContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '../constants/config';
-import { apiFetch } from '../services/api';
+import { apiFetch, acceptLegalWarningApi } from '../services/api';
 import { registerForPushNotificationsAsync, sendPushTokenToBackend } from '../services/pushNotifications';
 
 export const AuthContext = createContext();
@@ -168,6 +168,24 @@ export const AuthProvider = ({ children }) => {
     setIsLoading(false);
   };
 
+  const acceptLegal = async () => {
+    try {
+      const res = await acceptLegalWarningApi();
+      if (res && res.success) {
+        if (user) {
+          const updatedUser = { ...user, hasAcceptedLegal: true };
+          setUser(updatedUser);
+          await AsyncStorage.setItem(`hasAcceptedLegal_${user._id}`, 'true');
+        }
+        return { success: true };
+      }
+      return { success: false, error: res?.error || 'Yasal onay kaydedilemedi.' };
+    } catch (e) {
+      console.warn('acceptLegal context error:', e);
+      return { success: false, error: 'Sunucu bağlantı hatası.' };
+    }
+  };
+
   const updateUserAvatar = (avatarUrl) => {
     if (user) {
       setUser({ ...user, avatar: avatarUrl });
@@ -181,7 +199,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ login, register, verifyEmail, resendCode, googleLogin, logout, user, userToken, isLoading, updateUserAvatar, updateUserName }}>
+    <AuthContext.Provider value={{ login, register, verifyEmail, resendCode, googleLogin, logout, user, userToken, isLoading, updateUserAvatar, updateUserName, acceptLegal }}>
       {children}
     </AuthContext.Provider>
   );

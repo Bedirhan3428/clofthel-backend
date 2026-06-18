@@ -32,7 +32,20 @@ export default function GenreScreen({ route, navigation }) {
         const seen = new Set();
         const uniqueData = [];
         for (const item of data) {
-          const key = item.comparable_base_slug || item.id || item._id;
+          if (!item) continue;
+          let slug = item.tranimeizle_slug || '';
+          
+          // Sezon, part, tv, izle gibi takıları temizleyip kök adı (base slug) bulalım
+          let baseSlug = slug
+            .replace(/-izle$/i, '')
+            .replace(/-tv$/i, '')
+            .replace(/-tv-izle$/i, '')
+            .replace(/-\d+-sezon$/i, '')
+            .replace(/-sezon-\d+$/i, '')
+            .replace(/-part-\d+$/i, '')
+            .replace(/-\d+$/i, ''); // Sonundaki sayıyı da sil (sezon sayısı olabilir)
+
+          const key = item.comparable_base_slug || baseSlug || item.id || item._id;
           if (!seen.has(key)) {
             seen.add(key);
             uniqueData.push(item);

@@ -79,7 +79,8 @@ const sendTokenResponse = (user, statusCode, res) => {
       name: user.name,
       email: user.email,
       avatar: user.avatar,
-      role: user.role
+      role: user.role,
+      hasAcceptedLegal: user.hasAcceptedLegal
     }
   });
 };
@@ -133,7 +134,8 @@ router.post('/register', registerLimiter, async (req, res) => {
       email,
       password,
       verificationCode: code,
-      verificationCodeExpires: expires
+      verificationCodeExpires: expires,
+      hasAcceptedLegal: false
     });
 
     // E-postayı gönder
@@ -227,7 +229,8 @@ router.get('/me', async (req, res) => {
           name: user.name,
           email: user.email,
           avatar: user.avatar,
-          role: user.role
+          role: user.role,
+          hasAcceptedLegal: user.hasAcceptedLegal
         }
       });
     } catch (err) {
@@ -372,7 +375,8 @@ router.post('/google', async (req, res) => {
         email: userEmail,
         password: Math.random().toString(36).slice(-8) + Math.random().toString(36).slice(-8), 
         isVerified: true, 
-        avatar: userAvatar || 'no-photo.jpg'
+        avatar: userAvatar || 'no-photo.jpg',
+        hasAcceptedLegal: false
       });
     } else {
       if (!user.isVerified) {

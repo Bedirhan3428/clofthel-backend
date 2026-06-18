@@ -20,6 +20,7 @@ import { APP_VERSION } from '../constants/config';
 import {
   fetchRecentAnimes,
   fetchTrendingAnimes,
+  fetchAnimesByGenre,
   checkAppUpdate,
 } from '../services/api';
 import { AuthContext } from '../context/AuthContext';
@@ -151,31 +152,37 @@ export default function HomeScreen() {
 
   const loadData = useCallback(async () => {
     try {
-      const [recent, trend] = await Promise.all([
-        fetchRecentAnimes(40),
-        fetchTrendingAnimes(40),
+      const [recent, trend, action, fantasy, comedy, romance] = await Promise.all([
+        fetchRecentAnimes(50),
+        fetchTrendingAnimes(50),
+        fetchAnimesByGenre('Aksiyon'),
+        fetchAnimesByGenre('Fantastik'),
+        fetchAnimesByGenre('Komedi'),
+        fetchAnimesByGenre('Romantik'),
       ]);
 
-      const globalSeen = new Set();
-      const getUniqueAndMark = (list, count = null) => {
+      const getUniqueListByBaseSlug = (list, count = null) => {
+        if (!list) return [];
+        const seen = new Set();
         const unique = [];
         for (const item of list) {
+          if (!item) continue;
           let slug = item.tranimeizle_slug || '';
           
           // Sezon, part, tv, izle gibi takıları temizleyip kök adı (base slug) bulalım
           let baseSlug = slug
             .replace(/-izle$/i, '')
+            .replace(/-tv$/i, '')
+            .replace(/-tv-izle$/i, '')
             .replace(/-\d+-sezon$/i, '')
             .replace(/-sezon-\d+$/i, '')
             .replace(/-part-\d+$/i, '')
-            .replace(/-tv$/i, '')
-            .replace(/-tv-izle$/i, '')
             .replace(/-\d+$/i, ''); // Sonundaki sayıyı da sil (sezon sayısı olabilir)
 
           const key = item.comparable_base_slug || baseSlug || item.id || item._id;
 
-          if (!globalSeen.has(key)) {
-            globalSeen.add(key);
+          if (!seen.has(key)) {
+            seen.add(key);
             unique.push(item);
             if (count && unique.length >= count) break;
           }
@@ -185,62 +192,27 @@ export default function HomeScreen() {
 
       // Featured: tüm animeler arasından en yüksek puanlı ilk 5 animeyi seç
       const allAnimes = [...recent, ...trend];
-      
-      const tempSeen = new Set();
-      const uniqueAnimes = [];
-      for (const item of allAnimes) {
-        let slug = item.tranimeizle_slug || '';
-        let baseSlug = slug
-          .replace(/-izle$/i, '')
-          .replace(/-\d+-sezon$/i, '')
-          .replace(/-sezon-\d+$/i, '')
-          .replace(/-part-\d+$/i, '')
-          .replace(/-tv$/i, '')
-          .replace(/-tv-izle$/i, '')
-          .replace(/-\d+$/i, '');
-
-        const key = item.comparable_base_slug || baseSlug || item.id || item._id;
-        if (!tempSeen.has(key)) {
-          tempSeen.add(key);
-          uniqueAnimes.push(item);
-        }
-      }
-
-      const sortedByScore = uniqueAnimes.sort(
+      const uniqueAllAnimes = getUniqueListByBaseSlug(allAnimes);
+      const sortedByScore = uniqueAllAnimes.sort(
         (a, b) => (b.averageScore || 0) - (a.averageScore || 0)
       );
       
-      const featured = getUniqueAndMark(sortedByScore, 5);
+      const featured = getUniqueListByBaseSlug(sortedByScore, 5);
       setFeaturedList(featured);
 
       // Son Eklenenler (maks 15 benzersiz)
-      const recentUnique = getUniqueAndMark(recent, 15);
+      const recentUnique = getUniqueListByBaseSlug(recent, 15);
       setRecentlyAdded(recentUnique);
 
       // Trendler (maks 20 benzersiz)
-      const trendingUnique = getUniqueAndMark(trend, 20);
+      const trendingUnique = getUniqueListByBaseSlug(trend, 20);
       setTrending(trendingUnique);
 
-      // Türlere göre kategorize et (önceki listelerde kullanılmayanlardan)
-      const actions = getUniqueAndMark(allAnimes.filter(a => {
-        const g = a.enrichedGenres || a.genres || [];
-        return g.includes('Action') || g.includes('Aksiyon');
-      }), 10);
-
-      const fantasies = getUniqueAndMark(allAnimes.filter(a => {
-        const g = a.enrichedGenres || a.genres || [];
-        return g.includes('Fantasy') || g.includes('Fantastik');
-      }), 10);
-
-      const comedies = getUniqueAndMark(allAnimes.filter(a => {
-        const g = a.enrichedGenres || a.genres || [];
-        return g.includes('Comedy') || g.includes('Komedi');
-      }), 10);
-
-      const romances = getUniqueAndMark(allAnimes.filter(a => {
-        const g = a.enrichedGenres || a.genres || [];
-        return g.includes('Romance') || g.includes('Romantik');
-      }), 10);
+      // Türlere göre kategorize et (doğrudan API'den gelen verileri satıra özel mükerrer filtresiyle temizleyelim)
+      const actions = getUniqueListByBaseSlug(action, 12);
+      const fantasies = getUniqueListByBaseSlug(fantasy, 12);
+      const comedies = getUniqueListByBaseSlug(comedy, 12);
+      const romances = getUniqueListByBaseSlug(romance, 12);
 
       setActionAnimes(actions);
       setFantasyAnimes(fantasies);
@@ -467,6 +439,7 @@ export default function HomeScreen() {
             {actionAnimes.length > 0 && (
               <AnimeGrid
                 title="Aksiyon Dolu Seriler"
+                titleStyle={styles.actionTitleStyle}
                 data={actionAnimes}
                 loading={loading}
                 onAnimePress={handleAnimePress}
@@ -477,6 +450,7 @@ export default function HomeScreen() {
             {fantasyAnimes.length > 0 && (
               <AnimeAnimatedCardRow
                 title="Fantastik Dünyalar"
+                titleStyle={styles.fantasyTitleStyle}
                 data={fantasyAnimes}
                 loading={loading}
                 onAnimePress={handleAnimePress}
@@ -487,6 +461,7 @@ export default function HomeScreen() {
             {comedyAnimes.length > 0 && (
               <AnimeLandscapeRow
                 title="Eğlenceli Komediler"
+                titleStyle={styles.comedyTitleStyle}
                 data={comedyAnimes}
                 loading={loading}
                 onAnimePress={handleAnimePress}
@@ -497,6 +472,7 @@ export default function HomeScreen() {
             {romanceAnimes.length > 0 && (
               <AnimeStoryRow
                 title="Romantik Klasikler"
+                titleStyle={styles.romanceTitleStyle}
                 data={romanceAnimes}
                 loading={loading}
                 onAnimePress={handleAnimePress}
@@ -693,5 +669,42 @@ const styles = StyleSheet.create({
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.semibold,
     letterSpacing: 0.2,
+  },
+  // Custom Typography for Genres
+  actionTitleStyle: {
+    color: '#FF3D57',
+    fontStyle: 'italic',
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 1.2,
+    textShadowColor: 'rgba(255, 61, 87, 0.45)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
+  },
+  fantasyTitleStyle: {
+    color: '#DA22FF',
+    fontStyle: 'italic',
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textShadowColor: 'rgba(218, 34, 255, 0.40)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
+  },
+  comedyTitleStyle: {
+    color: '#FFB300',
+    fontWeight: '800',
+    letterSpacing: 0.2,
+    textShadowColor: 'rgba(255, 179, 0, 0.35)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
+  },
+  romanceTitleStyle: {
+    color: '#FF5C8A',
+    fontStyle: 'italic',
+    fontWeight: '600',
+    letterSpacing: 0.8,
+    textShadowColor: 'rgba(255, 92, 138, 0.30)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
   },
 });

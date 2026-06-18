@@ -108,7 +108,7 @@ function AnimeLandscapeCard({ item, onPress }) {
   );
 }
 
-export default function AnimeLandscapeRow({ title, data, loading, onAnimePress, onSeeAll }) {
+export default function AnimeLandscapeRow({ title, data, loading, onAnimePress, onSeeAll, titleStyle }) {
   // Filter out items without banner images if possible, or just use all
   return (
     <View style={styles.container}>
@@ -116,7 +116,7 @@ export default function AnimeLandscapeRow({ title, data, loading, onAnimePress, 
       <View style={styles.sectionHeader}>
         <View style={styles.sectionTitleRow}>
           <View style={styles.accentBar} />
-          <Text style={styles.sectionTitle}>{title}</Text>
+          <Text style={[styles.sectionTitle, titleStyle]}>{title}</Text>
         </View>
         {onSeeAll && (
           <TouchableOpacity activeOpacity={0.7} style={styles.seeAllButton} onPress={onSeeAll}>

@@ -987,6 +987,27 @@ export async function markAllNotificationsAsRead() {
 }
 
 /**
+ * Yasal metinlerin kabul edildiğini backend'e kaydeder.
+ */
+export async function acceptLegalWarningApi() {
+  try {
+    const token = await AsyncStorage.getItem('userToken');
+    if (!token) return null;
+
+    const response = await apiFetch(`${API_BASE_URL}/profile/accept-legal`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    return await response.json();
+  } catch (err) {
+    console.error('acceptLegalWarningApi error:', err);
+    return null;
+  }
+}
+
+/**
  * Uygulamanın güncel sürüm durumunu kontrol eder.
  */
 export async function checkAppUpdate() {

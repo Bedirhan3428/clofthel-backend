@@ -26,7 +26,7 @@ const ITEM_SIZE = SCREEN_WIDTH * 0.72;
 const SPACING_ITEM = 10;
 const FULL_SIZE = ITEM_SIZE + SPACING_ITEM * 2;
 
-export default function AnimeAnimatedCardRow({ title, data, loading, onAnimePress, onSeeAll }) {
+export default function AnimeAnimatedCardRow({ title, data, loading, onAnimePress, onSeeAll, titleStyle }) {
   const scrollX = useRef(new Animated.Value(0)).current;
 
   if (loading) {
@@ -35,7 +35,7 @@ export default function AnimeAnimatedCardRow({ title, data, loading, onAnimePres
         <View style={styles.sectionHeader}>
           <View style={styles.sectionTitleRow}>
             <View style={styles.accentBar} />
-            <Text style={styles.sectionTitle}>{title}</Text>
+            <Text style={[styles.sectionTitle, titleStyle]}>{title}</Text>
           </View>
         </View>
         <View style={styles.loadingRow}>
@@ -53,7 +53,7 @@ export default function AnimeAnimatedCardRow({ title, data, loading, onAnimePres
       <View style={styles.sectionHeader}>
         <View style={styles.sectionTitleRow}>
           <View style={styles.accentBar} />
-          <Text style={styles.sectionTitle}>{title}</Text>
+          <Text style={[styles.sectionTitle, titleStyle]}>{title}</Text>
         </View>
         {onSeeAll && (
           <TouchableOpacity activeOpacity={0.7} style={styles.seeAllButton} onPress={onSeeAll}>
