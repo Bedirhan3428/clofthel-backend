@@ -269,6 +269,14 @@ export default function ProfileScreen({ navigation }) {
             <Text style={styles.menuText}>Hesap Ayarları</Text>
             <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
           </TouchableOpacity>
+
+          <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('PlayerSettings')}>
+            <View style={styles.menuIconWrapper}>
+              <Ionicons name="play-outline" size={20} color={COLORS.textSecondary} />
+            </View>
+            <Text style={styles.menuText}>Player Ayarları</Text>
+            <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+          </TouchableOpacity>
         </View>
 
         {/* Logout Button */}

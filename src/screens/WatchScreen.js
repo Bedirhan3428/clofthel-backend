@@ -23,6 +23,7 @@ import { API_BASE_URL } from '../constants/config';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { UltraClarityView } from '../../modules/ultra-clarity/src';
 import { getQualitySettings, saveQualitySettings } from '../utils/qualitySettings';
+import { getPlayerPreferences } from '../utils/preferences';
 import { useAlert } from '../context/AlertContext';
 
 let WebView = null;
@@ -60,6 +61,22 @@ export default function WatchScreen({ route, navigation }) {
   const [seasons, setSeasons] = useState([]);
   const [currentAnime, setCurrentAnime] = useState(null);
   const [isFixingAnilist, setIsFixingAnilist] = useState(false);
+  const [playerPrefs, setPlayerPrefs] = useState(null);
+
+  useEffect(() => {
+    const loadPrefs = async () => {
+      try {
+        const prefs = await getPlayerPreferences();
+        setPlayerPrefs(prefs);
+        setIsUltraClarityEnabled(prefs.ultraClarityEnabled);
+        setSelectedSpeed(prefs.defaultSpeed);
+        setCurrentSpeedLabel(prefs.defaultSpeed === 1.0 ? 'Normal (1.0x)' : `${prefs.defaultSpeed}x`);
+      } catch (err) {
+        console.warn('[WatchScreen] Failed to load player preferences:', err);
+      }
+    };
+    loadPrefs();
+  }, []);
 
   const slideAnim = useRef(new Animated.Value(400)).current;
   const webViewRef = useRef(null);
@@ -325,22 +342,30 @@ export default function WatchScreen({ route, navigation }) {
       <SafeAreaView style={styles.playerWrapper} edges={isFullscreen ? [] : ['top', 'left', 'right']}>
         {/* Video Player Box */}
         <View style={[styles.videoPlayerBox, isFullscreen && styles.videoPlayerBoxFullscreen]}>
-          {IS_WEB ? (
-            <WebVideoPlayer
-              videoUrl={videoUrl}
-              onMessage={handleWebViewMessage}
-              webViewRef={webViewRef}
-              isUltraClarityEnabled={isUltraClarityEnabled}
-              startAt={currentVideoTimeRef.current}
-            />
+          {playerPrefs ? (
+            IS_WEB ? (
+              <WebVideoPlayer
+                videoUrl={videoUrl}
+                onMessage={handleWebViewMessage}
+                webViewRef={webViewRef}
+                isUltraClarityEnabled={isUltraClarityEnabled}
+                startAt={currentVideoTimeRef.current}
+                playerPrefs={playerPrefs}
+              />
+            ) : (
+              <VideoPlayerWrapper
+                videoUrl={videoUrl}
+                onMessage={handleWebViewMessage}
+                webViewRef={webViewRef}
+                isUltraClarityEnabled={isUltraClarityEnabled}
+                startAt={currentVideoTimeRef.current}
+                playerPrefs={playerPrefs}
+              />
+            )
           ) : (
-            <VideoPlayerWrapper
-              videoUrl={videoUrl}
-              onMessage={handleWebViewMessage}
-              webViewRef={webViewRef}
-              isUltraClarityEnabled={isUltraClarityEnabled}
-              startAt={currentVideoTimeRef.current}
-            />
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' }}>
+              <ActivityIndicator color={COLORS.accent} />
+            </View>
           )}
           
           {/* Overlay Back Button on Video */}
@@ -664,7 +689,20 @@ const getRefererForUrl = (url) => {
   return 'https://optraco.top/';
 };
 
-const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, startAt = 0) => {
+const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, startAt = 0, playerPrefs = {}) => {
+  const prefs = {
+    doubleTapEnabled: true,
+    swipeSeekEnabled: true,
+    skipInterval: 10,
+    buttonSize: 'medium',
+    defaultSpeed: 1.0,
+    ultraClarityEnabled: false,
+    ...playerPrefs
+  };
+  let btnSizeMultiplier = 1.0;
+  if (prefs.buttonSize === 'small') btnSizeMultiplier = 0.8;
+  if (prefs.buttonSize === 'large') btnSizeMultiplier = 1.25;
+
   return `
     <!DOCTYPE html>
     <html lang="tr">
@@ -677,6 +715,7 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
       <style>
         :root {
           --accent-color: #FF6B00;
+          --btn-size-multiplier: ${btnSizeMultiplier};
         }
         * {
           -webkit-tap-highlight-color: transparent;
@@ -767,18 +806,18 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
         .center-btn {
           opacity: 0.6; transition: opacity 0.2s, background 0.2s, transform 0.2s;
           background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.15);
-          width: 58px; height: 58px; border-radius: 50%;
+          width: calc(58px * var(--btn-size-multiplier)); height: calc(58px * var(--btn-size-multiplier)); border-radius: 50%;
           position: relative; display: flex; align-items: center; justify-content: center;
         }
         .center-btn:hover {
           opacity: 1.0; background: rgba(0, 0, 0, 0.85);
         }
         .center-btn svg, .center-btn .lucide {
-          width: 28px; height: 28px;
+          width: calc(28px * var(--btn-size-multiplier)); height: calc(28px * var(--btn-size-multiplier));
         }
         .center-btn .btn-label {
           position: absolute;
-          font-size: 8px;
+          font-size: calc(8px * var(--btn-size-multiplier));
           font-weight: 800;
           color: #fff;
           top: 53%;
@@ -788,10 +827,10 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
           letter-spacing: -0.5px;
         }
         .play-btn {
-          width: 68px; height: 68px;
+          width: calc(68px * var(--btn-size-multiplier)); height: calc(68px * var(--btn-size-multiplier));
         }
         .play-btn svg, .play-btn .lucide {
-          width: 34px; height: 34px;
+          width: calc(34px * var(--btn-size-multiplier)); height: calc(34px * var(--btn-size-multiplier));
         }
         .bottom-controls {
           position: absolute;
@@ -863,6 +902,69 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
           box-shadow: 0 4px 10px rgba(0,0,0,0.5);
           white-space: nowrap;
         }
+
+        /* Double Tap & Swipe Seek HUD Styles */
+        .double-tap-overlay {
+          position: absolute; top: 0; bottom: 0; width: 35%;
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          z-index: 8; opacity: 0; pointer-events: none;
+          background: radial-gradient(circle, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0) 70%);
+          transition: opacity 0.2s ease;
+        }
+        .double-tap-overlay.left { left: 0; border-radius: 0 50% 50% 0; }
+        .double-tap-overlay.right { right: 0; border-radius: 50% 0 0 50%; }
+        .double-tap-overlay.active { opacity: 1; }
+        
+        .ripple-container {
+          position: absolute; width: 100px; height: 100px; display: flex; align-items: center; justify-content: center;
+        }
+        .ripple-circle {
+          position: absolute; width: 100%; height: 100%; border-radius: 50%;
+          background: rgba(255, 255, 255, 0.2); transform: scale(0);
+        }
+        .double-tap-overlay.active .ripple-circle:nth-child(1) {
+          animation: rippleEffect 0.6s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
+        }
+        .double-tap-overlay.active .ripple-circle:nth-child(2) {
+          animation: rippleEffect 0.6s cubic-bezier(0.1, 0.8, 0.3, 1) 0.15s forwards;
+        }
+        .double-tap-overlay.active .ripple-circle:nth-child(3) {
+          animation: rippleEffect 0.6s cubic-bezier(0.1, 0.8, 0.3, 1) 0.3s forwards;
+        }
+        @keyframes rippleEffect {
+          0% { transform: scale(0.2); opacity: 1; }
+          100% { transform: scale(1.5); opacity: 0; }
+        }
+        .double-tap-text {
+          display: flex; flex-direction: row; align-items: center; gap: 4px;
+          color: #fff; font-size: 14px; font-weight: 700; text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+          z-index: 9;
+        }
+        .double-tap-text svg, .double-tap-text .lucide {
+          width: 20px; height: 20px;
+        }
+
+        .swipe-hud {
+          position: absolute; top: 24px; left: 50%;
+          transform: translateX(-50%) scale(0.9);
+          background: rgba(0, 0, 0, 0.85); border: 1px solid rgba(255, 255, 255, 0.2);
+          border-radius: 8px; padding: 8px 16px;
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          z-index: 40; pointer-events: none; opacity: 0;
+          transition: opacity 0.15s, transform 0.15s;
+          box-shadow: 0 4px 15px rgba(0,0,0,0.6);
+        }
+        .swipe-hud.active {
+          opacity: 1; transform: translateX(-50%) scale(1);
+        }
+        .swipe-hud-time {
+          color: #fff; font-size: 16px; font-weight: 700;
+          font-family: system-ui, -apple-system, sans-serif;
+        }
+        .swipe-hud-change {
+          color: var(--accent-color); font-size: 12px; font-weight: 600; margin-top: 2px;
+          font-family: system-ui, -apple-system, sans-serif;
+        }
       </style>
     </head>
     <body>
@@ -893,17 +995,17 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
           </div>
           
           <div class="center-controls">
-            <button class="control-btn center-btn" id="btn-rewind" aria-label="10 Saniye Geri">
+            <button class="control-btn center-btn" id="btn-rewind" aria-label="${prefs.skipInterval} Saniye Geri">
               <i data-lucide="rotate-ccw"></i>
-              <span class="btn-label">10</span>
+              <span class="btn-label">${prefs.skipInterval}</span>
             </button>
             <button class="control-btn center-btn play-btn" id="btn-play-pause" aria-label="Oynat/Duraklat">
               <i data-lucide="play" id="play-icon"></i>
               <i data-lucide="pause" id="pause-icon" style="display: none;"></i>
             </button>
-            <button class="control-btn center-btn" id="btn-forward" aria-label="10 Saniye İleri">
+            <button class="control-btn center-btn" id="btn-forward" aria-label="${prefs.skipInterval} Saniye İleri">
               <i data-lucide="rotate-cw"></i>
-              <span class="btn-label">10</span>
+              <span class="btn-label">${prefs.skipInterval}</span>
             </button>
           </div>
           
@@ -916,6 +1018,36 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
               <div class="progress-tooltip" id="progress-tooltip">00:00</div>
             </div>
           </div>
+        </div>
+
+        <!-- Double Tap Seek Overlays -->
+        <div class="double-tap-overlay left" id="double-tap-left">
+          <div class="ripple-container">
+            <div class="ripple-circle"></div>
+            <div class="ripple-circle"></div>
+            <div class="ripple-circle"></div>
+          </div>
+          <div class="double-tap-text">
+            <i data-lucide="chevrons-left"></i>
+            <span>${prefs.skipInterval}s</span>
+          </div>
+        </div>
+        <div class="double-tap-overlay right" id="double-tap-right">
+          <div class="ripple-container">
+            <div class="ripple-circle"></div>
+            <div class="ripple-circle"></div>
+            <div class="ripple-circle"></div>
+          </div>
+          <div class="double-tap-text">
+            <span>${prefs.skipInterval}s</span>
+            <i data-lucide="chevrons-right"></i>
+          </div>
+        </div>
+
+        <!-- Swipe Seek HUD Overlay -->
+        <div class="swipe-hud" id="swipe-hud">
+          <div class="swipe-hud-time" id="swipe-hud-time">00:00</div>
+          <div class="swipe-hud-change" id="swipe-hud-change">[+0:00]</div>
         </div>
       </div>
       
@@ -955,15 +1087,17 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
         });
         
         function initPlayer() {
+          const defaultSpeed = ${prefs.defaultSpeed};
           if (isMp4) {
             video.src = videoUrl;
             video.addEventListener('loadedmetadata', function() {
               if (${startAt} > 0) video.currentTime = ${startAt};
+              video.playbackRate = defaultSpeed;
               video.play().catch(e => console.log('Autoplay blocked:', e));
             });
             sendToParent({ type: 'qualityLevels', levels: [] });
             sendToParent({ type: 'qualitySelected', index: -1, label: 'Otomatik' });
-            sendToParent({ type: 'speedSelected', speed: 1.0, label: 'Normal (1.0x)' });
+            sendToParent({ type: 'speedSelected', speed: defaultSpeed, label: defaultSpeed === 1.0 ? 'Normal (1.0x)' : defaultSpeed + 'x' });
           } else if (Hls.isSupported()) {
             const hlsOptions = ${isUltraClarityEnabled} ? {
               maxMaxBufferLength: 180,
@@ -990,7 +1124,8 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
               } else {
                 sendToParent({ type: 'qualitySelected', index: -1, label: 'Otomatik' });
               }
-              sendToParent({ type: 'speedSelected', speed: 1.0, label: 'Normal (1.0x)' });
+              video.playbackRate = defaultSpeed;
+              sendToParent({ type: 'speedSelected', speed: defaultSpeed, label: defaultSpeed === 1.0 ? 'Normal (1.0x)' : defaultSpeed + 'x' });
               if (${startAt} > 0) {
                 video.currentTime = ${startAt};
               }
@@ -1013,11 +1148,12 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
             video.src = videoUrl;
             video.addEventListener('loadedmetadata', function() {
               if (${startAt} > 0) video.currentTime = ${startAt};
+              video.playbackRate = defaultSpeed;
               video.play().catch(e => console.log('Autoplay blocked:', e));
             });
             sendToParent({ type: 'qualityLevels', levels: [] });
             sendToParent({ type: 'qualitySelected', index: -1, label: 'Otomatik' });
-            sendToParent({ type: 'speedSelected', speed: 1.0, label: 'Normal (1.0x)' });
+            sendToParent({ type: 'speedSelected', speed: defaultSpeed, label: defaultSpeed === 1.0 ? 'Normal (1.0x)' : defaultSpeed + 'x' });
           }
         }
         
@@ -1074,16 +1210,17 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
         
         const btnRewind = document.getElementById('btn-rewind');
         const btnForward = document.getElementById('btn-forward');
+        const skipInterval = ${prefs.skipInterval};
         
         btnRewind.addEventListener('click', (e) => {
           e.stopPropagation();
-          video.currentTime = Math.max(0, video.currentTime - 10);
+          video.currentTime = Math.max(0, video.currentTime - skipInterval);
           resetControlsTimeout();
         });
         
         btnForward.addEventListener('click', (e) => {
           e.stopPropagation();
-          video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
+          video.currentTime = Math.min(video.duration || 0, video.currentTime + skipInterval);
           resetControlsTimeout();
         });
         
@@ -1324,29 +1461,79 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
           }
         }
         
+        let dtTimerLeft = null;
+        let dtTimerRight = null;
+        function triggerDoubleTapFeedback(side) {
+          const overlay = document.getElementById('double-tap-' + side);
+          if (side === 'left') {
+            clearTimeout(dtTimerLeft);
+            overlay.classList.remove('active');
+            void overlay.offsetWidth; // Trigger reflow
+            overlay.classList.add('active');
+            dtTimerLeft = setTimeout(() => overlay.classList.remove('active'), 650);
+          } else {
+            clearTimeout(dtTimerRight);
+            overlay.classList.remove('active');
+            void overlay.offsetWidth; // Trigger reflow
+            overlay.classList.add('active');
+            dtTimerRight = setTimeout(() => overlay.classList.remove('active'), 650);
+          }
+        }
+
         let lastTap = 0;
+        let tapTimeout = null;
         function handleBackgroundClick(e) {
           const currentTime = new Date().getTime();
           const tapLength = currentTime - lastTap;
           
-          if (tapLength < 300 && tapLength > 0) {
-            e.preventDefault();
-            toggleFullscreen();
-            lastTap = currentTime;
-            return;
-          }
-          
-          lastTap = currentTime;
-          
           const isInteractive = e.target.closest('button, .progress-bar-container');
           if (isInteractive) return;
-          
-          sendToParent({ type: 'backgroundClick' });
-          
-          if (controlsOverlay.classList.contains('hidden')) {
-            showControls();
+
+          if (${prefs.doubleTapEnabled}) {
+            if (tapLength < 300 && tapLength > 0) {
+              clearTimeout(tapTimeout);
+              e.preventDefault();
+              
+              const rect = document.getElementById('player-container').getBoundingClientRect();
+              const touchX = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 0) || (e.changedTouches && e.changedTouches[0] ? e.changedTouches[0].clientX : 0);
+              const relativeX = touchX - rect.left;
+              
+              if (relativeX < rect.width / 2) {
+                video.currentTime = Math.max(0, video.currentTime - skipInterval);
+                triggerDoubleTapFeedback('left');
+              } else {
+                video.currentTime = Math.min(video.duration || 0, video.currentTime + skipInterval);
+                triggerDoubleTapFeedback('right');
+              }
+              
+              lastTap = 0;
+              return;
+            }
+            
+            lastTap = currentTime;
+            
+            tapTimeout = setTimeout(() => {
+              sendToParent({ type: 'backgroundClick' });
+              if (controlsOverlay.classList.contains('hidden')) {
+                showControls();
+              } else {
+                hideControls();
+              }
+            }, 300);
           } else {
-            hideControls();
+            if (tapLength < 300 && tapLength > 0) {
+              e.preventDefault();
+              toggleFullscreen();
+              lastTap = currentTime;
+              return;
+            }
+            lastTap = currentTime;
+            sendToParent({ type: 'backgroundClick' });
+            if (controlsOverlay.classList.contains('hidden')) {
+              showControls();
+            } else {
+              hideControls();
+            }
           }
         }
         
@@ -1355,6 +1542,83 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
         
         controlsOverlay.addEventListener('mousemove', resetControlsTimeout);
         controlsOverlay.addEventListener('touchstart', resetControlsTimeout, { passive: true });
+
+        // Swipe to Seek functionality
+        const swipeHud = document.getElementById('swipe-hud');
+        const swipeHudTime = document.getElementById('swipe-hud-time');
+        const swipeHudChange = document.getElementById('swipe-hud-change');
+        
+        function showSwipeHud(targetTime, delta) {
+          swipeHudTime.textContent = formatTime(targetTime);
+          const sign = delta >= 0 ? '+' : '';
+          swipeHudChange.textContent = '[' + sign + formatTime(delta) + ']';
+          swipeHud.classList.add('active');
+        }
+        
+        function hideSwipeHud() {
+          swipeHud.classList.remove('active');
+        }
+
+        let swipeStartX = 0;
+        let swipeStartY = 0;
+        let isSwiping = false;
+        let swipeInitialTime = 0;
+        let swipeCurrentTargetTime = 0;
+        
+        function handleSwipeStart(e) {
+          if (!${prefs.swipeSeekEnabled}) return;
+          const isInteractive = e.target.closest('button, .progress-bar-container');
+          if (isInteractive) return;
+          const touch = e.touches[0];
+          swipeStartX = touch.clientX;
+          swipeStartY = touch.clientY;
+          swipeInitialTime = video.currentTime;
+          isSwiping = false;
+        }
+
+        function handleSwipeMove(e) {
+          if (!${prefs.swipeSeekEnabled} || swipeStartX === 0) return;
+          const touch = e.touches[0];
+          const deltaX = touch.clientX - swipeStartX;
+          const deltaY = touch.clientY - swipeStartY;
+          
+          if (!isSwiping && Math.abs(deltaX) > 15 && Math.abs(deltaX) > Math.abs(deltaY)) {
+            isSwiping = true;
+            video.pause();
+            showControls();
+            clearTimeout(controlsTimer);
+          }
+          
+          if (isSwiping) {
+            e.preventDefault();
+            const rect = clickBackdrop.getBoundingClientRect();
+            const swipeSensitivity = 180; 
+            const deltaSeconds = (deltaX / rect.width) * swipeSensitivity;
+            swipeCurrentTargetTime = Math.max(0, Math.min(video.duration || 0, swipeInitialTime + deltaSeconds));
+            showSwipeHud(swipeCurrentTargetTime, deltaSeconds);
+          }
+        }
+
+        function handleSwipeEnd(e) {
+          if (!${prefs.swipeSeekEnabled} || !isSwiping) {
+            swipeStartX = 0;
+            return;
+          }
+          video.currentTime = swipeCurrentTargetTime;
+          hideSwipeHud();
+          video.play().catch(err => console.log('Swipe play resume fail:', err));
+          isSwiping = false;
+          swipeStartX = 0;
+          resetControlsTimeout();
+        }
+
+        clickBackdrop.addEventListener('touchstart', handleSwipeStart, { passive: true });
+        clickBackdrop.addEventListener('touchmove', handleSwipeMove, { passive: false });
+        clickBackdrop.addEventListener('touchend', handleSwipeEnd, { passive: true });
+
+        controlsOverlay.addEventListener('touchstart', handleSwipeStart, { passive: true });
+        controlsOverlay.addEventListener('touchmove', handleSwipeMove, { passive: false });
+        controlsOverlay.addEventListener('touchend', handleSwipeEnd, { passive: true });
         
         window.addEventListener('message', (event) => {
           try {
@@ -1419,7 +1683,7 @@ const generatePlayerHtml = (videoUrl, isMp4, isUltraClarityEnabled = false, star
   `;
 };
 
-function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, isUltraClarityEnabled, startAt }) {
+function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, isUltraClarityEnabled, startAt, playerPrefs }) {
   const refererUrl = getRefererForUrl(videoUrl);
   console.log('[WatchScreen] Playing video directly with Referer baseUrl:', refererUrl);
 
@@ -1434,7 +1698,7 @@ function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, isUltraClarityEna
     isMp4 = true;
   }
 
-  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, isUltraClarityEnabled, startAt));
+  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, isUltraClarityEnabled, startAt, playerPrefs));
 
   useEffect(() => {
     if (webViewRef.current) {
@@ -1460,7 +1724,7 @@ function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, isUltraClarityEna
   );
 }
 
-function WebVideoPlayer({ videoUrl, onMessage, webViewRef, isUltraClarityEnabled, startAt }) {
+function WebVideoPlayer({ videoUrl, onMessage, webViewRef, isUltraClarityEnabled, startAt, playerPrefs }) {
   const isSibnet = videoUrl && (videoUrl.includes('sibnet.ru') || videoUrl.toLowerCase().includes('.mp4'));
   let videoSourceUrl = videoUrl;
   let isMp4 = false;
@@ -1471,7 +1735,7 @@ function WebVideoPlayer({ videoUrl, onMessage, webViewRef, isUltraClarityEnabled
     isMp4 = true;
   }
 
-  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, isUltraClarityEnabled, startAt));
+  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, isUltraClarityEnabled, startAt, playerPrefs));
 
   useEffect(() => {
     if (webViewRef.current && webViewRef.current.contentWindow) {
