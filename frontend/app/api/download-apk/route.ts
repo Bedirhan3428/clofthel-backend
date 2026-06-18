@@ -1,7 +1,16 @@
 import { NextResponse } from 'next/server';
 
-export async function GET() {
-  const apkUrl = 'https://firebasestorage.googleapis.com/v0/b/sigalmedia.firebasestorage.app/o/app-release.apk?alt=media&token=7e60ce1f-9984-44e7-98f4-5117af8fbc2f';
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const type = searchParams.get('type') || 'android';
+
+  let apkUrl = 'https://firebasestorage.googleapis.com/v0/b/sigalmedia.firebasestorage.app/o/android.apk?alt=media&token=37f75d11-fa9d-4a12-b183-b7460b8c3747';
+  let fileName = 'Clofthel-v1.3.0.apk';
+
+  if (type === 'emulator') {
+    apkUrl = 'https://firebasestorage.googleapis.com/v0/b/sigalmedia.firebasestorage.app/o/emulator.apk?alt=media&token=4ab1dec8-cffe-4b1d-a2e2-dc16a03478e6';
+    fileName = 'Clofthel-v1.3.0-emulator.apk';
+  }
   
   try {
     const response = await fetch(apkUrl);
@@ -10,10 +19,8 @@ export async function GET() {
       throw new Error(`Failed to fetch APK: ${response.statusText}`);
     }
 
-    // Headers'ı klonla
     const headers = new Headers(response.headers);
-    // İndirme adını zorla (Force download with specific name)
-    headers.set('Content-Disposition', 'attachment; filename="Clofthel-v1.2.0.apk"');
+    headers.set('Content-Disposition', `attachment; filename="${fileName}"`);
     headers.set('Content-Type', 'application/vnd.android.package-archive');
 
     return new NextResponse(response.body, {

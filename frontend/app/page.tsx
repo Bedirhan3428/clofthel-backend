@@ -27,6 +27,7 @@ interface Comment {
 }
 
 const PATCH_NOTES = [
+  { version: "v1.3.0", date: "18 Haziran 2026", text: "Gelişmiş güvenlik önlemleri ve yeni yasal onay (EULA) altyapısı entegre edildi. Ana sayfa tür satırları doğrudan API'den yüklenerek zenginleştirildi, benzer sezonlar tekil olarak gruplandı. Oynatıcı hız ve görüntü netleştirme seçenekleri eklendi!" },
   { version: "v1.2.0", date: "14 Haziran 2026", text: "Özel tasarlanmış akıllı oynatıcı altyapısı sayesinde artık hiçbir video yarım kalmıyor. Pürüzsüz ve kesintisiz anime izleme deneyimi getirildi!" },
   { version: "v1.1.5", date: "02 Haziran 2026", text: "Arama optimizasyonları ve görsel iyileştirmeler yapıldı. AniList entegrasyonu sayesinde aradığınız animeleri en doğru afiş ve puanlarla bulabilirsiniz." },
   { version: "v1.0.0", date: "15 Mayıs 2026", text: "Clofthel tam sürüm yayında! Uygulama içi indirme yöneticisi eklendi, artık animeleri cihazınıza indirip internet olmadan da izleyebilirsiniz." }
@@ -368,7 +369,7 @@ export default function Home() {
           <div className="relative z-10 max-w-4xl mx-auto text-center flex flex-col items-center gap-8 animate-fade-in mt-10">
             <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#ff6b00]/10 border border-[#ff6b00]/20 text-[#ff6b00] font-bold text-xs uppercase tracking-widest mb-4">
               <span className="w-2 h-2 rounded-full bg-[#ff6b00] animate-pulse" />
-              Sürüm 1.2.0 Yayında
+              Sürüm 1.3.0 Yayında
             </div>
             
             <div className="inline-flex items-center justify-center gap-2 text-[#8e8e9f] font-black text-xs uppercase tracking-widest mb-6 border border-white/10 bg-white/5 px-4 py-2 rounded-full">
@@ -388,18 +389,26 @@ export default function Home() {
             </p>
 
             <div id="download-section" className="flex flex-col sm:flex-row items-center gap-6 mt-10 mb-16 w-full justify-center">
-              <button disabled className="flex items-center justify-center gap-3 bg-white/5 text-[#8e8e9f] px-8 py-5 rounded-2xl font-black w-full sm:w-auto text-lg cursor-not-allowed border border-white/10">
-                <FaWindows className="w-7 h-7 opacity-50" />
-                Windows (Yakında)
-              </button>
               <a 
-                href="/api/download-apk" 
-                download="Clofthel-v1.2.0.apk"
+                href="/api/download-apk?type=android" 
+                download="Clofthel-v1.3.0.apk"
                 className="flex items-center justify-center gap-3 bg-[#1e1e24] border border-white/10 text-white px-8 py-5 rounded-2xl font-black hover:bg-[#2a2a32] hover:scale-105 active:scale-95 transition-all shadow-xl w-full sm:w-auto text-lg group"
               >
                 <FaAndroid className="w-7 h-7 text-[#3DDC84] transition-transform group-hover:-translate-y-1" />
                 Android (APK) İndir
               </a>
+              <a 
+                href="/api/download-apk?type=emulator" 
+                download="Clofthel-v1.3.0-emulator.apk"
+                className="flex items-center justify-center gap-3 bg-[#1e1e24] border border-[#ff6b00]/30 text-white px-8 py-5 rounded-2xl font-black hover:bg-[#2a2a32] hover:scale-105 active:scale-95 transition-all shadow-xl w-full sm:w-auto text-lg group"
+              >
+                <FaAndroid className="w-7 h-7 text-[#ff6b00] transition-transform group-hover:-translate-y-1" />
+                Emülatör (x86) İndir
+              </a>
+              <button disabled className="flex items-center justify-center gap-3 bg-white/5 text-[#8e8e9f] px-8 py-5 rounded-2xl font-black w-full sm:w-auto text-lg cursor-not-allowed border border-white/10">
+                <FaWindows className="w-7 h-7 opacity-50" />
+                Windows (Yakında)
+              </button>
             </div>
           </div>
 
