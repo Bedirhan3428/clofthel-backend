@@ -45,7 +45,15 @@ export default function GenreScreen({ route, navigation }) {
             .replace(/-part-\d+$/i, '')
             .replace(/-\d+$/i, ''); // Sonundaki sayıyı da sil (sezon sayısı olabilir)
 
-          const key = item.comparable_base_slug || baseSlug || item.id || item._id;
+          // Franchise key based on English/Romaji title to prevent duplicates of different seasons
+          let title = item.anime_title || item.orijinal_ad || '';
+          let cleanedTitle = title.toLowerCase()
+            .replace(/[\s:]+(?:season|sezon|part|cour|the final|final|movie|film|films|movies|ova|ona|special|specials)\s*\d*/gi, '')
+            .replace(/\b\d+(st|nd|rd|th)?\b/g, '')
+            .replace(/[^a-z0-9]/g, '')
+            .trim();
+
+          const key = (cleanedTitle && cleanedTitle.length > 3) ? cleanedTitle : (item.comparable_base_slug || baseSlug || item.id || item._id);
           if (!seen.has(key)) {
             seen.add(key);
             uniqueData.push(item);

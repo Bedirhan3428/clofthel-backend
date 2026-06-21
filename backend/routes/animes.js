@@ -76,6 +76,59 @@ function formatSlugToTitle(slug) {
   return title.replace(/\b\w/g, c => c.toUpperCase()); // capitalize words
 }
 
+function getFranchiseKey(doc) {
+  if (doc.orijinal_ad) {
+    return doc.orijinal_ad
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[\s:]+(?:season|sezon|part|cour|the final|final|movie|film|films|movies|ova|ona|special|specials)\s*\d*/gi, '')
+      .replace(/\b\d+(st|nd|rd|th)?\b/g, '') // remove numbers
+      .replace(/[^a-z0-9]/g, '')
+      .trim();
+  }
+  let slug = (doc.tranimeizle_slug || '').toLowerCase();
+  slug = slug
+    .replace(/(?:-\d+)?(?:-the)?-final(?:-season|-sezonu?)?(?:-\d+)?(?:-izle)?$/, '')
+    .replace(/-\d+-sezon(?:u)?(?:-\d+)?(?:-part\d+)?(?:-izle)?$/, '')
+    .replace(/-sezon(?:u)?(?:-\d+)?(?:-izle)?$/, '')
+    .replace(/-\d+-cour(?:-izle)?$/, '')
+    .replace(/-part-?\d+(?:-izle)?$/, '')
+    .replace(/-kisim-?\d*(?:-izle)?$/, '')
+    .replace(/-\d+-kisim(?:-izle)?$/, '')
+    .replace(/-(movie|film)-?\d*(?:-izle)?$/, '')
+    .replace(/-(ova|ona|special)-?\d*(?:-izle)?$/, '')
+    .replace(/-izle$/, '')
+    .replace(/-(hd|fullhd|fhd)$/, '')
+    .replace(/[-]/g, '');
+  return slug.trim();
+}
+
+function isValidMatch(slug, titleRomaji, titleEnglish) {
+  const slugTokens = (slug || '').toLowerCase().replace(/[^a-z0-9]/g, ' ').split(/\s+/).filter(x => x && x.length > 2);
+  if (slugTokens.length === 0) return false;
+  
+  const romaji = (titleRomaji || '').toLowerCase();
+  const english = (titleEnglish || '').toLowerCase();
+  
+  const stopwords = ['izle', 'movie', 'film', 'season', 'sezon', 'part', 'kisim', 'ova', 'ona', 'special', 'tv', 'dublaj', 'altyazi', 'hd', 'fullhd'];
+  const keyTokens = slugTokens.filter(t => !stopwords.includes(t) && !/^\d+$/.test(t));
+  if (keyTokens.length === 0) return true;
+  
+  const firstToken = keyTokens[0];
+  const secondToken = keyTokens[1];
+  
+  const matchesFirst = romaji.includes(firstToken) || english.includes(firstToken);
+  const matchesSecond = secondToken ? (romaji.includes(secondToken) || english.includes(secondToken)) : false;
+  
+  if (slug.includes('attack-on-titan') && (romaji.includes('shingeki') || english.includes('titan'))) return true;
+  if (slug.includes('shingeki-no-kyojin') && (romaji.includes('shingeki') || english.includes('titan'))) return true;
+  if (slug.includes('your-name') && (romaji.includes('kimi') || english.includes('name'))) return true;
+  if (slug.includes('kimi-no-na-wa') && (romaji.includes('kimi') || english.includes('name'))) return true;
+  
+  return matchesFirst || matchesSecond;
+}
+
 /**
  * Helper: extract base slug and season info from slug
  * e.g., 'classroom-of-the-elite-2-sezon-izle' -> { baseSlug: 'classroom-of-the-elite', season: 2, type: 'Sezon' }
@@ -520,19 +573,28 @@ function lazyResolveAnilistInfo(docs) {
           // Wait 500ms to respect AniList API rate limits
           await new Promise(resolve => setTimeout(resolve, 500));
           
-          const mediaList = await searchAniListTitles(cleanTitle);
+          let mediaList = await searchAniListTitles(cleanTitle);
+          
+          // Fallback: search with first 3 words of the clean title if no results found
+          if ((!mediaList || mediaList.length === 0) && cleanTitle.split(/\s+/).length > 3) {
+            const fallbackQuery = cleanTitle.split(/\s+/).slice(0, 3).join(' ');
+            mediaList = await searchAniListTitles(fallbackQuery);
+          }
+
           if (mediaList && mediaList.length > 0) {
             const docSeason = getBaseSlugAndSeason(doc.tranimeizle_slug).season;
             
-            // Find a match with the correct season number
+            // Find a match with correct season number and valid token structure
             let matched = mediaList.find(m => {
               const mTitle = m.title?.english || m.title?.romaji;
-              return getSeasonFromTitle(mTitle) === docSeason;
+              const seasonMatch = getSeasonFromTitle(mTitle) === docSeason;
+              const tokenMatch = isValidMatch(doc.tranimeizle_slug, m.title?.romaji, m.title?.english);
+              return seasonMatch && tokenMatch;
             });
             
-            // Fallback to first if none match
+            // Fallback to first valid match if none match the season specifically
             if (!matched) {
-              matched = mediaList[0];
+              matched = mediaList.find(m => isValidMatch(doc.tranimeizle_slug, m.title?.romaji, m.title?.english));
             }
             
             const englishTitle = matched.title?.english || matched.title?.romaji;
@@ -677,10 +739,10 @@ router.get('/search', webSearchLimiter, async (req, res) => {
     const resolvedAnimes = await resolveSiblings(animes);
     lazyResolveAnilistInfo(resolvedAnimes);
 
-    // Group by comparable_base_slug
+    // Group by franchise key
     const groups = new Map();
     for (const doc of resolvedAnimes) {
-      const key = doc.comparable_base_slug || getComparableBaseSlug(doc.tranimeizle_slug);
+      const key = getFranchiseKey(doc);
       if (!groups.has(key)) {
         groups.set(key, []);
       }
@@ -758,6 +820,11 @@ router.get('/search', webSearchLimiter, async (req, res) => {
         const mTitle = m.title?.english || m.title?.romaji;
         const mSeason = getSeasonFromTitle(mTitle);
         if (docSeason !== mSeason) return false;
+        
+        // Stricter token match check
+        if (!isValidMatch(doc.tranimeizle_slug, m.title?.romaji, m.title?.english)) {
+          return false;
+        }
         
         if (m.title?.romaji) {
           let cleanedRomaji = m.title.romaji.toLowerCase()
@@ -1182,7 +1249,7 @@ router.get('/genre/:genre', async (req, res) => {
     const seenBaseSlugs = new Set();
 
     for (const doc of validAnimes) {
-      const baseKey = doc.comparable_base_slug || getComparableBaseSlug(doc.tranimeizle_slug);
+      const baseKey = getFranchiseKey(doc);
       
       // Prioritize Season 1 if possible, but keep it simple here by tracking seen
       if (seenBaseSlugs.has(baseKey)) continue;
@@ -1190,6 +1257,12 @@ router.get('/genre/:genre', async (req, res) => {
       let sortIndex = 999;
       const matchedMedia = mediaList.find(m => {
         if (doc.anilist_id && doc.anilist_id === m.id) return true;
+        
+        // Stricter token match check
+        if (!isValidMatch(doc.tranimeizle_slug, m.title?.romaji, m.title?.english)) {
+          return false;
+        }
+        
         // slug match fallback
         if (m.title?.romaji) {
           const cleanedRomaji = m.title.romaji.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');

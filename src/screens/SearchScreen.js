@@ -45,7 +45,14 @@ export default function SearchScreen({ route, navigation }) {
         const seen = new Set();
         const uniqueData = [];
         for (const item of data) {
-          const key = item.comparable_base_slug || item.id || item._id;
+          let title = item.title || item.anime_title || item.orijinal_ad || '';
+          let cleanedTitle = title.toLowerCase()
+            .replace(/[\s:]+(?:season|sezon|part|cour|the final|final|movie|film|films|movies|ova|ona|special|specials)\s*\d*/gi, '')
+            .replace(/\b\d+(st|nd|rd|th)?\b/g, '')
+            .replace(/[^a-z0-9]/g, '')
+            .trim();
+
+          const key = (cleanedTitle && cleanedTitle.length > 3) ? cleanedTitle : (item.comparable_base_slug || item.id || item._id);
           if (!seen.has(key)) {
             seen.add(key);
             uniqueData.push(item);

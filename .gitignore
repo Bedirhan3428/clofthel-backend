@@ -55,3 +55,9 @@ build/
 
 backend/.env
 backend/node_modules
+backend/db_backup.json
+backend/*_test.js
+backend/test_*.js
+backend/search_*.js
+backend/inspect_*.js
+backend/find_*.js
