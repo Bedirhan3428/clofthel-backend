@@ -22,7 +22,7 @@ const https = require('https');
 const http = require('http');
 
 const MONGO_URI = process.env.MONGO_URI;
-const MAX_PAGES = 30;
+const MAX_PAGES = 10;
 const BASE_URL = 'https://www.tranimeizle.io/listeler/yenibolum/sayfa-';
 // Render backend URL - scraper sonuçlarını buraya gönderir
 const BACKEND_URL = process.env.BACKEND_URL || 'https://clofthel-backend.onrender.com';
