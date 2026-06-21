@@ -27,6 +27,7 @@ interface Comment {
 }
 
 const PATCH_NOTES = [
+  { version: "v1.3.0 - Kısım 2", date: "21 Haziran 2026", text: "Mobil uygulama indirme bağlantıları yeni derlemelerle güncellendi. Cloudflare engellerini aşmak üzere tasarlanan yeni veri tarama altyapısı yayına alındı." },
   { version: "v1.3.0", date: "18 Haziran 2026", text: "Gelişmiş güvenlik önlemleri ve yeni yasal onay (EULA) altyapısı entegre edildi. Ana sayfa tür satırları doğrudan API'den yüklenerek zenginleştirildi, benzer sezonlar tekil olarak gruplandı. Oynatıcı hız ve görüntü netleştirme seçenekleri eklendi!" },
   { version: "v1.2.0", date: "14 Haziran 2026", text: "Özel tasarlanmış akıllı oynatıcı altyapısı sayesinde artık hiçbir video yarım kalmıyor. Pürüzsüz ve kesintisiz anime izleme deneyimi getirildi!" },
   { version: "v1.1.5", date: "02 Haziran 2026", text: "Arama optimizasyonları ve görsel iyileştirmeler yapıldı. AniList entegrasyonu sayesinde aradığınız animeleri en doğru afiş ve puanlarla bulabilirsiniz." },

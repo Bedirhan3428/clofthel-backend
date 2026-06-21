@@ -21,7 +21,6 @@ cat > "$SCRAPER_DIR/scrape.js" << 'SCRIPT_EOF'
 const https = require('https');
 const http = require('http');
 
-const MONGO_URI = process.env.MONGO_URI;
 const MAX_PAGES = 10;
 const BASE_URL = 'https://www.tranimeizle.io/listeler/yenibolum/sayfa-';
 // Render backend URL - scraper sonuçlarını buraya gönderir
@@ -174,7 +173,6 @@ SCRIPT_EOF
 
 # 4. .env dosyasını oluştur
 cat > "$SCRAPER_DIR/.env" << ENV_EOF
-MONGO_URI=mongodb://Bedirhan:IWVAR7SF4sX03iPxm8cAsxLpUcplC2oL@ac-gvpimdi-shard-00-00.ng7xf3i.mongodb.net:27017,ac-gvpimdi-shard-00-01.ng7xf3i.mongodb.net:27017,ac-gvpimdi-shard-00-02.ng7xf3i.mongodb.net:27017/clofthel_db?ssl=true&replicaSet=atlas-4w6yvn-shard-0&authSource=admin&retryWrites=true&w=majority
 BACKEND_URL=https://clofthel-backend.onrender.com
 INTERNAL_API_KEY=K7x!v9P2#L5q*zR9_tM1\$wF8&jY3@cB6-sX4%dG8_uH2
 ENV_EOF
