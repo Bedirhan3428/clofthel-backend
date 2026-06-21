@@ -75,4 +75,21 @@ app.listen(PORT, () => {
   console.log(`🚀 Scraper Microservice is running on port ${PORT}`);
   console.log(`🔒 Güvenlik: CORS kısıtlı, API key koruması aktif`);
   console.log(`⏰ Cron job scheduled to run 5 times a day (02:00, 08:00, 12:00, 16:00, 20:00).`);
+
+  // ── Self-ping: Render free tier 15 dk sonra uyutuyor, bunu engelle ──
+  const RENDER_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_PING_URL;
+  if (RENDER_URL) {
+    console.log(`🏓 Self-ping aktif: ${RENDER_URL}/health (her 14 dk)`);
+    setInterval(async () => {
+      try {
+        await axios.get(`${RENDER_URL}/health`);
+        console.log(`[SELF-PING] OK - ${new Date().toISOString()}`);
+      } catch (err) {
+        console.warn(`[SELF-PING] Failed: ${err.message}`);
+      }
+    }, 14 * 60 * 1000); // 14 dakika
+  } else {
+    console.warn('⚠️ RENDER_EXTERNAL_URL veya SELF_PING_URL tanımlı değil. Self-ping devre dışı.');
+    console.warn('   Render free tier servisi uyuyabilir ve cron çalışmayabilir.');
+  }
 });
