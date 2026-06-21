@@ -77,6 +77,12 @@ function formatSlugToTitle(slug) {
 }
 
 function getFranchiseKey(doc) {
+  if (doc.comparable_base_slug) {
+    return doc.comparable_base_slug;
+  }
+  if (doc.tranimeizle_slug) {
+    return getComparableBaseSlug(doc.tranimeizle_slug);
+  }
   if (doc.orijinal_ad) {
     return doc.orijinal_ad
       .toLowerCase()
@@ -87,21 +93,35 @@ function getFranchiseKey(doc) {
       .replace(/[^a-z0-9]/g, '')
       .trim();
   }
-  let slug = (doc.tranimeizle_slug || '').toLowerCase();
-  slug = slug
-    .replace(/(?:-\d+)?(?:-the)?-final(?:-season|-sezonu?)?(?:-\d+)?(?:-izle)?$/, '')
-    .replace(/-\d+-sezon(?:u)?(?:-\d+)?(?:-part\d+)?(?:-izle)?$/, '')
-    .replace(/-sezon(?:u)?(?:-\d+)?(?:-izle)?$/, '')
-    .replace(/-\d+-cour(?:-izle)?$/, '')
-    .replace(/-part-?\d+(?:-izle)?$/, '')
-    .replace(/-kisim-?\d*(?:-izle)?$/, '')
-    .replace(/-\d+-kisim(?:-izle)?$/, '')
-    .replace(/-(movie|film)-?\d*(?:-izle)?$/, '')
-    .replace(/-(ova|ona|special)-?\d*(?:-izle)?$/, '')
-    .replace(/-izle$/, '')
-    .replace(/-(hd|fullhd|fhd)$/, '')
-    .replace(/[-]/g, '');
-  return slug.trim();
+  return String(doc._id || doc.id);
+}
+
+function getRepresentative(docs) {
+  if (!docs || docs.length === 0) return null;
+  if (docs.length === 1) return docs[0];
+
+  return [...docs].sort((a, b) => {
+    // 1. Prefer TV format over others (e.g. prioritize Season 1 TV over Movie sequel)
+    const aFormat = (a.format || '').toUpperCase();
+    const bFormat = (b.format || '').toUpperCase();
+    if (aFormat === 'TV' && bFormat !== 'TV') return -1;
+    if (aFormat !== 'TV' && bFormat === 'TV') return 1;
+
+    // 2. Chronological order
+    const aOrder = a.chronological_order || 1;
+    const bOrder = b.chronological_order || 1;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+
+    // 3. Season number
+    const aInfo = getBaseSlugAndSeason(a.tranimeizle_slug);
+    const bInfo = getBaseSlugAndSeason(b.tranimeizle_slug);
+    if (aInfo.season !== bInfo.season) {
+      return aInfo.season - bInfo.season;
+    }
+
+    // 4. Default fallback: more episodes or older ID
+    return (b.total_episodes || 0) - (a.total_episodes || 0);
+  })[0];
 }
 
 function isValidMatch(slug, titleRomaji, titleEnglish) {
@@ -752,16 +772,7 @@ router.get('/search', webSearchLimiter, async (req, res) => {
     // For each group, pick the lowest season number as representative
     const uniqueAnimes = [];
     for (const docs of groups.values()) {
-      docs.sort((a, b) => {
-        const aOrder = a.chronological_order || 1;
-        const bOrder = b.chronological_order || 1;
-        if (aOrder !== bOrder) return aOrder - bOrder;
-
-        const aInfo = getBaseSlugAndSeason(a.tranimeizle_slug);
-        const bInfo = getBaseSlugAndSeason(b.tranimeizle_slug);
-        return aInfo.season - bInfo.season;
-      });
-      uniqueAnimes.push(docs[0]); // Pick lowest season
+      uniqueAnimes.push(getRepresentative(docs));
     }
 
       // Filter out ghost entries and MUSIC formats
@@ -923,18 +934,48 @@ router.get('/recent', async (req, res) => {
   try {
     const defaultLimit = req.isWebClient ? 10 : 20;
     const limit = Math.min(req.isWebClient ? 10 : 30, parseInt(req.query.limit) || defaultLimit);
+    
+    // Fetch more items to allow quality-based filtering and deduplication
     let animes = await Anime.find()
       .sort({ _id: -1 })
-      .limit(limit)
+      .limit(120)
       .lean();
 
     animes = await resolveSiblings(animes);
     lazyResolveAnilistInfo(animes);
 
-    // Filter out ghost entries and MUSIC formats
-    animes = animes.filter(doc => !isGhostEntry(doc) && (doc.format || '').toUpperCase() !== 'MUSIC');
+    // Filter out ghost entries, music formats, and entries without covers/descriptions or very low rating
+    let filtered = animes.filter(doc => {
+      if (isGhostEntry(doc)) return false;
+      if ((doc.format || '').toUpperCase() === 'MUSIC') return false;
+      if (!doc.cover_image && !doc.coverImage) return false;
+      if (!doc.description) return false;
+      if (doc.average_score !== undefined && doc.average_score !== null && doc.average_score < 45) {
+        return false;
+      }
+      return true;
+    });
 
-    res.json({ success: true, data: animes.map(formatAnimeDoc) });
+    // Group by franchise key to prevent duplicate seasons in recent additions
+    const groups = new Map();
+    for (const doc of filtered) {
+      const key = getFranchiseKey(doc);
+      if (!groups.has(key)) {
+        groups.set(key, []);
+      }
+      groups.get(key).push(doc);
+    }
+
+    const dedupedAnimes = [];
+    for (const docs of groups.values()) {
+      dedupedAnimes.push(getRepresentative(docs));
+    }
+
+    // Sort by recent _id descending to keep chronological order intact
+    dedupedAnimes.sort((a, b) => b._id.toString().localeCompare(a._id.toString()));
+
+    const finalData = dedupedAnimes.slice(0, limit);
+    res.json({ success: true, data: finalData.map(formatAnimeDoc) });
   } catch (error) {
     console.error('[GET /api/animes/recent] Error:', error.message);
     res.status(500).json({ success: false, error: 'Son eklenenler alınamadı.' });
@@ -1023,49 +1064,33 @@ router.get('/trending', async (req, res) => {
       }
     }
 
-    // 2c. Tekilleştirme — çok daha güvenilir yöntem:
-    // Önce orijinal_ad varsa onu normalize et (sezon sayılarını kaldır),
-    // yoksa slug'ın ilk 22 karakterine bak. Aynı franchise farklı season
-    // olarak listelenmesin.
-    function getDedupeKey(doc) {
-      if (doc.orijinal_ad) {
-        return doc.orijinal_ad
-          .toLowerCase()
-          .replace(/[\s:]+(?:season|sezon|part|cour|the final|final)\s*\d*/gi, '')
-          .replace(/\s*\d+$/, '')              // sondaki sayıları sil
-          .replace(/[^a-z0-9]/g, '')           // özel karakterleri sil
-          .trim()
-          .substring(0, 20);                   // ilk 20 karakter yeterli
+    // Group by franchise key
+    const groups = new Map();
+    for (const doc of animes) {
+      const key = getFranchiseKey(doc);
+      if (!groups.has(key)) {
+        groups.set(key, []);
       }
-      // orijinal_ad yoksa slug'ı agresifçe temizle
-      let slug = (doc.tranimeizle_slug || '').toLowerCase();
-      // Sağdan başlayarak bilinen tüm ekleri kaldır (çok aşamalı)
-      slug = slug
-        .replace(/(?:-\d+)?(?:-the)?-final(?:-season|-sezonu?)?(?:-\d+)?(?:-izle)?$/, '')
-        .replace(/-\d+-sezon(?:u)?(?:-\d+)?(?:-part\d+)?(?:-izle)?$/, '')
-        .replace(/-sezon(?:u)?(?:-\d+)?(?:-izle)?$/, '')
-        .replace(/-\d+-cour(?:-izle)?$/, '')
-        .replace(/-part-?\d+(?:-izle)?$/, '')
-        .replace(/-kisim-?\d*(?:-izle)?$/, '')
-        .replace(/-\d+-kisim(?:-izle)?$/, '')
-        .replace(/-(movie|film)-?\d*(?:-izle)?$/, '')
-        .replace(/-(ova|ona|special)-?\d*(?:-izle)?$/, '')
-        .replace(/-izle$/, '')
-        .replace(/-(hd|fullhd|fhd)$/, '');
-      return slug.trim().substring(0, 22);
+      groups.get(key).push(doc);
     }
 
-    const seenBase = new Set();
     const dedupedAnimes = [];
-    for (const anime of animes) {
-      const key = getDedupeKey(anime);
-      if (!seenBase.has(key)) {
-        seenBase.add(key);
-        dedupedAnimes.push(anime);
-      }
-      if (dedupedAnimes.length >= limit) break;
+    for (const docs of groups.values()) {
+      dedupedAnimes.push(getRepresentative(docs));
     }
-    animes = dedupedAnimes;
+
+    // Sort to maintain AniList order or fallback ID order
+    const idxMap = Object.fromEntries(anilistIds.map((id, i) => [id, i]));
+    dedupedAnimes.sort((a, b) => {
+      const aIdx = a.anilist_id ? idxMap[a.anilist_id] : undefined;
+      const bIdx = b.anilist_id ? idxMap[b.anilist_id] : undefined;
+      if (aIdx !== undefined && bIdx !== undefined) return aIdx - bIdx;
+      if (aIdx !== undefined) return -1;
+      if (bIdx !== undefined) return 1;
+      return b._id.toString().localeCompare(a._id.toString());
+    });
+
+    animes = dedupedAnimes.slice(0, limit);
 
     animes = await resolveSiblings(animes);
     lazyResolveAnilistInfo(animes);
@@ -1238,6 +1263,21 @@ router.get('/genre/:genre', async (req, res) => {
     // Filter ghost entries and MUSIC formats
     let validAnimes = animes.filter(doc => !isGhostEntry(doc) && (doc.format || '').toUpperCase() !== 'MUSIC');
 
+    // Group by franchise key
+    const groups = new Map();
+    for (const doc of validAnimes) {
+      const key = getFranchiseKey(doc);
+      if (!groups.has(key)) {
+        groups.set(key, []);
+      }
+      groups.get(key).push(doc);
+    }
+
+    const uniqueAnimes = [];
+    for (const docs of groups.values()) {
+      uniqueAnimes.push(getRepresentative(docs));
+    }
+
     // Map AniList order
     const aniListOrderMap = new Map();
     mediaList.forEach((m, index) => {
@@ -1246,14 +1286,8 @@ router.get('/genre/:genre', async (req, res) => {
 
     // Resolve matching and sort
     const formattedAnimes = [];
-    const seenBaseSlugs = new Set();
 
-    for (const doc of validAnimes) {
-      const baseKey = getFranchiseKey(doc);
-      
-      // Prioritize Season 1 if possible, but keep it simple here by tracking seen
-      if (seenBaseSlugs.has(baseKey)) continue;
-
+    for (const doc of uniqueAnimes) {
       let sortIndex = 999;
       const matchedMedia = mediaList.find(m => {
         if (doc.anilist_id && doc.anilist_id === m.id) return true;
@@ -1287,8 +1321,6 @@ router.get('/genre/:genre', async (req, res) => {
         // If it was found purely by DB genre match, sort by average score (higher first)
         sortIndex = 1000 - (doc.average_score || 0);
       }
-
-      seenBaseSlugs.add(baseKey);
       
       const formatted = formatAnimeDoc(doc);
       if (matchedMedia) {

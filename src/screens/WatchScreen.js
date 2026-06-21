@@ -41,11 +41,26 @@ const IS_WEB = Platform.OS === 'web';
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function WatchScreen({ route, navigation }) {
-  const { animeId, episodeNumber: initialEpisodeNumber, episodeTitle: initialEpisodeTitle, videoUrl, startAt } = route.params;
+  const { animeId, episodeNumber: initialEpisodeNumber, episodeTitle: initialEpisodeTitle, videoUrl: initialVideoUrl, startAt } = route.params;
   const { showAlert } = useAlert();
 
   const [currentEpisodeNumber, setCurrentEpisodeNumber] = useState(initialEpisodeNumber);
   const [currentEpisodeTitle, setCurrentEpisodeTitle] = useState(initialEpisodeTitle);
+  const [currentVideoUrl, setCurrentVideoUrl] = useState(initialVideoUrl);
+  const [currentStartAt, setCurrentStartAt] = useState(startAt || 0);
+
+  const [isInlineResolving, setIsInlineResolving] = useState(false);
+  const [inlineResolveProgress, setInlineResolveProgress] = useState(10);
+  const [inlineResolveState, setInlineResolveState] = useState('');
+  const [inlineResolveUrl, setInlineResolveUrl] = useState(null);
+  const [inlineTargetEp, setInlineTargetEp] = useState(null);
+
+  useEffect(() => {
+    setCurrentEpisodeNumber(initialEpisodeNumber);
+    setCurrentEpisodeTitle(initialEpisodeTitle);
+    setCurrentVideoUrl(initialVideoUrl);
+    setCurrentStartAt(startAt || 0);
+  }, [initialEpisodeNumber, initialEpisodeTitle, initialVideoUrl, startAt]);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('main'); // 'main' | 'quality' | 'speed'
@@ -310,6 +325,138 @@ export default function WatchScreen({ route, navigation }) {
     }
   };
 
+  const handleTransitionToEpisode = async (epNum) => {
+    // 1. Cancel background pre-resolution if running
+    setBackgroundResolveUrl(null);
+    setBackgroundTargetEp(null);
+    
+    // 2. Pause current video playback
+    sendControlCommand('pauseVideo', null);
+    
+    // 3. Set inline resolving state
+    setIsInlineResolving(true);
+    setInlineResolveProgress(10);
+    setInlineResolveState('Bölüm kontrol ediliyor...');
+    setInlineTargetEp(epNum);
+    
+    // Try to find the episode title from episodes array
+    const epObj = episodes.find(e => e.episode_number === epNum);
+    const epTitle = epObj ? epObj.episode_title : `${epNum}. Bölüm`;
+    
+    try {
+      const res = await fetchEpisodeVideoUrl(animeId, epNum);
+      if (res.success && res.videoUrl) {
+        setInlineResolveState('Yükleniyor...');
+        setInlineResolveProgress(100);
+        
+        let finalUrl = res.videoUrl;
+        if (finalUrl.startsWith('sibnet-direct:')) {
+          finalUrl = finalUrl.replace('sibnet-direct:', '');
+        } else if (finalUrl.startsWith('sibnet:')) {
+          const sibnetId = finalUrl.replace('sibnet:', '');
+          finalUrl = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sibnetId}`;
+        }
+        
+        // Update states to load next episode inside the player
+        setCurrentEpisodeNumber(epNum);
+        setCurrentEpisodeTitle(epTitle);
+        setCurrentVideoUrl(finalUrl);
+        setCurrentStartAt(0); // Transitioned episode always starts at 0
+        
+        setIsInlineResolving(false);
+        setInlineResolveUrl(null);
+        setInlineTargetEp(null);
+      } else if (res.code === 'NOT_CACHED' && res.episodeUrl) {
+        setInlineResolveState('Bölüm aranıyor...');
+        setInlineResolveProgress(20);
+        setInlineResolveUrl(res.episodeUrl);
+      } else {
+        showAlert("Hata", res.error || "Bölüm adresi alınamadı.");
+        setIsInlineResolving(false);
+        setInlineResolveUrl(null);
+        setInlineTargetEp(null);
+      }
+    } catch (err) {
+      console.warn('[WatchScreen inline resolve] failed:', err);
+      showAlert("Hata", "Ağ hatası oluştu.");
+      setIsInlineResolving(false);
+      setInlineResolveUrl(null);
+      setInlineTargetEp(null);
+    }
+  };
+
+  const handleInlineWebViewMessage = async (event) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.type === 'log') {
+        console.log(`[Inline Scraper Log for Ep ${inlineTargetEp}]`, data.message);
+        const msg = data.message.toLowerCase();
+        if (msg.includes('sayfa')) {
+          setInlineResolveProgress(25);
+          setInlineResolveState('Sayfa yükleniyor...');
+        } else if (msg.includes('iframe') || msg.includes('yok')) {
+          setInlineResolveProgress(40);
+          setInlineResolveState('Video oynatıcı aranıyor...');
+        } else if (msg.includes('captcha tespit')) {
+          setInlineResolveProgress(60);
+          setInlineResolveState('Bot koruması çözülüyor...');
+        } else if (msg.includes('tekrar')) {
+          setInlineResolveProgress(75);
+          setInlineResolveState('Yeniden deneniyor...');
+        } else if (msg.includes('tiklaniyor') || msg.includes('tıklanıyor') || msg.includes('basildi')) {
+          setInlineResolveProgress(90);
+          setInlineResolveState('Bölüm başlatılıyor...');
+        }
+      } else if (data.type === 'resolved') {
+        const resolvedUrl = data.videoUrl;
+        console.log(`[Inline Scraper Ep ${inlineTargetEp}] Resolved source:`, resolvedUrl);
+        setInlineResolveProgress(100);
+        
+        await cacheEpisodeVideoUrl(animeId, inlineTargetEp, resolvedUrl);
+        console.log(`[Inline Scraper Ep ${inlineTargetEp}] Cached resolved source in DB.`);
+
+        let finalUrl = resolvedUrl;
+        if (finalUrl.startsWith('sibnet-direct:')) {
+          finalUrl = finalUrl.replace('sibnet-direct:', '');
+        } else if (finalUrl.startsWith('sibnet:')) {
+          const sibnetId = finalUrl.replace('sibnet:', '');
+          finalUrl = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sibnetId}`;
+        }
+
+        const epObj = episodes.find(e => e.episode_number === inlineTargetEp);
+        const epTitle = epObj ? epObj.episode_title : `${inlineTargetEp}. Bölüm`;
+
+        setCurrentEpisodeNumber(inlineTargetEp);
+        setCurrentEpisodeTitle(epTitle);
+        setCurrentVideoUrl(finalUrl);
+        setCurrentStartAt(0); // Transitioned episode always starts at 0
+        
+        setIsInlineResolving(false);
+        setInlineResolveUrl(null);
+        setInlineTargetEp(null);
+      } else if (data.type === 'noSource' || data.type === 'error') {
+        console.warn(`[Inline Scraper Ep ${inlineTargetEp}] Resolution failed:`, data.message);
+        showAlert("Hata", data.message || "Bölüm yüklenemedi.");
+        setIsInlineResolving(false);
+        setInlineResolveUrl(null);
+        setInlineTargetEp(null);
+      } else if (data.type === 'native_touch') {
+        const { x, y } = data;
+        if (TouchInjector) {
+          const reactTag = event.nativeEvent.target;
+          if (reactTag) {
+            console.log(`[Inline Native Touch] Injecting touch at X:${x} Y:${y} on tag: ${reactTag}`);
+            TouchInjector.simulateTouch(reactTag, x, y)
+              .then(res => console.log('[Inline Native Touch Success]', res))
+              .catch(err => console.error('[Inline Native Touch Error]', err));
+          }
+        }
+      }
+    } catch(err) {
+      console.error('[Inline Scraper Message Parse Error]', err);
+    }
+  };
+
   const handleFixAnilist = async () => {
     setIsFixingAnilist(true);
     try {
@@ -397,12 +544,7 @@ export default function WatchScreen({ route, navigation }) {
         const nextNum = parseInt(currentEpisodeNumber, 10) + 1;
         const hasNext = episodes.some(ep => ep.episode_number === nextNum);
         if (hasNext || episodes.length === 0) {
-          navigation.replace('Resolve', {
-            animeId,
-            episodeNumber: nextNum,
-            episodeTitle: `${nextNum}. Bölüm`,
-            animeTitle: route.params.animeTitle
-          });
+          handleTransitionToEpisode(nextNum);
         } else {
           showAlert("Bilgi", "Bu serinin son bölümündesiniz.");
         }
@@ -454,26 +596,49 @@ export default function WatchScreen({ route, navigation }) {
           {playerPrefs ? (
             IS_WEB ? (
               <WebVideoPlayer
-                videoUrl={videoUrl}
+                videoUrl={currentVideoUrl}
                 onMessage={handleWebViewMessage}
                 webViewRef={webViewRef}
                 clarityMode={clarityMode}
-                startAt={currentVideoTimeRef.current}
+                startAt={currentStartAt}
                 playerPrefs={playerPrefs}
+                key={`${currentEpisodeNumber}_${currentVideoUrl}`}
               />
             ) : (
               <VideoPlayerWrapper
-                videoUrl={videoUrl}
+                videoUrl={currentVideoUrl}
                 onMessage={handleWebViewMessage}
                 webViewRef={webViewRef}
                 clarityMode={clarityMode}
-                startAt={currentVideoTimeRef.current}
+                startAt={currentStartAt}
                 playerPrefs={playerPrefs}
+                key={`${currentEpisodeNumber}_${currentVideoUrl}`}
               />
             )
           ) : (
             <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' }}>
               <ActivityIndicator color={COLORS.accent} />
+            </View>
+          )}
+
+          {isInlineResolving && (
+            <View style={styles.inlineLoadingOverlay}>
+              <ActivityIndicator size="large" color={COLORS.accent} style={{ marginBottom: 12 }} />
+              <Text style={styles.inlineLoadingState}>{inlineResolveState}</Text>
+              <Text style={styles.inlineLoadingPercent}>%{inlineResolveProgress}</Text>
+              <View style={styles.inlineProgressBarContainer}>
+                <View style={[styles.inlineProgressBar, { width: `${inlineResolveProgress}%` }]} />
+              </View>
+              <TouchableOpacity
+                style={styles.inlineCancelButton}
+                onPress={() => {
+                  setIsInlineResolving(false);
+                  setInlineResolveUrl(null);
+                  setInlineTargetEp(null);
+                }}
+              >
+                <Text style={styles.inlineCancelText}>İptal Et</Text>
+              </TouchableOpacity>
             </View>
           )}
           
@@ -523,16 +688,8 @@ export default function WatchScreen({ route, navigation }) {
             <View style={styles.navigationWrapper}>
               <TouchableOpacity 
                 style={[styles.navButton, currentEpisodeNumber <= 1 && styles.navButtonDisabled]}
-                disabled={currentEpisodeNumber <= 1}
-                onPress={() => {
-                  const prevNum = currentEpisodeNumber - 1;
-                  navigation.replace('Resolve', {
-                    animeId,
-                    episodeNumber: prevNum,
-                    episodeTitle: `${prevNum}. Bölüm`,
-                    animeTitle: route.params.animeTitle
-                  });
-                }}
+                disabled={currentEpisodeNumber <= 1 || isInlineResolving}
+                onPress={() => handleTransitionToEpisode(currentEpisodeNumber - 1)}
                 activeOpacity={0.8}
               >
                 <Ionicons name="play-back" size={20} color={currentEpisodeNumber <= 1 ? '#555' : '#FFF'} />
@@ -540,16 +697,9 @@ export default function WatchScreen({ route, navigation }) {
               </TouchableOpacity>
 
               <TouchableOpacity 
-                style={styles.navButton}
-                onPress={() => {
-                  const nextNum = currentEpisodeNumber + 1;
-                  navigation.replace('Resolve', {
-                    animeId,
-                    episodeNumber: nextNum,
-                    episodeTitle: `${nextNum}. Bölüm`,
-                    animeTitle: route.params.animeTitle
-                  });
-                }}
+                style={[styles.navButton, isInlineResolving && styles.navButtonDisabled]}
+                disabled={isInlineResolving}
+                onPress={() => handleTransitionToEpisode(currentEpisodeNumber + 1)}
                 activeOpacity={0.8}
               >
                 <Text style={styles.navButtonText}>Sonraki Bölüm</Text>
@@ -606,14 +756,10 @@ export default function WatchScreen({ route, navigation }) {
                 return (
                   <TouchableOpacity 
                     style={[styles.episodeCard, isActive && styles.episodeCardActive]}
+                    disabled={isInlineResolving}
                     onPress={() => {
                       if (isActive) return;
-                      navigation.replace('Resolve', {
-                        animeId,
-                        episodeNumber: ep.episode_number,
-                        episodeTitle: ep.episode_title,
-                        animeTitle: currentAnime?.title || route.params.animeTitle
-                      });
+                      handleTransitionToEpisode(ep.episode_number);
                     }}
                   >
                     <Image 
@@ -811,6 +957,26 @@ export default function WatchScreen({ route, navigation }) {
             injectedJavaScriptBeforeContentLoaded={scraperInjectedJs}
             injectedJavaScript={scraperInjectedJs}
             onMessage={handleBackgroundWebViewMessage}
+            javaScriptEnabled={true}
+            domStorageEnabled={true}
+            mixedContentMode="always"
+            mediaPlaybackRequiresUserAction={false}
+            setSupportMultipleWindows={false}
+            onShouldStartLoadWithRequest={(request) => {
+              const url = request.url;
+              return url.includes('tranimeizle.io') || url.includes('Captcha') || url.includes('challenge') || url.startsWith('about:blank') || url.startsWith('data:');
+            }}
+          />
+        </View>
+      )}
+      {/* Inline Resolve WebView - for in-player episode transitions */}
+      {Platform.OS !== 'web' && WebView && inlineResolveUrl && (
+        <View style={{ width: 1, height: 1, position: 'absolute', opacity: 0.01, pointerEvents: 'none' }}>
+          <WebView
+            source={{ uri: inlineResolveUrl }}
+            injectedJavaScriptBeforeContentLoaded={scraperInjectedJs}
+            injectedJavaScript={scraperInjectedJs}
+            onMessage={handleInlineWebViewMessage}
             javaScriptEnabled={true}
             domStorageEnabled={true}
             mixedContentMode="always"
@@ -2292,5 +2458,50 @@ const styles = StyleSheet.create({
   episodeCardTitleActive: {
     color: COLORS.accent,
     fontWeight: FONT_WEIGHTS.bold,
+  },
+  inlineLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 100,
+  },
+  inlineLoadingState: {
+    color: '#FFF',
+    fontSize: FONT_SIZES.body,
+    fontWeight: FONT_WEIGHTS.medium,
+    marginBottom: 6,
+  },
+  inlineLoadingPercent: {
+    color: COLORS.accent,
+    fontSize: FONT_SIZES.subtitle,
+    fontWeight: FONT_WEIGHTS.bold,
+    marginBottom: 12,
+  },
+  inlineProgressBarContainer: {
+    width: '60%',
+    height: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: 2,
+    overflow: 'hidden',
+    marginBottom: 16,
+  },
+  inlineProgressBar: {
+    height: '100%',
+    backgroundColor: COLORS.accent,
+    borderRadius: 2,
+  },
+  inlineCancelButton: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  inlineCancelText: {
+    color: '#FFF',
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.medium,
   },
 });
