@@ -9,6 +9,7 @@ import {
   StatusBar,
   TouchableOpacity,
   Linking,
+  Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -25,6 +26,16 @@ import {
 } from '../services/api';
 import { AuthContext } from '../context/AuthContext';
 import { useAlert } from '../context/AlertContext';
+import TouchInjector from '../modules/TouchInjector';
+
+let WebView = null;
+if (Platform.OS !== 'web') {
+  try {
+    WebView = require('react-native-webview').WebView;
+  } catch (e) {
+    console.warn('[HomeScreen] react-native-webview not available:', e.message);
+  }
+}
 
 import Header from '../components/Header';
 import HeroBanner from '../components/HeroBanner';
@@ -72,7 +83,7 @@ function AiPulseIcon() {
 export default function HomeScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const { user } = useContext(AuthContext);
+  const { user, setBotBypassed } = useContext(AuthContext);
   const { showAlert } = useAlert();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -300,6 +311,258 @@ export default function HomeScreen() {
     );
   }
 
+  const handleWebViewMessage = (event) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.type === 'log') {
+        console.log('[Home WebView Log]', data.message);
+      } else if (data.type === 'bypassed') {
+        console.log('[Home WebView] Bot protection bypassed successfully!');
+        setBotBypassed(true);
+      } else if (data.type === 'native_touch') {
+        const { x, y } = data;
+        if (TouchInjector) {
+          const reactTag = event.nativeEvent.target;
+          if (reactTag) {
+            console.log(`[Home Native Touch] Injecting touch at X:${x} Y:${y} on tag: ${reactTag}`);
+            TouchInjector.simulateTouch(reactTag, x, y)
+              .then(res => console.log('[Home Native Touch Success]', res))
+              .catch(err => console.error('[Home Native Touch Error]', err));
+          }
+        }
+      }
+    } catch(err) {
+      console.error('[Home WebView Message Parse Error]', err);
+    }
+  };
+
+  const silentInjectedJs = `
+    try {
+      (function() {
+        if (window.__scraper_initialized) return;
+        window.__scraper_initialized = true;
+
+        try {
+          if (navigator.userActivation === undefined || !navigator.userActivation.hasBeenActive) {
+            Object.defineProperty(navigator, 'userActivation', {
+              get: function() { return { hasBeenActive: true, isActive: true }; }
+            });
+          }
+          Object.defineProperty(navigator, 'webdriver', { get: function() { return false; } });
+          window.open = function(url) { return null; };
+        } catch(e) {}
+
+        function getCleanUrl(bgStyle) {
+          if (!bgStyle || bgStyle === 'none') return '';
+          var match = bgStyle.match(/url\\(['"]?([^'"]+?)['"]?\\)/i);
+          return match ? match[1] : '';
+        }
+
+        function simulateIconCaptchaClick(el) {
+          try {
+            var rect = el.getBoundingClientRect();
+            var x = rect.left + (rect.width / 2);
+            var y = rect.top + (rect.height / 2);
+            
+            var mouseOverEvent = new MouseEvent('mouseover', {
+              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+            });
+            el.dispatchEvent(mouseOverEvent);
+
+            var mouseEnterEvent = new MouseEvent('mouseenter', {
+              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+            });
+            el.dispatchEvent(mouseEnterEvent);
+
+            var mouseDownEvent = new MouseEvent('mousedown', {
+              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+            });
+            el.dispatchEvent(mouseDownEvent);
+
+            var mouseUpEvent = new MouseEvent('mouseup', {
+              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+            });
+            el.dispatchEvent(mouseUpEvent);
+
+            var clickEvent = new MouseEvent('click', {
+              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+            });
+            el.dispatchEvent(clickEvent);
+          } catch(err) {
+            sendToNative({ type: 'log', message: 'Event tetikleme hatasi: ' + err.message });
+          }
+        }
+
+        var messageQueue = [];
+        function sendToNative(obj) {
+          try {
+            if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+              while (messageQueue.length > 0) {
+                window.ReactNativeWebView.postMessage(JSON.stringify(messageQueue.shift()));
+              }
+              window.ReactNativeWebView.postMessage(JSON.stringify(obj));
+            } else {
+              messageQueue.push(obj);
+            }
+          } catch(e) {}
+        }
+
+        function requestNativeTouch(el) {
+          try {
+            if (el.scrollIntoView) {
+              el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+            }
+          } catch(e){}
+
+          setTimeout(function() {
+            try {
+              if (typeof simulateIconCaptchaClick === 'function') {
+                simulateIconCaptchaClick(el);
+              }
+              var rect = el.getBoundingClientRect();
+              var x = rect.left + (rect.width / 2);
+              var y = rect.top + (rect.height / 2);
+              if (x === 0 || y === 0 || rect.width === 0) return;
+              var physicalX = x * window.devicePixelRatio;
+              var physicalY = y * window.devicePixelRatio;
+              sendToNative({ type: 'native_touch', x: physicalX, y: physicalY });
+            } catch(e) {}
+          }, 100);
+        }
+
+        var captchaChecked = false;
+        var runAutomation = function() {
+          try {
+            var captchaImgs = [];
+            try {
+              captchaImgs = Array.from(document.querySelectorAll('.captcha-image'));
+              if (captchaImgs.length === 0) {
+                var allImgs = Array.from(document.querySelectorAll('img'));
+                captchaImgs = allImgs.filter(function(img) {
+                  var src = img.src || img.getAttribute('src') || '';
+                  return src.toLowerCase().includes('captcha') && (src.includes('hash=') || src.includes('cid='));
+                });
+              }
+            } catch(e) {}
+
+            if (captchaImgs.length === 0) {
+              if (!window.__no_captcha_timer) {
+                window.__no_captcha_timer = setTimeout(function() {
+                  var captchaImgsNow = document.querySelectorAll('.captcha-image');
+                  if (captchaImgsNow.length === 0) {
+                    sendToNative({ type: 'bypassed' });
+                  }
+                }, 2000);
+              }
+            } else {
+              if (window.__no_captcha_timer) {
+                clearTimeout(window.__no_captcha_timer);
+                window.__no_captcha_timer = null;
+              }
+            }
+
+            if (captchaImgs.length === 5 && !captchaChecked) {
+              captchaChecked = true;
+              var detectionTime = Date.now();
+              sendToNative({ type: 'log', message: 'Silent Captcha tespit edildi. Piksel analizi baslatiliyor...' });
+
+              (function() {
+                var imgs = captchaImgs;
+                var loadedImages = [];
+                var loadedCount = 0;
+
+                function analyzePixels() {
+                  try {
+                    var pixelData = [];
+                    var width = 40;
+                    var height = 40;
+
+                    for (var i = 0; i < imgs.length; i++) {
+                      var canvas = document.createElement('canvas');
+                      canvas.width = width;
+                      canvas.height = height;
+                      var ctx = canvas.getContext('2d');
+                      ctx.drawImage(loadedImages[i], 0, 0, width, height);
+                      var imgData = ctx.getImageData(0, 0, width, height).data;
+                      pixelData.push(imgData);
+                    }
+
+                    var diffSums = [0, 0, 0, 0, 0];
+                    for (var i = 0; i < 5; i++) {
+                      for (var j = i + 1; j < 5; j++) {
+                        var diff = 0;
+                        var data1 = pixelData[i];
+                        var data2 = pixelData[j];
+                        for (var k = 0; k < data1.length; k += 4) {
+                          diff += Math.abs(data1[k] - data2[k]);
+                          diff += Math.abs(data1[k+1] - data2[k+1]);
+                          diff += Math.abs(data1[k+2] - data2[k+2]);
+                        }
+                        diffSums[i] += diff;
+                        diffSums[j] += diff;
+                      }
+                    }
+
+                    var maxDiff = -1;
+                    var outlierIndex = 0;
+                    for (var i = 0; i < 5; i++) {
+                      if (diffSums[i] > maxDiff) {
+                        maxDiff = diffSums[i];
+                        outlierIndex = i;
+                      }
+                    }
+
+                    sendToNative({ type: 'log', message: 'Silent En farkli gorsel: #' + (outlierIndex + 1) });
+                    var targetEl = imgs[outlierIndex];
+                    var timeElapsed = Date.now() - detectionTime;
+                    var remainingDelay = Math.max(0, 2500 - timeElapsed);
+
+                    setTimeout(function() {
+                      requestNativeTouch(targetEl);
+                      setTimeout(function() {
+                        captchaChecked = false;
+                      }, 4000);
+                    }, remainingDelay);
+                  } catch(e) {
+                    captchaChecked = false;
+                  }
+                }
+
+                for (var k = 0; k < imgs.length; k++) {
+                  (function(index) {
+                    var imgEl = imgs[index];
+                    var bgStyle = imgEl.style.backgroundImage || window.getComputedStyle(imgEl).backgroundImage || '';
+                    var srcUrl = getCleanUrl(bgStyle) || imgEl.src || imgEl.getAttribute('src') || '';
+                    if (srcUrl) {
+                      var absoluteUrl = new URL(srcUrl, window.location.href).href;
+                      var tempImg = new Image();
+                      tempImg.crossOrigin = "anonymous";
+                      tempImg.onload = function() {
+                        loadedCount++;
+                        if (loadedCount === 5) {
+                          analyzePixels();
+                        }
+                      };
+                      tempImg.onerror = function() {
+                        captchaChecked = false;
+                      };
+                      loadedImages[index] = tempImg;
+                      tempImg.src = absoluteUrl;
+                    } else {
+                      captchaChecked = false;
+                    }
+                  })(k);
+                }
+              })();
+            }
+          } catch(e) {}
+        };
+        setInterval(runAutomation, 1000);
+      })();
+    } catch(err) {}
+    true;
+  `;
+
   return (
     <SafeAreaView style={styles.screen} edges={['left', 'right']}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} />
@@ -485,6 +748,26 @@ export default function HomeScreen() {
         {/* ── Bottom Padding ──────────────────────── */}
         <View style={styles.bottomSpacer} />
       </Animated.ScrollView>
+
+      {Platform.OS !== 'web' && WebView && (
+        <View style={{ width: 1, height: 1, position: 'absolute', opacity: 0.01, pointerEvents: 'none' }}>
+          <WebView
+            source={{ uri: 'https://www.tranimeizle.io/' }}
+            injectedJavaScriptBeforeContentLoaded={silentInjectedJs}
+            injectedJavaScript={silentInjectedJs}
+            onMessage={handleWebViewMessage}
+            javaScriptEnabled={true}
+            domStorageEnabled={true}
+            mixedContentMode="always"
+            mediaPlaybackRequiresUserAction={false}
+            setSupportMultipleWindows={false}
+            onShouldStartLoadWithRequest={(request) => {
+              const url = request.url;
+              return url.includes('tranimeizle.io') || url.includes('Captcha') || url.includes('challenge') || url.startsWith('about:blank') || url.startsWith('data:');
+            }}
+          />
+        </View>
+      )}
     </SafeAreaView>
   );
 }

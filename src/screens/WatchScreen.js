@@ -18,8 +18,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
-import { fetchAnimeDetail, fetchEpisodes, resetAnimeAnilistId, saveAnimeAnilistId, addToHistory } from '../services/api';
+import { fetchAnimeDetail, fetchEpisodes, resetAnimeAnilistId, saveAnimeAnilistId, addToHistory, fetchEpisodeVideoUrl, cacheEpisodeVideoUrl } from '../services/api';
 import { API_BASE_URL } from '../constants/config';
+import TouchInjector from '../modules/TouchInjector';
+import { scraperInjectedJs } from '../modules/ScraperScript';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { UltraClarityView } from '../../modules/ultra-clarity/src';
 import { getQualitySettings, saveQualitySettings } from '../utils/qualitySettings';
@@ -215,6 +217,98 @@ export default function WatchScreen({ route, navigation }) {
       if (saveIntervalRef.current) clearInterval(saveIntervalRef.current);
     };
   }, [animeId, currentEpisodeNumber]);
+
+  const [backgroundResolveUrl, setBackgroundResolveUrl] = useState(null);
+  const [backgroundTargetEp, setBackgroundTargetEp] = useState(null);
+
+  const checkAndResolveEp = async (epNum) => {
+    try {
+      const res = await fetchEpisodeVideoUrl(animeId, epNum);
+      if (res.success && res.videoUrl) {
+        console.log(`[WatchScreen Background Queue] Episode ${epNum} is already cached.`);
+        return true;
+      } else if (res.code === 'NOT_CACHED' && res.episodeUrl) {
+        console.log(`[WatchScreen Background Queue] Episode ${epNum} is NOT cached. Queueing for silent resolution...`);
+        setBackgroundTargetEp(epNum);
+        setBackgroundResolveUrl(res.episodeUrl);
+        return false;
+      }
+    } catch (err) {
+      console.warn('[WatchScreen Background Queue] checkAndResolveEp failed:', err.message);
+    }
+    return false;
+  };
+
+  const startBackgroundResolution = async () => {
+    try {
+      const nextEp1 = parseInt(currentEpisodeNumber, 10) + 1;
+      const nextEp2 = parseInt(currentEpisodeNumber, 10) + 2;
+
+      console.log(`[WatchScreen Background Queue] Starting pre-scraping checklist. Current episode: ${currentEpisodeNumber}`);
+      
+      const resolved1 = await checkAndResolveEp(nextEp1);
+      if (resolved1) {
+        await checkAndResolveEp(nextEp2);
+      }
+    } catch(err) {
+      console.warn('[WatchScreen Background Queue] Queue check failed:', err.message);
+    }
+  };
+
+  useEffect(() => {
+    setBackgroundResolveUrl(null);
+    setBackgroundTargetEp(null);
+
+    // 18 seconds delay from video start
+    const delayTimer = setTimeout(() => {
+      startBackgroundResolution();
+    }, 18000);
+
+    return () => clearTimeout(delayTimer);
+  }, [currentEpisodeNumber]);
+
+  const handleBackgroundWebViewMessage = async (event) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.type === 'log') {
+        console.log(`[Bg Scraper Log for Ep ${backgroundTargetEp}]`, data.message);
+      } else if (data.type === 'resolved') {
+        const resolvedUrl = data.videoUrl;
+        console.log(`[Bg Scraper Ep ${backgroundTargetEp}] Resolved source:`, resolvedUrl);
+        
+        await cacheEpisodeVideoUrl(animeId, backgroundTargetEp, resolvedUrl);
+        console.log(`[Bg Scraper Ep ${backgroundTargetEp}] Cached resolved source in DB.`);
+
+        const resolvedEp = backgroundTargetEp;
+        setBackgroundResolveUrl(null);
+        setBackgroundTargetEp(null);
+
+        // If we resolved N+1, proceed to N+2
+        if (resolvedEp === parseInt(currentEpisodeNumber, 10) + 1) {
+          setTimeout(() => {
+            checkAndResolveEp(parseInt(currentEpisodeNumber, 10) + 2);
+          }, 2000);
+        }
+      } else if (data.type === 'noSource' || data.type === 'error') {
+        console.warn(`[Bg Scraper Ep ${backgroundTargetEp}] Resolution failed:`, data.message);
+        setBackgroundResolveUrl(null);
+        setBackgroundTargetEp(null);
+      } else if (data.type === 'native_touch') {
+        const { x, y } = data;
+        if (TouchInjector) {
+          const reactTag = event.nativeEvent.target;
+          if (reactTag) {
+            console.log(`[Bg Native Touch] Injecting touch at X:${x} Y:${y} on tag: ${reactTag}`);
+            TouchInjector.simulateTouch(reactTag, x, y)
+              .then(res => console.log('[Bg Native Touch Success]', res))
+              .catch(err => console.error('[Bg Native Touch Error]', err));
+          }
+        }
+      }
+    } catch(err) {
+      console.error('[Bg Scraper Message Parse Error]', err);
+    }
+  };
 
   const handleFixAnilist = async () => {
     setIsFixingAnilist(true);
@@ -693,6 +787,25 @@ export default function WatchScreen({ route, navigation }) {
             )}
             </ScrollView>
           </Animated.View>
+        </View>
+      )}
+      {Platform.OS !== 'web' && WebView && backgroundResolveUrl && (
+        <View style={{ width: 1, height: 1, position: 'absolute', opacity: 0.01, pointerEvents: 'none' }}>
+          <WebView
+            source={{ uri: backgroundResolveUrl }}
+            injectedJavaScriptBeforeContentLoaded={scraperInjectedJs}
+            injectedJavaScript={scraperInjectedJs}
+            onMessage={handleBackgroundWebViewMessage}
+            javaScriptEnabled={true}
+            domStorageEnabled={true}
+            mixedContentMode="always"
+            mediaPlaybackRequiresUserAction={false}
+            setSupportMultipleWindows={false}
+            onShouldStartLoadWithRequest={(request) => {
+              const url = request.url;
+              return url.includes('tranimeizle.io') || url.includes('Captcha') || url.includes('challenge') || url.startsWith('about:blank') || url.startsWith('data:');
+            }}
+          />
         </View>
       )}
     </View>

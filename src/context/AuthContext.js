@@ -10,6 +10,7 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [userToken, setUserToken] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isBotBypassed, setBotBypassed] = useState(false);
 
   // Uygulama açıldığında token'ı kontrol et
   const checkToken = async () => {
@@ -199,7 +200,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ login, register, verifyEmail, resendCode, googleLogin, logout, user, userToken, isLoading, updateUserAvatar, updateUserName, acceptLegal }}>
+    <AuthContext.Provider value={{ login, register, verifyEmail, resendCode, googleLogin, logout, user, userToken, isLoading, updateUserAvatar, updateUserName, acceptLegal, isBotBypassed, setBotBypassed }}>
       {children}
     </AuthContext.Provider>
   );

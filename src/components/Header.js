@@ -10,7 +10,7 @@ import { getNotifications } from '../services/api';
 export default function Header() {
   const navigation = useNavigation();
   const isFocused = useIsFocused();
-  const { user } = useContext(AuthContext);
+  const { user, isBotBypassed } = useContext(AuthContext);
   const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
@@ -37,7 +37,7 @@ export default function Header() {
       <View style={[styles.logoContainer, { gap: 2 }]}>
         <Image source={require('../../assets/mainLogo.png')} style={{width: 44, height: 44}} contentFit="contain" />
         <Text style={[styles.logoText, { marginLeft: -4, fontSize: 28 }]}>
-          lof<Text style={styles.logoAccent}>thel</Text>
+          lof<Text style={[styles.logoAccent, { color: isBotBypassed ? COLORS.accent : '#FFB300' }]}>thel</Text>
         </Text>
       </View>
 

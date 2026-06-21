@@ -7,6 +7,28 @@ class UltraClarityModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("UltraClarity")
 
+    Function("simulateTouch") { reactTag: Int, x: Float, y: Float ->
+      val activity = appContext.currentActivity ?: return@Function false
+      val view = activity.findViewById<android.view.View>(reactTag) ?: return@Function false
+      
+      activity.runOnUiThread {
+        val downTime = android.os.SystemClock.uptimeMillis()
+        val downEvent = android.view.MotionEvent.obtain(
+          downTime, downTime, android.view.MotionEvent.ACTION_DOWN, x, y, 0
+        )
+        view.dispatchTouchEvent(downEvent)
+        
+        val upEvent = android.view.MotionEvent.obtain(
+          downTime, downTime + 50, android.view.MotionEvent.ACTION_UP, x, y, 0
+        )
+        view.dispatchTouchEvent(upEvent)
+        
+        downEvent.recycle()
+        upEvent.recycle()
+      }
+      true
+    }
+
     View(UltraClarityView::class) {
       Events("onProgress", "onStatusChange")
 
