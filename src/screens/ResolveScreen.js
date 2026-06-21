@@ -287,13 +287,6 @@ export default function ResolveScreen({ route, navigation }) {
                   </View>
 
                   <TouchableOpacity 
-                    style={styles.debugButtonOverlay}
-                    onPress={() => setShowWebView(true)}
-                  >
-                    <Text style={styles.debugButtonText}>Hata Ayıklama (Tarayıcıyı Göster)</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity 
                     style={styles.cancelButtonOverlay}
                     onPress={() => {
                       navigation.goBack();

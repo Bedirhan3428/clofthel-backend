@@ -205,9 +205,9 @@ export const scraperInjectedJs = `
           try {
             var getSibnetId = function(url) {
               if (!url) return null;
-              var match = url.match(/[?&]id=(\\\\d+)/);
+              var match = url.match(/[?&]id=(\\d+)/);
               if (match) return match[1];
-              var pathMatch = url.match(/\\\\/video(\\\\d+)/) || url.match(/\\\\/v\\\\/(\\\\d+)/);
+              var pathMatch = url.match(/\\/video(\\d+)/) || url.match(/\\/v\\/(\\d+)/);
               if (pathMatch) return pathMatch[1];
               return null;
             };
@@ -237,7 +237,7 @@ export const scraperInjectedJs = `
               }
               
               var html = document.documentElement.innerHTML;
-              var srcMatch = html.match(/src\\\\s*:\\\\s*["'](\\\\/v\\\\/[^"']+)["']/i);
+              var srcMatch = html.match(/src\\s*:\\s*["'](\\/v\\/[^"']+)["']/i);
               
               if (srcMatch && srcMatch[1]) {
                  var absoluteUrl = "https://video.sibnet.ru" + srcMatch[1];
@@ -264,7 +264,7 @@ export const scraperInjectedJs = `
                        sendResolved('sibnet-direct:' + vid.currentSrc);
                      } else {
                        var bodyHtml = document.documentElement.innerHTML;
-                       var mp4Match = bodyHtml.match(/https?:\\\\/\\\\/[^"'\\\\s]+\\\\.mp4[^"'\\\\s]*/i);
+                       var mp4Match = bodyHtml.match(/https?:\\/\\/[^"'\s]+\\.mp4[^"'\s]*/i);
                        if (mp4Match) {
                          sendToNative({ type: 'log', message: 'MP4 link HTML icerisinde bulundu!' });
                          sendResolved('sibnet-direct:' + mp4Match[0]);

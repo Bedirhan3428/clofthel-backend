@@ -393,6 +393,21 @@ export default function WatchScreen({ route, navigation }) {
         }
       }
 
+      if (data.type === 'nextEpisode') {
+        const nextNum = parseInt(currentEpisodeNumber, 10) + 1;
+        const hasNext = episodes.some(ep => ep.episode_number === nextNum);
+        if (hasNext || episodes.length === 0) {
+          navigation.replace('Resolve', {
+            animeId,
+            episodeNumber: nextNum,
+            episodeTitle: `${nextNum}. Bölüm`,
+            animeTitle: route.params.animeTitle
+          });
+        } else {
+          showAlert("Bilgi", "Bu serinin son bölümündesiniz.");
+        }
+      }
+
       if (data.type === 'openSettings') {
         setIsSettingsOpen(true);
         setSettingsTab('main');
@@ -1164,6 +1179,9 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
               <i data-lucide="rotate-cw"></i>
               <span class="btn-label">${prefs.skipInterval}</span>
             </button>
+            <button class="control-btn center-btn" id="btn-next-episode" aria-label="Sonraki Bölüm">
+              <i data-lucide="skip-forward"></i>
+            </button>
           </div>
           
           <div class="bottom-controls">
@@ -1595,6 +1613,14 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
           sendToParent({ type: 'openSettings' });
           resetControlsTimeout();
         });
+
+        const btnNextEpisode = document.getElementById('btn-next-episode');
+        if (btnNextEpisode) {
+          btnNextEpisode.addEventListener('click', (e) => {
+            e.stopPropagation();
+            sendToParent({ type: 'nextEpisode' });
+          });
+        }
         
         const controlsOverlay = document.getElementById('controls-overlay');
         const clickBackdrop = document.getElementById('click-backdrop');
