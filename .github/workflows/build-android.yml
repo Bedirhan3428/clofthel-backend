@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-phone:
-    name: Build Phone APK (ARM64)
+    name: Build Phone APK (ARM32 / ARM64)
     runs-on: ubuntu-latest
     env:
       NODE_OPTIONS: "--max-old-space-size=3072"
