@@ -4,12 +4,12 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const type = searchParams.get('type') || 'android';
 
-  let apkUrl = 'https://firebasestorage.googleapis.com/v0/b/sigalmedia.firebasestorage.app/o/androidV130.apk?alt=media&token=9ace9f66-f4c0-4ec5-8e7f-2032ee9dc1e8';
-  let fileName = 'Clofthel-v1.3.0-arm64.apk';
+  let apkUrl = 'https://firebasestorage.googleapis.com/v0/b/sigalmedia.firebasestorage.app/o/androidV130.1.apk?alt=media&token=a2044c37-9f8b-45fc-af60-0dcb5a7ab436';
+  let fileName = 'Clofthel-v1.3.01-arm.apk';
 
   if (type === 'emulator') {
-    apkUrl = 'https://firebasestorage.googleapis.com/v0/b/sigalmedia.firebasestorage.app/o/emulatorV130.apk?alt=media&token=a6943dfc-23a1-4fc7-9948-397d5a049efc';
-    fileName = 'Clofthel-v1.3.0-x86_64.apk';
+    apkUrl = 'https://firebasestorage.googleapis.com/v0/b/sigalmedia.firebasestorage.app/o/emulatorV130.1.apk?alt=media&token=630f77c1-33ef-4092-b132-38a66129bae0';
+    fileName = 'Clofthel-v1.3.01-emulator.apk';
   }
   
   try {

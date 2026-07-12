@@ -27,6 +27,7 @@ interface Comment {
 }
 
 const PATCH_NOTES = [
+  { version: "v1.3.01", date: "12 Temmuz 2026", text: "WebView koordinat senkronizasyon sapmaları tamamen giderildi. 32-bit (ARM32) ve 64-bit (ARM64) mimari derlemeleri birleştirilerek tek ve kararlı bir mobil paket haline getirildi." },
   { version: "v1.3.0 - Kısım 2", date: "21 Haziran 2026", text: "Mobil uygulama indirme bağlantıları yeni derlemelerle güncellendi. Cloudflare engellerini aşmak üzere tasarlanan yeni veri tarama altyapısı yayına alındı." },
   { version: "v1.3.0", date: "18 Haziran 2026", text: "Gelişmiş güvenlik önlemleri ve yeni yasal onay (EULA) altyapısı entegre edildi. Ana sayfa tür satırları doğrudan API'den yüklenerek zenginleştirildi, benzer sezonlar tekil olarak gruplandı. Oynatıcı hız ve görüntü netleştirme seçenekleri eklendi!" },
   { version: "v1.2.0", date: "14 Haziran 2026", text: "Özel tasarlanmış akıllı oynatıcı altyapısı sayesinde artık hiçbir video yarım kalmıyor. Pürüzsüz ve kesintisiz anime izleme deneyimi getirildi!" },
@@ -392,19 +393,19 @@ export default function Home() {
             <div id="download-section" className="flex flex-col sm:flex-row items-center gap-6 mt-10 mb-16 w-full justify-center">
               <a 
                 href="/api/download-apk?type=android" 
-                download="Clofthel-v1.3.0-arm64.apk"
+                download="Clofthel-v1.3.01-arm.apk"
                 className="flex items-center justify-center gap-3 bg-[#1e1e24] border border-white/10 text-white px-8 py-5 rounded-2xl font-black hover:bg-[#2a2a32] hover:scale-105 active:scale-95 transition-all shadow-xl w-full sm:w-auto text-lg group"
               >
                 <FaAndroid className="w-7 h-7 text-[#3DDC84] transition-transform group-hover:-translate-y-1" />
-                Android İndir (ARM64)
+                Android İndir (ARM32 / ARM64)
               </a>
               <a 
                 href="/api/download-apk?type=emulator" 
-                download="Clofthel-v1.3.0-x86_64.apk"
+                download="Clofthel-v1.3.01-emulator.apk"
                 className="flex items-center justify-center gap-3 bg-[#1e1e24] border border-[#ff6b00]/30 text-white px-8 py-5 rounded-2xl font-black hover:bg-[#2a2a32] hover:scale-105 active:scale-95 transition-all shadow-xl w-full sm:w-auto text-lg group"
               >
                 <FaAndroid className="w-7 h-7 text-[#ff6b00] transition-transform group-hover:-translate-y-1" />
-                Emülatör İndir (x86_64)
+                Emülatör İndir (x86 / x64)
               </a>
               <button disabled className="flex items-center justify-center gap-3 bg-white/5 text-[#8e8e9f] px-8 py-5 rounded-2xl font-black w-full sm:w-auto text-lg cursor-not-allowed border border-white/10">
                 <FaWindows className="w-7 h-7 opacity-50" />
