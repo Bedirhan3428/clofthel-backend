@@ -18,12 +18,6 @@ if (!content.includes('def enableSeparateBuildPerCPUArchitecture')) {
   );
 }
 
-// 2. Add ndk block to defaultConfig
-if (!content.includes('abiFilters "armeabi-v7a"')) {
-  const target = `buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\\"\${findProperty('reactNativeReleaseLevel') ?: 'stable'}\\""`;
-  const replacement = `${target}\n\n        ndk {\n            abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"\n        }`;
-  content = content.replace(target, replacement);
-}
 
 // 3. Add splits and applicationVariants configuration
 if (!content.includes('splits {')) {
