@@ -14,7 +14,12 @@ let content = fs.readFileSync(gradlePath, 'utf8');
 if (!content.includes('def enableSeparateBuildPerCPUArchitecture')) {
   content = content.replace(
     'apply plugin: "com.facebook.react"',
-    'apply plugin: "com.facebook.react"\n\ndef enableSeparateBuildPerCPUArchitecture = true'
+    'apply plugin: "com.facebook.react"\n\ndef enableSeparateBuildPerCPUArchitecture = false'
+  );
+} else {
+  content = content.replace(
+    'def enableSeparateBuildPerCPUArchitecture = true',
+    'def enableSeparateBuildPerCPUArchitecture = false'
   );
 }
 
