@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
+  PixelRatio,
   StyleSheet,
   ActivityIndicator,
   TouchableOpacity,
@@ -192,15 +193,28 @@ export default function ResolveScreen({ route, navigation }) {
         setLoading(false);
       } else if (data.type === 'native_touch') {
         const { x, y } = data;
-        if (TouchInjector) {
-          const reactTag = event.nativeEvent.target; // React Native'in gönderdiği gerçek View Tag'ı
+        if (TouchInjector && webViewRef.current) {
+          
+          // 1. ADIM: Belirsiz event.target yerine WebView'ın kendi sabit native tag'ini kilitliyoruz
+          const reactTag = findNodeHandle(webViewRef.current); 
+
           if (reactTag) {
-            console.log(`[Native Touch] Injecting touch at X:${x} Y:${y} on tag: ${reactTag}`);
-            TouchInjector.simulateTouch(reactTag, x, y)
-              .then(res => console.log('[Native Touch Success]', res))
-              .catch(err => console.error('[Native Touch Error]', err));
+            // 2. ADIM: WebView'dan gelen CSS piksellerini React Native'in anladığı DP birimine bölüyoruz
+            const scale = PixelRatio.get();
+            const scaledX = x / scale;
+            const scaledY = y / scale;
+
+            console.log(`[Resolve Touch Fix] Density: ${scale} | Orijinal X:${x} Y:${y} -> Ölçeklenmiş X:${scaledX} Y:${scaledY}`);
+            
+            // 3. ADIM: Sayfa yenileme / captcha render anında native çakışma olmasın diye hafif bir gecikme veriyoruz
+            setTimeout(() => {
+              TouchInjector.simulateTouch(reactTag, scaledX, scaledY)
+                .then(res => console.log('[Resolve Touch Success]', res))
+                .catch(err => console.error('[Resolve Touch Error]', err));
+            }, 25);
+
           } else {
-            console.warn('[Native Touch] WebView reactTag could not be resolved from event.');
+            console.warn('[Resolve Touch] WebView reactTag findNodeHandle ile çözülemedi.');
           }
         }
       }

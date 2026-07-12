@@ -3,6 +3,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
+  PixelRatio,
+  findNodeHandle,
   StyleSheet,
   ActivityIndicator,
   TouchableOpacity,
@@ -97,6 +99,8 @@ export default function WatchScreen({ route, navigation }) {
 
   const slideAnim = useRef(new Animated.Value(400)).current;
   const webViewRef = useRef(null);
+  const bgWebViewRef = useRef(null);     // Arka plandaki N+1, N+2 kazayıcı için
+  const inlineWebViewRef = useRef(null); // Oyuncu içindeki geçiş kazayıcı için
   const currentVideoTimeRef = useRef(startAt || 0);
   const wasPausedBySettings = useRef(false);
   const saveIntervalRef = useRef(null);
@@ -310,13 +314,20 @@ export default function WatchScreen({ route, navigation }) {
         setBackgroundTargetEp(null);
       } else if (data.type === 'native_touch') {
         const { x, y } = data;
-        if (TouchInjector) {
-          const reactTag = event.nativeEvent.target;
+        if (TouchInjector && bgWebViewRef.current) {
+          const reactTag = findNodeHandle(bgWebViewRef.current);
           if (reactTag) {
-            console.log(`[Bg Native Touch] Injecting touch at X:${x} Y:${y} on tag: ${reactTag}`);
-            TouchInjector.simulateTouch(reactTag, x, y)
-              .then(res => console.log('[Bg Native Touch Success]', res))
-              .catch(err => console.error('[Bg Native Touch Error]', err));
+            const scale = PixelRatio.get();
+            const scaledX = x / scale;
+            const scaledY = y / scale;
+
+            console.log(`[Bg Scraper Touch Fix] Ölçeklendi X:${scaledX} Y:${scaledY}`);
+            
+            setTimeout(() => {
+              TouchInjector.simulateTouch(reactTag, scaledX, scaledY)
+                .then(res => console.log('[Bg Touch Success]', res))
+                .catch(err => console.error('[Bg Touch Error]', err));
+            }, 25);
           }
         }
       }
@@ -442,13 +453,20 @@ export default function WatchScreen({ route, navigation }) {
         setInlineTargetEp(null);
       } else if (data.type === 'native_touch') {
         const { x, y } = data;
-        if (TouchInjector) {
-          const reactTag = event.nativeEvent.target;
+        if (TouchInjector && inlineWebViewRef.current) {
+          const reactTag = findNodeHandle(inlineWebViewRef.current);
           if (reactTag) {
-            console.log(`[Inline Native Touch] Injecting touch at X:${x} Y:${y} on tag: ${reactTag}`);
-            TouchInjector.simulateTouch(reactTag, x, y)
-              .then(res => console.log('[Inline Native Touch Success]', res))
-              .catch(err => console.error('[Inline Native Touch Error]', err));
+            const scale = PixelRatio.get();
+            const scaledX = x / scale;
+            const scaledY = y / scale;
+
+            console.log(`[Inline Scraper Touch Fix] Ölçeklendi X:${scaledX} Y:${scaledY}`);
+            
+            setTimeout(() => {
+              TouchInjector.simulateTouch(reactTag, scaledX, scaledY)
+                .then(res => console.log('[Inline Touch Success]', res))
+                .catch(err => console.error('[Inline Touch Error]', err));
+            }, 25);
           }
         }
       }
@@ -953,6 +971,7 @@ export default function WatchScreen({ route, navigation }) {
       {Platform.OS !== 'web' && WebView && backgroundResolveUrl && (
         <View style={{ width: 1, height: 1, position: 'absolute', opacity: 0.01, pointerEvents: 'none' }}>
           <WebView
+            ref={bgWebViewRef}
             source={{ uri: backgroundResolveUrl }}
             injectedJavaScriptBeforeContentLoaded={scraperInjectedJs}
             injectedJavaScript={scraperInjectedJs}
@@ -973,6 +992,7 @@ export default function WatchScreen({ route, navigation }) {
       {Platform.OS !== 'web' && WebView && inlineResolveUrl && (
         <View style={{ width: 1, height: 1, position: 'absolute', opacity: 0.01, pointerEvents: 'none' }}>
           <WebView
+            ref={inlineWebViewRef}
             source={{ uri: inlineResolveUrl }}
             injectedJavaScriptBeforeContentLoaded={scraperInjectedJs}
             injectedJavaScript={scraperInjectedJs}
