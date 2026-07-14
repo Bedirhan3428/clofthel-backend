@@ -371,7 +371,7 @@ export default function Home() {
           <div className="relative z-10 max-w-4xl mx-auto text-center flex flex-col items-center gap-8 animate-fade-in mt-10">
             <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#ff6b00]/10 border border-[#ff6b00]/20 text-[#ff6b00] font-bold text-xs uppercase tracking-widest mb-4">
               <span className="w-2 h-2 rounded-full bg-[#ff6b00] animate-pulse" />
-              Sürüm 1.3.0 Yayında
+              Sürüm 1.3.01 Yayında
             </div>
             
             <div className="inline-flex items-center justify-center gap-2 text-[#8e8e9f] font-black text-xs uppercase tracking-widest mb-6 border border-white/10 bg-white/5 px-4 py-2 rounded-full">
