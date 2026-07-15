@@ -76,6 +76,11 @@ function validateLlmResponse(data) {
     // Normalize and sanitize seasons array
     const sanitizedSeasons = [];
     for (const season of item.seasons) {
+      // Heal title/season_title swap
+      if (!season.season_title && season.title) {
+        season.season_title = season.title;
+      }
+      // Heal format/type swap
       if (!season.format && season.type) {
         season.format = season.type;
       }
@@ -94,6 +99,11 @@ function validateLlmResponse(data) {
     // Normalize and sanitize related_movies_or_ovas array
     const sanitizedMovies = [];
     for (const movie of item.related_movies_or_ovas) {
+      // Heal title/season_title swap
+      if (!movie.title && movie.season_title) {
+        movie.title = movie.season_title;
+      }
+      // Heal format/type swap
       if (!movie.format && movie.type) {
         movie.format = movie.type;
       }
