@@ -10,11 +10,10 @@ const CHUNK_SIZE = 50; // Processing 50 items per batch
 const API_KEY = 'sk-ai-v1-5ed83e568ca7a63ec3dca25e5c4581d8f602c5c70694da0cb6873f7511ce3156';
 const BASE_URL = 'https://zenmux.ai/api/v1/chat/completions';
 
-// API Providers for failover rotation
+// API Providers for failover rotation (Strictly DeepSeek models)
 const PROVIDERS = [
-  { model: 'x-ai/grok-4.5-free', name: 'Grok 4.5' },
-  { model: 'stepfun/step-3.7-flash-free', name: 'Step 3.7 Flash' },
-  { model: 'z-ai/glm-4.7-flash-free', name: 'GLM 4.7 Flash' }
+  { model: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+  { model: 'deepseek/deepseek-v4-pro', name: 'DeepSeek V4 Pro' }
 ];
 
 let currentProviderIndex = 0;
