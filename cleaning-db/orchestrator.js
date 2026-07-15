@@ -7,7 +7,7 @@ const DRAFT_FILE = path.join(__dirname, 'raw_animes_draft.json');
 const FINAL_FILE = path.join(__dirname, 'final_clean_directory.json');
 
 const CHUNK_SIZE = 50; // Processing 50 items per batch
-const API_KEY = 'sk-ai-v1-efd9c1e89df9084b79076732088d2db26f53f433e5d05ae8faaebc841017e113';
+const API_KEY = 'sk-ai-v1-5ed83e568ca7a63ec3dca25e5c4581d8f602c5c70694da0cb6873f7511ce3156';
 const BASE_URL = 'https://zenmux.ai/api/v1/chat/completions';
 
 // API Providers for failover rotation
@@ -84,7 +84,7 @@ function validateLlmResponse(data) {
 }
 
 // Perform LLM API calls with timeouts
-async function callLlmWithTimeout(provider, messages, timeoutMs = 60000) {
+async function callLlmWithTimeout(provider, messages, timeoutMs = 120000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -116,47 +116,39 @@ function createPrompt(chunk) {
   return [
     {
       role: 'system',
-      content: 'You are an advanced database cleanup and deduplication assistant. You output ONLY valid JSON arrays with no markdown wrappers or explanations.'
+      content: 'You are a translation and data-sanitization agent specializing in anime metadata. Your goal is to clean up messy anime titles and group them into a unified, high-quality directory format.'
     },
     {
       role: 'user',
-      content: `Analyze the following chunk of raw anime metadata records. Standardise their titles and group them into their canonical English and Japanese main titles.
+      content: `Analyze the following chunk of raw anime metadata records. Clean their titles and group them into a unified, high-quality directory format based on the rules below.
 
 Input Array:
 ${JSON.stringify(chunk)}
 
-Instructions:
-1. For each record, identify its canonical English Main Title (e.g., "Oshi no Ko", "Dragon Ball Z", "Attack on Titan") and Japanese Main Title (e.g., "Shingeki no Kyojin", "Dragon Ball Z").
-2. Determine if the record represents a "Season" of a TV Series, a "Movie", an "OVA", or a "Special".
-3. Group records belonging to the same franchise/canonical show together.
-4. Output a clean JSON array matching this exact schema:
+CLEANING RULES:
+1. STRIP JUNK WORDS: Remove any trailing junk or web-scraper artifacts from titles and search hints. This includes, but is not limited to: "HD", "izle", "1080p", "Türkçe Altyazılı", "Türkçe Dublaj", "dual", "uncensored", "censored", etc. (e.g., "Dragon Ball HD" -> "Dragon Ball").
+2. STANDARDIZE TITLES: 
+   - "main_title_en": Must be the official international English title.
+   - "main_title_jp": Must be the official Romaji (Japanese) title.
+3. DETECT SEASONS: Extract the season numbers or parts from titles/hints. Group them strictly under the same main object. Do not make different seasons of the same anime separate root objects.
+4. ABSOLUTE CONSTRAINT: Never alter, skip, or invent "mongo_db_id" values. They must be preserved exactly.
+
+OUTPUT FORMAT:
+Return ONLY a raw, valid JSON array. No markdown wraps (no \`\`\`json ... \`\`\`), no explanations. Start directly with '[' and end with ']'.
+
+Example Output Structure:
 [
   {
-    "main_title_en": "Canonical English Title",
-    "main_title_jp": "Canonical Japanese Title (or Romaji)",
-    "type": "TV" or "Movie" or "OVA" or "Special",
+    "main_title_en": "86 EIGHTY-SIX",
+    "main_title_jp": "86",
+    "type": "TV",
     "seasons": [
-      {
-        "season_number": Integer (1 for Season 1, 2 for Season 2, etc. Use 0 for specials/unknown),
-        "season_title": "Season 1", "Season 2", etc.,
-        "format": "TV" or "OVA" or "Special",
-        "mongo_db_id": "The mongo_db_id from the input record"
-      }
+      { "season_number": 1, "season_title": "Season 1", "format": "TV", "mongo_db_id": "6a135d..." },
+      { "season_number": 2, "season_title": "Season 2", "format": "TV", "mongo_db_id": "6a135e..." }
     ],
-    "related_movies_or_ovas": [
-      {
-        "title": "Movie or OVA title",
-        "format": "Movie" or "OVA",
-        "mongo_db_id": "The mongo_db_id from the input record"
-      }
-    ]
+    "related_movies_or_ovas": []
   }
-]
-
-Requirements:
-- Do not output any chat messages, markdown code block ticks, or text outside the JSON array block.
-- Begin your response directly with '[' and end with ']'.
-- Ensure all mongo_db_id properties correspond to the exact mongo_db_id values provided in the input.`
+]`
     }
   ];
 }
