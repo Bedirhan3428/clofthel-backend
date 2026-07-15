@@ -270,7 +270,14 @@ async function orchestrate() {
         }
 
         responseText = await response.text();
-        const cleanedText = cleanJsonResponse(responseText);
+        const jsonResponse = JSON.parse(responseText);
+        
+        if (!jsonResponse.choices || !jsonResponse.choices[0] || !jsonResponse.choices[0].message) {
+          throw new Error(`Unexpected API response structure: ${responseText}`);
+        }
+
+        const modelContent = jsonResponse.choices[0].message.content;
+        const cleanedText = cleanJsonResponse(modelContent);
 
         // Parse and validate response structure
         const parsedData = JSON.parse(cleanedText);
