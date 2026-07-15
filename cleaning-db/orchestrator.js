@@ -89,7 +89,7 @@ function validateLlmResponse(data) {
 }
 
 // Perform LLM API calls with timeouts
-async function callLlmWithTimeout(provider, messages, timeoutMs = 120000) {
+async function callLlmWithTimeout(provider, messages, timeoutMs = 180000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -121,7 +121,7 @@ function createPrompt(chunk) {
   return [
     {
       role: 'system',
-      content: 'You are a translation and data-sanitization agent specializing in anime metadata. Your goal is to clean up messy anime titles and group them into a unified, high-quality directory format.'
+      content: 'You are a translation and data-sanitization agent specializing in anime metadata. Your goal is to clean up messy anime titles and group them into a unified, high-quality directory format. IMPORTANT: DO NOT write any internal reasoning or <think> tags. Output ONLY the raw JSON array.'
     },
     {
       role: 'user',
@@ -139,7 +139,7 @@ CLEANING RULES:
 4. ABSOLUTE CONSTRAINT: Never alter, skip, or invent "mongo_db_id" values. They must be preserved exactly.
 
 OUTPUT FORMAT:
-Return ONLY a raw, valid JSON array. No markdown wraps (no \`\`\`json ... \`\`\`), no explanations. Start directly with '[' and end with ']'.
+Return ONLY a raw, valid JSON array. DO NOT use <think> tags or write internal reasoning. No markdown wraps (no \`\`\`json ... \`\`\`), no explanations. Start directly with '[' and end with ']'.
 
 Example Output Structure:
 [
@@ -255,7 +255,8 @@ async function orchestrate() {
     let responseText = '';
 
     // Retry loop with model rotation
-    while (!success && retries < PROVIDERS.length) {
+    const MAX_RETRIES = 5;
+    while (!success && retries < MAX_RETRIES) {
       const provider = PROVIDERS[currentProviderIndex];
       console.log(`[ORCHESTRATOR] Attempting with provider: ${provider.name} (${provider.model})...`);
 
