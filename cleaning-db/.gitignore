@@ -1,0 +1,4 @@
+node_modules/
+raw_animes_draft.json
+orchestrator_state.json
+final_clean_directory.json

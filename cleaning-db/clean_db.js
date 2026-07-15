@@ -10,7 +10,7 @@ if (fs.existsSync(envPath)) {
   require('dotenv').config();
 }
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/clofthel';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://Bedirhan:IWVAR7SF4sX03iPxm8cAsxLpUcplC2oL@ac-gvpimdi-shard-00-00.ng7xf3i.mongodb.net:27017,ac-gvpimdi-shard-00-01.ng7xf3i.mongodb.net:27017,ac-gvpimdi-shard-00-02.ng7xf3i.mongodb.net:27017/clofthel_db?ssl=true&replicaSet=atlas-4w6yvn-shard-0&authSource=admin&retryWrites=true&w=majority';
 const DRAFT_FILE_NAME = 'raw_animes_draft.json';
 const outputPath = path.join(__dirname, DRAFT_FILE_NAME);
 

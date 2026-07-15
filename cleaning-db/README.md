@@ -17,10 +17,16 @@ Ensure you have Node.js installed on your machine.
    npm install
    ```
 
-3. Run the script:
-   ```bash
-   npm start
-   ```
+## Scripts
 
-## Output
-The script generates a file named `raw_animes_draft.json` in this directory containing all cleaned and grouped anime records sorted alphabetically by `original_title`.
+### 1. Database Grouping Draft (`clean_db.js`)
+Extracts all anime metadata records from the database and creates a local raw draft.
+*   **Run:** `npm run start` or `node clean_db.js`
+*   **Output:** `raw_animes_draft.json`
+
+### 2. Orchestrator Agent Layer (`orchestrator.js`)
+Splits the raw draft records into chunks and passes them through an AI rotation layer to group, clean, and map them to their canonical main titles and seasons.
+*   **Run:** `node orchestrator.js`
+*   **Memory & Resume:** Creates `orchestrator_state.json` to store memory of mapped titles and keep track of completed chunks. If interrupted, running the script again resumes where it left off.
+*   **Rotation Providers:** Dynamically falls back and rotates between Grok 4.5, Step 3.7 Flash, and GLM 4.7 Flash APIs if rate limits (429) or timeouts are hit.
+*   **Output:** `final_clean_directory.json` containing the final clean directory structure.
