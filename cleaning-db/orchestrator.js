@@ -6,7 +6,7 @@ const STATE_FILE = path.join(__dirname, 'orchestrator_state.json');
 const DRAFT_FILE = path.join(__dirname, 'raw_animes_draft.json');
 const FINAL_FILE = path.join(__dirname, 'final_clean_directory.json');
 
-const CHUNK_SIZE = 50; // Processing 50 items per batch
+const CHUNK_SIZE = 20; // Processing 20 items per batch to avoid timeouts
 const API_KEY = 'sk-ai-v1-5ed83e568ca7a63ec3dca25e5c4581d8f602c5c70694da0cb6873f7511ce3156';
 const BASE_URL = 'https://zenmux.ai/api/v1/chat/completions';
 
