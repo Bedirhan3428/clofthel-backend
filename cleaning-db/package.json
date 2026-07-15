@@ -1,0 +1,13 @@
+{
+  "name": "clofthel-cleaning-db",
+  "version": "1.0.0",
+  "description": "Script to clean and group anime database records into a simplified JSON draft.",
+  "main": "clean_db.js",
+  "scripts": {
+    "start": "node clean_db.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "mongoose": "^8.0.0"
+  }
+}
