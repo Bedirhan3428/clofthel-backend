@@ -40,9 +40,15 @@ function saveState(state) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
 }
 
-// Clean JSON response by removing markdown blocks if they exist
+// Clean JSON response by removing markdown blocks and reasoning think tags if they exist
 function cleanJsonResponse(text) {
   let cleaned = text.trim();
+  
+  // Strip DeepSeek <think>...</think> blocks if present
+  if (cleaned.includes('<think>')) {
+    cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  }
+
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```[a-zA-Z0-9]*\s*/, '');
     cleaned = cleaned.replace(/\s*```$/, '');
@@ -246,6 +252,7 @@ async function orchestrate() {
 
     let success = false;
     let retries = 0;
+    let responseText = '';
 
     // Retry loop with model rotation
     while (!success && retries < PROVIDERS.length) {
@@ -262,7 +269,7 @@ async function orchestrate() {
           throw new Error(`HTTP Error Status: ${response.status} - ${response.statusText}`);
         }
 
-        const responseText = await response.text();
+        responseText = await response.text();
         const cleanedText = cleanJsonResponse(responseText);
 
         // Parse and validate response structure
@@ -280,6 +287,9 @@ async function orchestrate() {
       } catch (err) {
         retries++;
         console.warn(`[ORCHESTRATOR] WARNING: Attempt ${retries} failed using ${provider.name}. Error: ${err.message}`);
+        if (responseText) {
+          console.warn(`[ORCHESTRATOR] Raw response preview (first 400 chars): ${responseText.slice(0, 400)}`);
+        }
         
         // Rotate to the next provider
         currentProviderIndex = (currentProviderIndex + 1) % PROVIDERS.length;
