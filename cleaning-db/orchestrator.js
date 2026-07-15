@@ -56,7 +56,7 @@ function cleanJsonResponse(text) {
   return cleaned.trim();
 }
 
-// Validate that the LLM output conforms to the exact schema
+// Validate that the LLM output conforms to the exact schema, and normalize/sanitize on the fly
 function validateLlmResponse(data) {
   if (!Array.isArray(data)) {
     throw new Error('Response is not a JSON array');
@@ -73,17 +73,40 @@ function validateLlmResponse(data) {
       throw new Error(`Item "${item.main_title_en}" is missing "related_movies_or_ovas" array`);
     }
 
+    // Normalize and sanitize seasons array
+    const sanitizedSeasons = [];
     for (const season of item.seasons) {
+      if (!season.format && season.type) {
+        season.format = season.type;
+      }
       if (season.season_number === undefined || !season.season_title || !season.format || !season.mongo_db_id) {
         throw new Error(`Item "${item.main_title_en}" has an invalid season schema: ${JSON.stringify(season)}`);
       }
+      sanitizedSeasons.push({
+        season_number: Number(season.season_number),
+        season_title: String(season.season_title).trim(),
+        format: String(season.format).trim(),
+        mongo_db_id: String(season.mongo_db_id).trim()
+      });
     }
+    item.seasons = sanitizedSeasons;
 
+    // Normalize and sanitize related_movies_or_ovas array
+    const sanitizedMovies = [];
     for (const movie of item.related_movies_or_ovas) {
+      if (!movie.format && movie.type) {
+        movie.format = movie.type;
+      }
       if (!movie.title || !movie.format || !movie.mongo_db_id) {
         throw new Error(`Item "${item.main_title_en}" has an invalid related movie/OVA schema: ${JSON.stringify(movie)}`);
       }
+      sanitizedMovies.push({
+        title: String(movie.title).trim(),
+        format: String(movie.format).trim(),
+        mongo_db_id: String(movie.mongo_db_id).trim()
+      });
     }
+    item.related_movies_or_ovas = sanitizedMovies;
   }
   return true;
 }
