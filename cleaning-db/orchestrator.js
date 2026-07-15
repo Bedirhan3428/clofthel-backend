@@ -7,13 +7,12 @@ const DRAFT_FILE = path.join(__dirname, 'raw_animes_draft.json');
 const FINAL_FILE = path.join(__dirname, 'final_clean_directory.json');
 
 const CHUNK_SIZE = 20; // Processing 20 items per batch to avoid timeouts
-const API_KEY = 'sk-ai-v1-5ed83e568ca7a63ec3dca25e5c4581d8f602c5c70694da0cb6873f7511ce3156';
+const API_KEY = 'sk-ai-v1-643f993801aec896e122be1b7728231f291bb385986c9f851f14180eb21af926';
 const BASE_URL = 'https://zenmux.ai/api/v1/chat/completions';
 
-// API Providers for failover rotation (Strictly DeepSeek models)
+// API Providers for failover rotation (Using fast Stepfun model)
 const PROVIDERS = [
-  { model: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
-  { model: 'deepseek/deepseek-v4-pro', name: 'DeepSeek V4 Pro' }
+  { model: 'stepfun/step-3.7-flash-free', name: 'Step 3.7 Flash' }
 ];
 
 let currentProviderIndex = 0;
