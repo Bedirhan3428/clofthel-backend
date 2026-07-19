@@ -1,7 +1,54 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const Anime = require('../models/Anime');
 const axios = require('axios');
+
+// ── Orchestrator State Cache ───────────────────────────────────
+const orchestratorStateSchema = new mongoose.Schema(
+  {
+    state_key: { type: String, index: true },
+    processed_chunks: [Number],
+    global_titles_map: mongoose.Schema.Types.Mixed,
+    updatedAt: Date
+  },
+  { collection: 'orchestrator_state', versionKey: false }
+);
+
+const OrchestratorState = mongoose.models.OrchestratorState || mongoose.model('OrchestratorState', orchestratorStateSchema);
+
+let orchestratorMap = {};
+async function loadOrchestratorMap() {
+  try {
+    const doc = await OrchestratorState.findOne({ state_key: 'orchestrator_state' }).lean();
+    if (doc && doc.global_titles_map) {
+      orchestratorMap = doc.global_titles_map;
+      console.log(`[Orchestrator Cache] Loaded ${Object.keys(orchestratorMap).length} canonical titles.`);
+    }
+  } catch (err) {
+    console.error('[Orchestrator Cache] Load error:', err.message);
+  }
+}
+// Load on file execute
+loadOrchestratorMap();
+// Reload every 10 minutes
+setInterval(loadOrchestratorMap, 10 * 60 * 1000);
+
+function getCanonicalInfoForDoc(doc) {
+  if (!doc) return null;
+  const searchIdStr = String(doc._id || doc.id);
+  for (const item of Object.values(orchestratorMap)) {
+    const matchedSeason = (item.seasons || []).find(s => String(s.mongo_db_id) === searchIdStr);
+    if (matchedSeason) {
+      return { item, type: 'season', matchedSeason };
+    }
+    const matchedMovie = (item.related_movies_or_ovas || []).find(m => String(m.mongo_db_id) === searchIdStr);
+    if (matchedMovie) {
+      return { item, type: 'movie', matchedMovie };
+    }
+  }
+  return null;
+}
 const { resolveSibnetId } = require('../utils/resolver');
 const { apiKeyAuth, protect } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
@@ -648,7 +695,14 @@ function lazyResolveAnilistInfo(docs) {
  */
 function formatAnimeDoc(doc) {
   if (!doc) return null;
-  const anime_title = getDisplayTitle(doc);
+  
+  // Resolve canonical title from orchestrator state if matched
+  const canonical = getCanonicalInfoForDoc(doc);
+  let anime_title = getDisplayTitle(doc);
+  if (canonical) {
+    anime_title = canonical.item.main_title_en;
+  }
+  
   let playableEpisodesCount = doc.episodes ? Object.keys(doc.episodes).length : 0;
   if (playableEpisodesCount === 0 && doc.tranimeizle_url) {
     // Only treat as 1-episode if it's genuinely a movie/OVA/special, not a root series page
@@ -1949,18 +2003,6 @@ router.post('/:id/reset-anilist', apiKeyAuth, async (req, res) => {
 // ── Orchestrator Directory Endpoint ───────────────────────────
 // Serves the compiled anime directory (from orchestrator_state collection) to mobile app.
 // Used by AnimeDirectoryContext for local Fuse.js search.
-
-const orchestratorStateSchema = new (require('mongoose').Schema)(
-  {
-    state_key: { type: String, index: true },
-    processed_chunks: [Number],
-    global_titles_map: require('mongoose').Schema.Types.Mixed,
-    updatedAt: Date
-  },
-  { collection: 'orchestrator_state', versionKey: false }
-);
-
-const OrchestratorState = mongoose.models.OrchestratorState || mongoose.model('OrchestratorState', orchestratorStateSchema);
 
 /**
  * GET /api/animes/directory

@@ -169,15 +169,15 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const animeType = anime?.format || 'TV';
   const bannerImage = anime?.banner_image || anime?.bannerImage || null;
   const coverImage = anime?.cover_image || anime?.coverImage || null;
-  const description = anime?.description
+  const description = anime?.description && typeof anime.description === 'string'
     ? anime.description.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').trim()
     : null;
   const genres = anime?.genres || anime?.enrichedGenres || [];
   const averageScore = anime?.averageScore || anime?.average_score || null;
 
   // Active Label resolution
-  const activeLabel = seasons.find(s => String(s._id) === String(activeMongoId))?.label ||
-                      relatedMoviesOvas.find(m => String(m._id) === String(activeMongoId))?.title ||
+  const activeLabel = (activeMongoId && seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))?.label) ||
+                      (activeMongoId && relatedMoviesOvas && relatedMoviesOvas.find(m => m && String(m._id) === String(activeMongoId))?.title) ||
                       'Sezon 1';
 
   // ── Render Episode Card ──────────────────────────────────────
@@ -335,21 +335,22 @@ export default function AnimeDetailScreen({ route, navigation }) {
         )}
 
         {/* ── Season Selector ─────────────────────────── */}
-        {seasons.length > 1 && (
+        {seasons && seasons.length > 1 && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Sezonlar</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pillRow}>
               {seasons.map((season, index) => {
-                const isActive = String(season._id) === String(activeMongoId);
+                if (!season) return null;
+                const isActive = season._id && String(season._id) === String(activeMongoId);
                 return (
                   <TouchableOpacity
                     key={season._id || index}
                     style={[styles.pill, isActive && styles.pillActive]}
-                    onPress={() => handleSeasonSelect(season._id)}
+                    onPress={() => season._id && handleSeasonSelect(season._id)}
                     activeOpacity={0.7}
                   >
                     <Text style={[styles.pillText, isActive && styles.pillTextActive]}>
-                      {season.label}
+                      {season.label || `Sezon ${season.season_number || index + 1}`}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -359,21 +360,22 @@ export default function AnimeDetailScreen({ route, navigation }) {
         )}
 
         {/* ── Related Movies/OVAs ─────────────────────── */}
-        {relatedMoviesOvas.length > 0 && (
+        {relatedMoviesOvas && relatedMoviesOvas.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>İlgili Film & OVA'lar</Text>
             <FlatList
               horizontal
               data={relatedMoviesOvas}
-              keyExtractor={(item, i) => item._id || `movie-${i}`}
+              keyExtractor={(item, i) => item?._id || `movie-${i}`}
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.movieListContent}
               renderItem={({ item }) => {
-                const isActive = String(item._id) === String(activeMongoId);
+                if (!item) return null;
+                const isActive = item._id && String(item._id) === String(activeMongoId);
                 return (
                   <TouchableOpacity
                     style={[styles.movieCard, isActive && styles.movieCardActive]}
-                    onPress={() => handleSeasonSelect(item._id)}
+                    onPress={() => item._id && handleSeasonSelect(item._id)}
                     activeOpacity={0.7}
                   >
                     <View style={styles.movieIconContainer}>
