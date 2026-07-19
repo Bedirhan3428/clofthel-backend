@@ -18,12 +18,52 @@ const orchestratorStateSchema = new mongoose.Schema(
 const OrchestratorState = mongoose.models.OrchestratorState || mongoose.model('OrchestratorState', orchestratorStateSchema);
 
 let orchestratorMap = {};
+let mongoIdToGroupMap = {};
+let animeCoversMap = {};
+
+async function loadAnimeCovers() {
+  try {
+    const animes = await Anime.find({}, '_id cover_image banner_image').lean();
+    const newMap = {};
+    for (const anime of animes) {
+      newMap[String(anime._id)] = {
+        cover: anime.cover_image,
+        banner: anime.banner_image
+      };
+    }
+    animeCoversMap = newMap;
+    console.log(`[Orchestrator Cache] Loaded ${Object.keys(animeCoversMap).length} anime cover/banner references.`);
+  } catch (err) {
+    console.error('[Orchestrator Cache] Error loading covers:', err.message);
+  }
+}
+
 async function loadOrchestratorMap() {
   try {
+    // 1. Load covers
+    await loadAnimeCovers();
+
+    // 2. Load global titles map
     const doc = await OrchestratorState.findOne({ state_key: 'orchestrator_state' }).lean();
     if (doc && doc.global_titles_map) {
       orchestratorMap = doc.global_titles_map;
-      console.log(`[Orchestrator Cache] Loaded ${Object.keys(orchestratorMap).length} canonical titles.`);
+
+      // Build reverse index mongo_db_id -> group
+      const newReverseMap = {};
+      for (const [key, item] of Object.entries(orchestratorMap)) {
+        if (item.seasons) {
+          for (const s of item.seasons) {
+            if (s.mongo_db_id) newReverseMap[String(s.mongo_db_id)] = item;
+          }
+        }
+        if (item.related_movies_or_ovas) {
+          for (const m of item.related_movies_or_ovas) {
+            if (m.mongo_db_id) newReverseMap[String(m.mongo_db_id)] = item;
+          }
+        }
+      }
+      mongoIdToGroupMap = newReverseMap;
+      console.log(`[Orchestrator Cache] Loaded ${Object.keys(orchestratorMap).length} canonical titles and ${Object.keys(mongoIdToGroupMap).length} reverse mapping keys.`);
     }
   } catch (err) {
     console.error('[Orchestrator Cache] Load error:', err.message);
@@ -37,14 +77,15 @@ setInterval(loadOrchestratorMap, 10 * 60 * 1000);
 function getCanonicalInfoForDoc(doc) {
   if (!doc) return null;
   const searchIdStr = String(doc._id || doc.id);
-  for (const item of Object.values(orchestratorMap)) {
-    const matchedSeason = (item.seasons || []).find(s => String(s.mongo_db_id) === searchIdStr);
+  const group = mongoIdToGroupMap[searchIdStr];
+  if (group) {
+    const matchedSeason = (group.seasons || []).find(s => String(s.mongo_db_id) === searchIdStr);
     if (matchedSeason) {
-      return { item, type: 'season', matchedSeason };
+      return { item: group, type: 'season', matchedSeason };
     }
-    const matchedMovie = (item.related_movies_or_ovas || []).find(m => String(m.mongo_db_id) === searchIdStr);
+    const matchedMovie = (group.related_movies_or_ovas || []).find(m => String(m.mongo_db_id) === searchIdStr);
     if (matchedMovie) {
-      return { item, type: 'movie', matchedMovie };
+      return { item: group, type: 'movie', matchedMovie };
     }
   }
   return null;
@@ -1509,46 +1550,33 @@ router.get('/:id([0-9a-fA-F]{24})', async (req, res) => {
     // Lazily resolve AniList info if still missing
     lazyResolveAnilistInfo([anime]);
 
-    // 2. Query 'orchestrator_state' to find the entry containing this mongo_db_id
+    // 2. Use high-performance memory cache map to resolve orchestrator group
     const searchIdStr = String(anime._id);
-    const orchestratorDoc = await OrchestratorState.findOne({
-      state_key: 'orchestrator_state'
-    }).lean();
+    const orchestratorEntry = mongoIdToGroupMap[searchIdStr];
 
     let seasons = [];
     let relatedMoviesOvas = [];
     let formattedTitle = getDisplayTitle(anime);
 
-    if (orchestratorDoc && orchestratorDoc.global_titles_map) {
-      // Find the entry that has a season or movie matching our ID
-      const orchestratorEntry = Object.values(orchestratorDoc.global_titles_map).find(item => {
-        const hasSeason = (item.seasons || []).some(s => String(s.mongo_db_id) === searchIdStr);
-        if (hasSeason) return true;
-        const hasMovie = (item.related_movies_or_ovas || []).some(m => String(m.mongo_db_id) === searchIdStr);
-        if (hasMovie) return true;
-        return false;
-      });
+    if (orchestratorEntry) {
+      // We found the orchestrator entry! Use its title, seasons and movies
+      formattedTitle = orchestratorEntry.main_title_en;
+      
+      seasons = (orchestratorEntry.seasons || []).map(s => ({
+        _id: s.mongo_db_id,
+        season_number: s.season_number,
+        label: s.season_title,
+        category: 'seasons',
+        cover_image: anime.cover_image, // Fallback to current cover
+        banner_image: anime.banner_image
+      }));
 
-      if (orchestratorEntry) {
-        // We found the orchestrator entry! Use its title, seasons and movies
-        formattedTitle = orchestratorEntry.main_title_en;
-        
-        seasons = (orchestratorEntry.seasons || []).map(s => ({
-          _id: s.mongo_db_id,
-          season_number: s.season_number,
-          label: s.season_title,
-          category: 'seasons',
-          cover_image: anime.cover_image, // Fallback to current cover
-          banner_image: anime.banner_image
-        }));
-
-        relatedMoviesOvas = (orchestratorEntry.related_movies_or_ovas || []).map(m => ({
-          _id: m.mongo_db_id,
-          title: m.title,
-          format: m.format,
-          category: 'movies'
-        }));
-      }
+      relatedMoviesOvas = (orchestratorEntry.related_movies_or_ovas || []).map(m => ({
+        _id: m.mongo_db_id,
+        title: m.title,
+        format: m.format,
+        category: 'movies'
+      }));
     }
 
     // Fallback if not found in orchestrator
@@ -2016,11 +2044,17 @@ router.get('/directory', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Orchestrator directory not found.' });
     }
 
-    // Convert the object map to an array with the key included
-    const directoryArray = Object.entries(doc.global_titles_map).map(([key, value]) => ({
-      _key: key,
-      ...value
-    }));
+    // Convert the object map to an array with the key included, and attach cover/banner from animeCoversMap
+    const directoryArray = Object.entries(doc.global_titles_map).map(([key, value]) => {
+      const repSeasonId = value.seasons?.[0]?.mongo_db_id || value.related_movies_or_ovas?.[0]?.mongo_db_id;
+      const covers = repSeasonId ? animeCoversMap[String(repSeasonId)] : null;
+      return {
+        _key: key,
+        ...value,
+        cover_image: covers?.cover || null,
+        banner_image: covers?.banner || null
+      };
+    });
 
     res.json({
       success: true,

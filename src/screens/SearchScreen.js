@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { Image } from 'expo-image';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS } from '../constants/theme';
 import { useAnimeDirectory } from '../context/AnimeDirectoryContext';
 import { AuthContext } from '../context/AuthContext';
@@ -68,14 +69,22 @@ export default function SearchScreen({ route, navigation }) {
           navigation.navigate('AnimeDetail', { orchestratorEntry: item });
         }}
       >
-        {/* Type icon placeholder */}
-        <View style={[styles.typeIcon, { backgroundColor: formatStyle.bg, borderColor: formatStyle.border }]}>
-          <Ionicons
-            name={item.type === 'Movie' ? 'film-outline' : 'tv-outline'}
-            size={22}
-            color={formatStyle.text}
+        {/* Cover image or fallback type icon */}
+        {item.cover_image ? (
+          <Image
+            source={{ uri: item.cover_image }}
+            style={styles.typeIcon}
+            contentFit="cover"
           />
-        </View>
+        ) : (
+          <View style={[styles.typeIcon, { backgroundColor: formatStyle.bg, borderColor: formatStyle.border }]}>
+            <Ionicons
+              name={item.type === 'Movie' ? 'film-outline' : 'tv-outline'}
+              size={22}
+              color={formatStyle.text}
+            />
+          </View>
+        )}
 
         <View style={styles.cardInfo}>
           <Text style={styles.cardTitle} numberOfLines={2}>
