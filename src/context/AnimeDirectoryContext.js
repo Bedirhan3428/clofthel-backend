@@ -50,22 +50,29 @@ export function AnimeDirectoryProvider({ children }) {
 
         if (cachedData) {
           const parsed = JSON.parse(cachedData);
-          if (mounted) {
-            setDirectory(parsed);
-            buildFuseIndex(parsed);
-            setIsLoading(false);
-          }
+          if (Array.isArray(parsed) && parsed.length > 100) {
+            if (mounted) {
+              setDirectory(parsed);
+              buildFuseIndex(parsed);
+              setIsLoading(false);
+            }
 
-          // 2. Check if cache is stale (>24h)
-          const cacheAge = Date.now() - (parseInt(cachedTs, 10) || 0);
-          if (cacheAge < TTL_MS) {
-            // Cache is fresh, no need to refresh
-            return;
-          }
+            // 2. Check if cache is stale (>24h)
+            const cacheAge = Date.now() - (parseInt(cachedTs, 10) || 0);
+            if (cacheAge < TTL_MS) {
+              return;
+            }
 
-          // 3. Background refresh (stale cache)
-          console.log('[AnimeDirectory] Cache stale, refreshing in background...');
-          fetchAndUpdateDirectory(mounted);
+            // 3. Background refresh (stale cache)
+            console.log('[AnimeDirectory] Cache stale, refreshing in background...');
+            fetchAndUpdateDirectory(mounted);
+          } else {
+            console.log('[AnimeDirectory] Cache is empty or invalid, forcing fetch...');
+            await fetchAndUpdateDirectory(mounted);
+            if (mounted) {
+              setIsLoading(false);
+            }
+          }
         } else {
           // No cache — must fetch from network
           console.log('[AnimeDirectory] No cache found, fetching from network...');
@@ -84,10 +91,14 @@ export function AnimeDirectoryProvider({ children }) {
 
     const fetchAndUpdateDirectory = async (isMounted) => {
       try {
+        console.log(`[AnimeDirectory] Fetching directory from: ${API_BASE_URL}/animes/directory`);
         const response = await apiFetch(`${API_BASE_URL}/animes/directory`);
-        const json = await response.json();
+        console.log(`[AnimeDirectory] Fetch status: ${response.status}`);
 
-        if (json.success && json.data) {
+        const json = await response.json();
+        console.log(`[AnimeDirectory] Fetch success: ${json?.success}, count: ${json?.data?.length || 0}`);
+
+        if (json.success && Array.isArray(json.data) && json.data.length > 100) {
           if (isMounted) {
             setDirectory(json.data);
             buildFuseIndex(json.data);
@@ -99,6 +110,14 @@ export function AnimeDirectoryProvider({ children }) {
             AsyncStorage.setItem(CACHE_TS_KEY, Date.now().toString()),
           ]);
           console.log(`[AnimeDirectory] Cached ${json.data.length} entries.`);
+        } else if (json.success && Array.isArray(json.data)) {
+          console.warn(`[AnimeDirectory] Directory is too small (${json.data.length} entries). Not caching to prevent lock-in.`);
+          if (isMounted) {
+            setDirectory(json.data);
+            buildFuseIndex(json.data);
+          }
+        } else if (json.error) {
+          console.error(`[AnimeDirectory] Server returned error: ${json.error}`);
         }
       } catch (error) {
         console.warn('[AnimeDirectory] Network fetch failed:', error.message);
