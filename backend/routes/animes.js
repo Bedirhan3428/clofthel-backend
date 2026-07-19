@@ -1958,5 +1958,88 @@ router.post('/:id/reset-anilist', apiKeyAuth, async (req, res) => {
     }
 });
 
+// ── Orchestrator Directory Endpoint ───────────────────────────
+// Serves the compiled anime directory (from orchestrator_state collection) to mobile app.
+// Used by AnimeDirectoryContext for local Fuse.js search.
+
+const orchestratorStateSchema = new (require('mongoose').Schema)(
+  {
+    state_key: { type: String, index: true },
+    processed_chunks: [Number],
+    global_titles_map: require('mongoose').Schema.Types.Mixed,
+    updatedAt: Date
+  },
+  { collection: 'orchestrator_state', versionKey: false }
+);
+
+const OrchestratorState = mongoose.models.OrchestratorState || mongoose.model('OrchestratorState', orchestratorStateSchema);
+
+/**
+ * GET /api/animes/directory
+ * Returns the full orchestrator global_titles_map as a JSON array for local search.
+ */
+router.get('/directory', async (req, res) => {
+  try {
+    const doc = await OrchestratorState.findOne({ state_key: 'orchestrator_state' }).lean();
+
+    if (!doc || !doc.global_titles_map) {
+      return res.status(404).json({ success: false, error: 'Orchestrator directory not found.' });
+    }
+
+    // Convert the object map to an array with the key included
+    const directoryArray = Object.entries(doc.global_titles_map).map(([key, value]) => ({
+      _key: key,
+      ...value
+    }));
+
+    res.json({
+      success: true,
+      count: directoryArray.length,
+      data: directoryArray,
+      updated_at: doc.updatedAt || null
+    });
+  } catch (err) {
+    console.error('[GET /api/animes/directory] Error:', err);
+    res.status(500).json({ success: false, error: 'Could not load anime directory.' });
+  }
+});
+
+/**
+ * GET /api/animes/:id/stream-data
+ * Returns only the episodes map + imagery for a given mongo_db_id.
+ * Optimized for the dual-core DetailScreen lazy loading.
+ */
+router.get('/:id/stream-data', async (req, res) => {
+  try {
+    const anime = await Anime.findById(req.params.id)
+      .select('episodes cover_image banner_image anilist_id description genres average_score total_episodes orijinal_ad format')
+      .lean();
+
+    if (!anime) {
+      return res.status(404).json({ success: false, error: 'Anime not found.' });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        _id: anime._id,
+        episodes: anime.episodes || {},
+        cover_image: anime.cover_image || null,
+        banner_image: anime.banner_image || null,
+        anilist_id: anime.anilist_id || null,
+        description: anime.description || null,
+        genres: anime.genres || [],
+        average_score: anime.average_score || null,
+        total_episodes: anime.total_episodes || 0,
+        orijinal_ad: anime.orijinal_ad || null,
+        format: anime.format || null
+      }
+    });
+  } catch (err) {
+    console.error('[GET /api/animes/:id/stream-data] Error:', err);
+    res.status(500).json({ success: false, error: 'Could not load stream data.' });
+  }
+});
+
 module.exports = router;
 

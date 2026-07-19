@@ -1,4 +1,3 @@
-import { Image } from 'expo-image';
 import React, { useState, useEffect, useCallback, useContext } from 'react';
 import {
   View,
@@ -7,21 +6,32 @@ import {
   TextInput,
   TouchableOpacity,
   FlatList,
-  
-  ActivityIndicator,
   StatusBar,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
-import { searchAnimes } from '../services/api';
+import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS } from '../constants/theme';
+import { useAnimeDirectory } from '../context/AnimeDirectoryContext';
 import { AuthContext } from '../context/AuthContext';
+
+// ── Format badge colors ────────────────────────────────────────
+const FORMAT_COLORS = {
+  TV: { bg: 'rgba(255, 107, 0, 0.15)', border: 'rgba(255, 107, 0, 0.3)', text: COLORS.accent },
+  Movie: { bg: 'rgba(147, 51, 234, 0.15)', border: 'rgba(147, 51, 234, 0.3)', text: '#9333EA' },
+  OVA: { bg: 'rgba(59, 130, 246, 0.15)', border: 'rgba(59, 130, 246, 0.3)', text: '#3B82F6' },
+  ONA: { bg: 'rgba(16, 185, 129, 0.15)', border: 'rgba(16, 185, 129, 0.3)', text: '#10B981' },
+  Special: { bg: 'rgba(245, 158, 11, 0.15)', border: 'rgba(245, 158, 11, 0.3)', text: '#F59E0B' },
+};
+
+function getFormatStyle(type) {
+  return FORMAT_COLORS[type] || FORMAT_COLORS.TV;
+}
 
 export default function SearchScreen({ route, navigation }) {
   const { user } = useContext(AuthContext);
+  const { searchAnime, isLoading: directoryLoading } = useAnimeDirectory();
   const [query, setQuery] = useState(route?.params?.initialQuery || '');
   const [results, setResults] = useState([]);
-  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (route?.params?.initialQuery) {
@@ -29,54 +39,23 @@ export default function SearchScreen({ route, navigation }) {
     }
   }, [route?.params?.initialQuery]);
 
+  // ── Instant local search (zero network latency) ──────────────
   useEffect(() => {
-    let isActive = true;
-
-    if (!query.trim()) {
+    if (!query.trim() || query.trim().length < 2) {
       setResults([]);
-      setLoading(false);
       return;
     }
 
-    setLoading(true);
-    const delayDebounce = setTimeout(async () => {
-      try {
-        const data = await searchAnimes(query.trim());
-        const seen = new Set();
-        const uniqueData = [];
-        for (const item of data) {
-          let title = item.title || item.anime_title || item.orijinal_ad || '';
-          let cleanedTitle = title.toLowerCase()
-            .replace(/[\s:]+(?:season|sezon|part|cour|the final|final|movie|film|films|movies|ova|ona|special|specials)\s*\d*/gi, '')
-            .replace(/\b\d+(st|nd|rd|th)?\b/g, '')
-            .replace(/[^a-z0-9]/g, '')
-            .trim();
-
-          const key = (cleanedTitle && cleanedTitle.length > 3) ? cleanedTitle : (item.comparable_base_slug || item.id || item._id);
-          if (!seen.has(key)) {
-            seen.add(key);
-            uniqueData.push(item);
-          }
-        }
-        if (isActive) {
-          setResults(uniqueData);
-        }
-      } catch (err) {
-        console.error('[SearchScreen] Error:', err);
-      } finally {
-        if (isActive) {
-          setLoading(false);
-        }
-      }
-    }, 400); // 400ms debounce
-
-    return () => {
-      isActive = false;
-      clearTimeout(delayDebounce);
-    };
-  }, [query]);
+    // Synchronous fuzzy search — no debounce needed
+    const matches = searchAnime(query.trim());
+    setResults(matches);
+  }, [query, searchAnime]);
 
   const renderSearchItem = useCallback(({ item }) => {
+    const formatStyle = getFormatStyle(item.type);
+    const seasonCount = (item.seasons || []).length;
+    const movieCount = (item.related_movies_or_ovas || []).length;
+
     return (
       <TouchableOpacity
         style={styles.searchCard}
@@ -86,28 +65,42 @@ export default function SearchScreen({ route, navigation }) {
             navigation.navigate('Login');
             return;
           }
-          navigation.navigate('AnimeDetail', { anime: item });
+          navigation.navigate('AnimeDetail', { orchestratorEntry: item });
         }}
       >
-        {item.coverImage ? (
-          <Image source={{ uri: item.coverImage }} style={styles.cardImage} contentFit="cover" />
-        ) : (
-          <View style={[styles.cardImage, styles.imagePlaceholder]}>
-            <Ionicons name="image-outline" size={24} color={COLORS.textMuted} />
-          </View>
-        )}
+        {/* Type icon placeholder */}
+        <View style={[styles.typeIcon, { backgroundColor: formatStyle.bg, borderColor: formatStyle.border }]}>
+          <Ionicons
+            name={item.type === 'Movie' ? 'film-outline' : 'tv-outline'}
+            size={22}
+            color={formatStyle.text}
+          />
+        </View>
 
         <View style={styles.cardInfo}>
           <Text style={styles.cardTitle} numberOfLines={2}>
-            {item.title || item.anime_title}
+            {item.main_title_en}
           </Text>
           <View style={styles.metaRow}>
-            {!!item.format && (
-              <View style={styles.formatBadge}>
-                <Text style={styles.formatText}>{item.format}</Text>
-              </View>
+            <View style={[styles.formatBadge, { backgroundColor: formatStyle.bg, borderColor: formatStyle.border }]}>
+              <Text style={[styles.formatText, { color: formatStyle.text }]}>{item.type}</Text>
+            </View>
+            {seasonCount > 0 && (
+              <Text style={styles.metaText}>
+                {seasonCount} Sezon
+              </Text>
+            )}
+            {movieCount > 0 && (
+              <Text style={styles.metaText}>
+                • {movieCount} Film/OVA
+              </Text>
             )}
           </View>
+          {item.main_title_jp && item.main_title_jp !== item.main_title_en && (
+            <Text style={styles.jpTitle} numberOfLines={1}>
+              {item.main_title_jp}
+            </Text>
+          )}
         </View>
 
         <View style={styles.arrowButton}>
@@ -115,7 +108,7 @@ export default function SearchScreen({ route, navigation }) {
         </View>
       </TouchableOpacity>
     );
-  }, [navigation]);
+  }, [navigation, user]);
 
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
@@ -152,19 +145,24 @@ export default function SearchScreen({ route, navigation }) {
       </View>
 
       {/* ── Content ────────────────────────────────── */}
-      {loading ? (
+      {directoryLoading ? (
         <View style={styles.centerContainer}>
-          <ActivityIndicator size="large" color={COLORS.accent} />
-          <Text style={styles.infoText}>Sonuçlar aranıyor...</Text>
+          <View style={styles.iconCircle}>
+            <Ionicons name="cloud-download-outline" size={48} color={COLORS.accent} />
+          </View>
+          <Text style={styles.infoTitle}>Katalog Yükleniyor</Text>
+          <Text style={styles.infoSubtitle}>
+            Anime kataloğu hazırlanıyor, lütfen bekleyin...
+          </Text>
         </View>
-      ) : query.trim() === '' ? (
+      ) : query.trim().length < 2 ? (
         <View style={styles.centerContainer}>
           <View style={styles.iconCircle}>
             <Ionicons name="search-outline" size={48} color={COLORS.accent} />
           </View>
           <Text style={styles.infoTitle}>Anime Ara</Text>
           <Text style={styles.infoSubtitle}>
-            5000'den fazla anime başlığı arasından dilediğini ara ve hemen izlemeye başla!
+            3899 anime başlığı arasından anında ara ve hemen izlemeye başla!
           </Text>
         </View>
       ) : results.length === 0 ? (
@@ -180,10 +178,11 @@ export default function SearchScreen({ route, navigation }) {
       ) : (
         <FlatList
           data={results}
-          keyExtractor={(item) => item._id}
+          keyExtractor={(item) => item._key}
           renderItem={renderSearchItem}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
         />
       )}
     </SafeAreaView>
@@ -252,15 +251,13 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     gap: SPACING.md,
   },
-  cardImage: {
+  typeIcon: {
     width: 50,
-    height: 70,
+    height: 50,
     borderRadius: BORDER_RADIUS.sm,
-  },
-  imagePlaceholder: {
-    backgroundColor: COLORS.bgCard,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 0.5,
   },
   cardInfo: {
     flex: 1,
@@ -271,21 +268,24 @@ const styles = StyleSheet.create({
     fontWeight: FONT_WEIGHTS.semibold,
     marginBottom: SPACING.xs,
   },
+  jpTitle: {
+    color: COLORS.textMuted,
+    fontSize: FONT_SIZES.small,
+    marginTop: 2,
+    fontStyle: 'italic',
+  },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: SPACING.sm,
   },
   formatBadge: {
-    backgroundColor: 'rgba(255, 107, 0, 0.15)',
     paddingHorizontal: SPACING.sm,
     paddingVertical: 2,
     borderRadius: BORDER_RADIUS.sm,
     borderWidth: 0.5,
-    borderColor: 'rgba(255, 107, 0, 0.3)',
   },
   formatText: {
-    color: COLORS.accent,
     fontSize: 10,
     fontWeight: FONT_WEIGHTS.bold,
   },
@@ -329,9 +329,5 @@ const styles = StyleSheet.create({
     fontSize: FONT_SIZES.body,
     textAlign: 'center',
     lineHeight: 20,
-  },
-  infoText: {
-    color: COLORS.textSecondary,
-    fontSize: FONT_SIZES.body,
   },
 });

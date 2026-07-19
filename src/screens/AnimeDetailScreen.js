@@ -1,16 +1,22 @@
+/**
+ * Clofthel — AnimeDetailScreen (Dual-Core Architecture)
+ * 
+ * Orchestrator Layer: Immediate render of titles, seasons, movies from orchestrator_state.
+ * MongoDB Layer: Lazy-loaded episodes, imagery, and metadata via /stream-data endpoint.
+ */
 import { Image } from 'expo-image';
-import React, { useState, useEffect, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  
   TouchableOpacity,
   ActivityIndicator,
   Dimensions,
   FlatList,
-  Linking
+  Animated,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -21,187 +27,195 @@ import {
   FONT_SIZES,
   FONT_WEIGHTS,
   BORDER_RADIUS,
-  SHADOWS,
 } from '../constants/theme';
-import { fetchAnimeDetail, fetchEpisodes, resetAnimeAnilistId, saveAnimeAnilistId, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList } from '../services/api';
-import { Modal } from 'react-native';
+import { API_BASE_URL } from '../constants/config';
+import { apiFetch, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList } from '../services/api';
 import { useAlert } from '../context/AlertContext';
 import { AuthContext } from '../context/AuthContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const COVER_HEIGHT = 420;
+const BANNER_HEIGHT = 320;
+const POSTER_WIDTH = 130;
+const POSTER_HEIGHT = 190;
+
+// ── Stream Data Fetcher ────────────────────────────────────────
+async function fetchStreamData(mongoDbId) {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/animes/${mongoDbId}/stream-data`);
+    const json = await response.json();
+    if (json.success) return json.data;
+    return null;
+  } catch (error) {
+    console.error('[fetchStreamData] Error:', error);
+    return null;
+  }
+}
 
 export default function AnimeDetailScreen({ route, navigation }) {
   const { showAlert } = useAlert();
+  const { user } = useContext(AuthContext);
+
+  // ── Orchestrator Entry (immediate) ───────────────────────────
+  const entry = route.params?.orchestratorEntry;
   
-  const handleOpenURL = async (url) => {
-    if (!url) {
-      showAlert('Hata', 'Bu bölümün izleme adresi bulunamadı.');
-      return;
-    }
-    try {
-      const supported = await Linking.canOpenURL(url);
-      if (supported) {
-        await Linking.openURL(url);
-      } else {
-        showAlert('Hata', 'Bu adres cihazınız tarafından desteklenmiyor: ' + url);
-      }
-    } catch (error) {
-      showAlert('Hata', 'Bağlantı açılırken bir sorun oluştu.');
-    }
-  };
+  // Fallback for old-style navigation (backwards compatibility)
+  const legacyAnime = route.params?.anime;
+  
+  if (!entry && !legacyAnime) {
+    return (
+      <SafeAreaView style={styles.screen}>
+        <View style={styles.centerContainer}>
+          <Text style={styles.errorText}>Anime verisi bulunamadı.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
-  const { anime: passedAnime } = route.params;
+  // If navigated with old format, display minimal info
+  const isLegacy = !entry && !!legacyAnime;
 
-  const [anime, setAnime] = useState(passedAnime);
+  const mainTitleEn = entry?.main_title_en || legacyAnime?.title || legacyAnime?.anime_title || 'Unknown';
+  const mainTitleJp = entry?.main_title_jp || legacyAnime?.orijinal_ad || '';
+  const animeType = entry?.type || legacyAnime?.format || 'TV';
+  const seasons = entry?.seasons || [];
+  const relatedMoviesOvas = entry?.related_movies_or_ovas || [];
+
+  // ── State ────────────────────────────────────────────────────
+  const [activeMongoId, setActiveMongoId] = useState(
+    seasons.length > 0 ? seasons[0].mongo_db_id : (legacyAnime?._id || null)
+  );
+  const [activeLabel, setActiveLabel] = useState(
+    seasons.length > 0 ? seasons[0].season_title : 'Season 1'
+  );
+  const [streamData, setStreamData] = useState(null);
+  const [loadingStream, setLoadingStream] = useState(true);
   const [episodes, setEpisodes] = useState([]);
-  const [loadingEpisodes, setLoadingEpisodes] = useState(true);
-  const [isFixingAnilist, setIsFixingAnilist] = useState(false);
   const [showFullDescription, setShowFullDescription] = useState(false);
+
+  // User-related state
   const [isFavorite, setIsFavorite] = useState(false);
   const [customLists, setCustomLists] = useState([]);
   const [isListModalVisible, setIsListModalVisible] = useState(false);
 
-  const [lastWatchedEntry, setLastWatchedEntry] = useState(null);
+  // Animation
+  const fadeAnim = useRef(new Animated.Value(0)).current;
 
-  const { user } = useContext(AuthContext);
-
+  // ── Load user data ───────────────────────────────────────────
   useEffect(() => {
-    const checkUserData = async () => {
-      if (user) {
-        const data = await getProfileData();
-        if (data) {
-          if (data.favorites) {
-            const favObj = data.favorites.find(f => f._id === anime._id || f === anime._id);
-            setIsFavorite(!!favObj);
-          }
-          if (data.customLists) {
-            setCustomLists(data.customLists);
-          }
-          if (data.watchHistory) {
-            const historyObj = data.watchHistory.find(
-              h => h.anime && (h.anime._id === anime._id || h.anime === anime._id)
-            );
-            if (historyObj) {
-              setLastWatchedEntry(historyObj);
-            }
-          }
+    if (user && activeMongoId) {
+      getProfileData().then(data => {
+        if (data?.favorites) {
+          setIsFavorite(data.favorites.some(f => (f._id || f) === activeMongoId));
         }
+        if (data?.customLists) {
+          setCustomLists(data.customLists);
+        }
+      });
+    }
+  }, [user, activeMongoId]);
+
+  // ── Load stream data when active selection changes ───────────
+  useEffect(() => {
+    if (!activeMongoId) {
+      setLoadingStream(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingStream(true);
+
+    fetchStreamData(activeMongoId).then(data => {
+      if (cancelled) return;
+      setStreamData(data);
+
+      // Parse episodes map to sorted array
+      if (data?.episodes) {
+        const episodeArray = Object.entries(data.episodes)
+          .map(([num, url]) => ({
+            episode_number: parseInt(num, 10) || num,
+            source_url: url,
+          }))
+          .sort((a, b) => {
+            const numA = typeof a.episode_number === 'number' ? a.episode_number : 0;
+            const numB = typeof b.episode_number === 'number' ? b.episode_number : 0;
+            return numA - numB;
+          });
+        setEpisodes(episodeArray);
+      } else {
+        setEpisodes([]);
       }
-    };
-    checkUserData();
-  }, [anime._id, user]);
+
+      setLoadingStream(false);
+
+      // Fade in animation
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 400,
+        useNativeDriver: true,
+      }).start();
+    });
+
+    return () => { cancelled = true; };
+  }, [activeMongoId]);
+
+  // ── Handlers ─────────────────────────────────────────────────
+  const handleSeasonSelect = (season) => {
+    if (season.mongo_db_id === activeMongoId) return;
+    fadeAnim.setValue(0);
+    setActiveMongoId(season.mongo_db_id);
+    setActiveLabel(season.season_title);
+  };
+
+  const handleMovieSelect = (movie) => {
+    if (movie.mongo_db_id === activeMongoId) return;
+    fadeAnim.setValue(0);
+    setActiveMongoId(movie.mongo_db_id);
+    setActiveLabel(movie.title);
+  };
 
   const handleToggleFavorite = async () => {
     if (!user) {
       showAlert('Giriş Gerekli', 'Favorilere eklemek için lütfen giriş yapın.');
       return;
     }
-    const res = await toggleFavorite(anime._id);
-    if (res && res.success) {
+    if (!activeMongoId) return;
+    const res = await toggleFavorite(activeMongoId);
+    if (res?.success) {
       setIsFavorite(res.isFavorite);
     }
   };
 
   const handleToggleAnimeInList = async (listId) => {
-    const res = await toggleAnimeInList(listId, anime._id);
-    if (res && res.success) {
+    if (!activeMongoId) return;
+    const res = await toggleAnimeInList(listId, activeMongoId);
+    if (res?.success) {
       setCustomLists(res.customLists);
     }
   };
 
-  const seasonsList = (anime.seasons || []).filter(s => s.category === 'seasons' || !s.category);
-  const moviesList = (anime.seasons || []).filter(s => s.category === 'movies');
-  const ovasList = (anime.seasons || []).filter(s => s.category === 'ovas');
-
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
-    try {
-      // Eğer detaylı veri veya sezon listesi yoksa backend'den çek
-      if ((!anime.description || !anime.seasons) && anime._id) {
-        const detail = await fetchAnimeDetail(anime._id);
-        if (detail) setAnime(detail);
-      }
-
-      // Bölümleri çek
-      const animeId = anime._id || anime.id;
-      if (animeId) {
-        const eps = await fetchEpisodes(animeId);
-        setEpisodes(eps);
-      }
-    } catch (error) {
-      console.error('[AnimeDetail] Error:', error);
-    } finally {
-      setLoadingEpisodes(false);
-    }
-  };
-
-  const handleSeasonSelect = async (selectedId) => {
-    if (selectedId === anime._id) return;
-    setLoadingEpisodes(true);
-    
-    // Instantly update the cover image for a seamless premium feel
-    const targetSeason = (anime.seasons || []).find(s => s._id === selectedId);
-    if (targetSeason && targetSeason.cover_image) {
-      setAnime(prev => ({ ...prev, coverImage: targetSeason.cover_image }));
-    }
-
-    try {
-      const detail = await fetchAnimeDetail(selectedId);
-      if (detail) {
-        // Keep the original seasons list structure intact to prevent UI jumping
-        detail.seasons = anime.seasons;
-        setAnime(detail);
-      }
-      const eps = await fetchEpisodes(selectedId);
-      setEpisodes(eps);
-    } catch (error) {
-      console.error('[handleSeasonSelect] Error:', error);
-    } finally {
-      setLoadingEpisodes(false);
-    }
-  };
-
-  const handleFixAnilist = async () => {
-    if (isFixingAnilist) return;
-    setIsFixingAnilist(true);
-    try {
-      await resetAnimeAnilistId(anime._id);
-      const detail = await fetchAnimeDetail(anime._id);
-      if (detail) {
-        detail.seasons = anime.seasons; // keep original seasons structure
-        setAnime(detail);
-        if (detail.anilist_id) {
-          await saveAnimeAnilistId(anime._id, detail.anilist_id, detail.coverImage, detail.bannerImage, detail.orijinal_ad, detail.format);
-        }
-      }
-    } catch (error) {
-      console.warn('[AnimeDetail] Error fixing anilist', error);
-    } finally {
-      setIsFixingAnilist(false);
-    }
-  };
-
-  const cleanDescription = anime.description
-    ? anime.description.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').trim()
+  // ── Derived values ──────────────────────────────────────────
+  const bannerImage = streamData?.banner_image || null;
+  const coverImage = streamData?.cover_image || null;
+  const description = streamData?.description
+    ? streamData.description.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').trim()
     : null;
+  const genres = streamData?.genres || [];
+  const averageScore = streamData?.average_score || null;
 
-  const renderEpisodeItem = useCallback(({ item }) => (
+  // ── Render Episode Card ──────────────────────────────────────
+  const renderEpisodeCard = useCallback(({ item }) => (
     <TouchableOpacity
       style={styles.episodeCard}
       activeOpacity={0.8}
       onPress={() => {
         if (user) {
-          addToHistory(anime._id, item.episode_number);
+          addToHistory(activeMongoId, item.episode_number);
         }
         navigation.navigate('Resolve', {
-          animeId: anime._id,
+          animeId: activeMongoId,
           episodeNumber: item.episode_number,
-          episodeTitle: item.episode_title || `Bölüm ${item.episode_number}`,
-          animeTitle: anime.title || anime.anime_title
+          episodeTitle: `Bölüm ${item.episode_number}`,
+          animeTitle: mainTitleEn,
         });
       }}
     >
@@ -210,9 +224,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
       </View>
       <View style={styles.episodeInfo}>
         <Text style={styles.episodeTitle} numberOfLines={1}>
-          {item.episode_title || `Bölüm ${item.episode_number}`}
+          Bölüm {item.episode_number}
         </Text>
-        <Text style={styles.episodeMeta} numberOfLines={1}>
+        <Text style={styles.episodeMeta}>
           {item.source_url ? 'Hazır' : 'Kaynak yok'}
         </Text>
       </View>
@@ -220,8 +234,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
         <Ionicons name="play" size={16} color={COLORS.accent} />
       </View>
     </TouchableOpacity>
-  ), [anime, navigation]);
+  ), [activeMongoId, mainTitleEn, navigation, user]);
 
+  // ── Render ───────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
       <ScrollView
@@ -229,30 +244,35 @@ export default function AnimeDetailScreen({ route, navigation }) {
         showsVerticalScrollIndicator={false}
         bounces={false}
       >
-        {/* ── Cover Image ────────────────────────────── */}
-        <View style={styles.coverContainer}>
-          {anime.coverImage ? (
+        {/* ── Banner + Poster Header ──────────────────── */}
+        <View style={styles.bannerContainer}>
+          {bannerImage ? (
             <Image
-              source={{ uri: anime.coverImage }}
-              style={styles.coverImage}
+              source={{ uri: bannerImage }}
+              style={styles.bannerImage}
               contentFit="cover"
+              blurRadius={2}
+            />
+          ) : coverImage ? (
+            <Image
+              source={{ uri: coverImage }}
+              style={styles.bannerImage}
+              contentFit="cover"
+              blurRadius={8}
             />
           ) : (
-            <View style={[styles.coverImage, styles.coverPlaceholder]}>
-              <Ionicons name="image-outline" size={64} color={COLORS.textMuted} />
-            </View>
+            <View style={[styles.bannerImage, styles.bannerPlaceholder]} />
           )}
 
-          {/* Gradient overlay */}
           <LinearGradient
             colors={[
               'rgba(9, 9, 14, 0.20)',
-              'rgba(9, 9, 14, 0.50)',
-              'rgba(9, 9, 14, 0.85)',
+              'rgba(9, 9, 14, 0.60)',
+              'rgba(9, 9, 14, 0.95)',
               COLORS.bgPrimary,
             ]}
-            locations={[0, 0.4, 0.7, 1]}
-            style={styles.coverGradient}
+            locations={[0, 0.4, 0.75, 1]}
+            style={styles.bannerGradient}
           />
 
           {/* Back button */}
@@ -263,394 +283,214 @@ export default function AnimeDetailScreen({ route, navigation }) {
           >
             <Ionicons name="chevron-back" size={24} color={COLORS.textPrimary} />
           </TouchableOpacity>
+
+          {/* Poster + Title overlay */}
+          <View style={styles.headerOverlay}>
+            {coverImage ? (
+              <Image source={{ uri: coverImage }} style={styles.posterImage} contentFit="cover" />
+            ) : (
+              <View style={[styles.posterImage, styles.posterPlaceholder]}>
+                <Ionicons name="image-outline" size={40} color={COLORS.textMuted} />
+              </View>
+            )}
+
+            <View style={styles.titleContainer}>
+              <Text style={styles.mainTitle} numberOfLines={3}>{mainTitleEn}</Text>
+              {mainTitleJp && mainTitleJp !== mainTitleEn && (
+                <Text style={styles.jpTitleText} numberOfLines={2}>{mainTitleJp}</Text>
+              )}
+              <View style={styles.typeBadgeRow}>
+                <View style={styles.typeBadge}>
+                  <Text style={styles.typeBadgeText}>{animeType}</Text>
+                </View>
+                {averageScore && (
+                  <View style={styles.scoreBadge}>
+                    <Ionicons name="star" size={12} color="#FFD700" />
+                    <Text style={styles.scoreText}>{averageScore}%</Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          </View>
         </View>
 
-        <View style={styles.infoContainer}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <Text style={[styles.title, { flex: 1, paddingRight: 10 }]} numberOfLines={3}>
-              {anime.title || anime.anime_title}
-            </Text>
-            
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <TouchableOpacity 
-                style={styles.fixAnilistButton} 
-                onPress={handleFixAnilist}
-                disabled={isFixingAnilist}
-              >
-                {isFixingAnilist ? (
-                  <ActivityIndicator size="small" color="#FFF" />
-                ) : (
-                  <>
-                    <Ionicons name="sync-outline" size={14} color="#FFF" style={{ marginRight: 4 }} />
-                    <Text style={styles.fixAnilistText}>Güncelle</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={styles.favoriteButton} 
-                onPress={handleToggleFavorite}
-              >
-                <Ionicons 
-                  name={isFavorite ? "heart" : "heart-outline"} 
-                  size={24} 
-                  color={isFavorite ? "#FF3B30" : COLORS.textSecondary} 
-                />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {!!anime.romajiTitle && anime.romajiTitle !== anime.title && (
-            <Text style={styles.romajiTitle} numberOfLines={1}>
-              {anime.romajiTitle}
-            </Text>
-          )}
-
-          <View style={styles.metaRow}>
-            {anime.averageScore > 0 && (
-              <View style={styles.scoreBadge}>
-                <Ionicons name="star" size={14} color={COLORS.accent} />
-                <Text style={styles.scoreText}>{anime.averageScore}%</Text>
-              </View>
-            )}
-            {!!anime.status && (
-              <View style={[
-                styles.statusBadge,
-                anime.status === 'Devam Ediyor' && styles.statusOngoing,
-              ]}>
-                <Text style={styles.statusText}>{anime.status}</Text>
-              </View>
-            )}
-            {!loadingEpisodes && episodes.length > 0 ? (
-              <Text style={styles.metaText}>{episodes.length} Bölüm</Text>
-            ) : anime.totalEpisodes ? (
-              <Text style={styles.metaText}>{anime.totalEpisodes} Bölüm</Text>
-            ) : null}
-            {anime.seasonYear > 0 && (
-              <Text style={styles.metaText}>{anime.seasonYear}</Text>
-            )}
-          </View>
-
-          {(anime.enrichedGenres || anime.genres || []).length > 0 && (
-            <View style={styles.genreRow}>
-              {(anime.enrichedGenres || anime.genres).slice(0, 5).map((genre, idx) => (
-                <View key={idx} style={styles.genreBadge}>
-                  <Text style={styles.genreText}>{genre}</Text>
-                </View>
-              ))}
-            </View>
-          )}
-
-          <TouchableOpacity
-            style={styles.watchButton}
-            activeOpacity={0.85}
-            onPress={() => {
-              if (lastWatchedEntry) {
-                navigation.navigate('Resolve', {
-                  animeId: anime._id,
-                  episodeNumber: lastWatchedEntry.episode,
-                  episodeTitle: `${lastWatchedEntry.episode}. Bölüm`,
-                  animeTitle: anime.title || anime.anime_title,
-                  startAt: lastWatchedEntry.currentTime || 0
-                });
-              } else {
-                const firstEp = episodes[0];
-                if (firstEp) {
-                  navigation.navigate('Resolve', {
-                    animeId: anime._id,
-                    episodeNumber: firstEp.episode_number,
-                    episodeTitle: firstEp.episode_title || `Bölüm ${firstEp.episode_number}`,
-                    animeTitle: anime.title || anime.anime_title
-                  });
-                } else if (anime.tranimeizle_url) {
-                  navigation.navigate('Resolve', {
-                    animeId: anime._id,
-                    episodeNumber: 1,
-                    episodeTitle: anime.title || anime.anime_title,
-                    animeTitle: anime.title || anime.anime_title
-                  });
-                }
-              }
-            }}
-          >
-            <LinearGradient
-              colors={[COLORS.accent, COLORS.accentDark]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.watchButtonGradient}
-            >
-              <Ionicons name={lastWatchedEntry ? "play-forward" : "play"} size={20} color="#FFF" />
-              <Text style={styles.watchButtonText}>
-                {lastWatchedEntry 
-                  ? `İzlemeye Devam Et (${lastWatchedEntry.episode}. Bölüm)` 
-                  : 'İzlemeye Başla'}
-              </Text>
-            </LinearGradient>
+        {/* ── Action Buttons ──────────────────────────── */}
+        <View style={styles.actionRow}>
+          <TouchableOpacity style={styles.actionButton} onPress={handleToggleFavorite} activeOpacity={0.7}>
+            <Ionicons name={isFavorite ? 'heart' : 'heart-outline'} size={22} color={isFavorite ? COLORS.error : COLORS.textPrimary} />
+            <Text style={styles.actionText}>{isFavorite ? 'Favorilerde' : 'Favorile'}</Text>
           </TouchableOpacity>
 
-          <View style={styles.actionRow}>
-            <TouchableOpacity 
-              style={[styles.actionButton, isFavorite && styles.actionButtonActive]} 
-              onPress={handleToggleFavorite}
-            >
-              <Ionicons name={isFavorite ? "heart" : "heart-outline"} size={20} color={isFavorite ? "#FF3B30" : "#FFF"} />
-              <Text style={[styles.actionButtonText, isFavorite && { color: "#FF3B30" }]}>Favori</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              style={styles.actionButton} 
-              onPress={() => {
-                if (!user) {
-                  showAlert('Giriş Gerekli', 'Listeye eklemek için giriş yapın.');
-                } else {
-                  setIsListModalVisible(true);
-                }
-              }}
-            >
-              <Ionicons name="list" size={20} color="#FFF" />
-              <Text style={styles.actionButtonText}>Listeye Ekle</Text>
-            </TouchableOpacity>
-          </View>
-
-          {cleanDescription && (
-            <View style={styles.descriptionContainer}>
-              <Text style={styles.sectionLabel}>Özet</Text>
-              <Text
-                style={styles.descriptionText}
-                numberOfLines={showFullDescription ? undefined : 4}
-              >
-                {cleanDescription}
-              </Text>
-              {cleanDescription.length > 200 && (
-                <TouchableOpacity
-                  onPress={() => setShowFullDescription(!showFullDescription)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.readMoreText}>
-                    {showFullDescription ? 'Daha az göster' : 'Devamını oku'}
-                  </Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          )}
-
-          <View style={styles.episodesSection}>
-            {seasonsList.length > 0 && seasonsList.length !== (anime.seasons || []).length && (
-              <View style={styles.groupContainer}>
-                <Text style={styles.groupLabel}>Sezonlar</Text>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.seasonSelectorScroll}
-                >
-                  {seasonsList.map((season) => {
-                    const isSelected = season._id === anime._id;
-                    return (
-                      <TouchableOpacity
-                        key={season._id}
-                        style={[
-                          styles.seasonTab,
-                          isSelected && styles.seasonTabSelected,
-                        ]}
-                        activeOpacity={0.7}
-                        onPress={() => handleSeasonSelect(season._id)}
-                      >
-                        <Text
-                          style={[
-                            styles.seasonTabText,
-                            isSelected && styles.seasonTabTextSelected,
-                          ]}
-                        >
-                          {season.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              </View>
-            )}
-
-            {moviesList.length > 0 && (
-              <View style={styles.groupContainer}>
-                <Text style={styles.groupLabel}>Filmler</Text>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.seasonSelectorScroll}
-                >
-                  {moviesList.map((season) => {
-                    const isSelected = season._id === anime._id;
-                    return (
-                      <TouchableOpacity
-                        key={season._id}
-                        style={[
-                          styles.seasonTab,
-                          isSelected && styles.seasonTabSelected,
-                        ]}
-                        activeOpacity={0.7}
-                        onPress={() => handleSeasonSelect(season._id)}
-                      >
-                        <Text
-                          style={[
-                            styles.seasonTabText,
-                            isSelected && styles.seasonTabTextSelected,
-                          ]}
-                        >
-                          {season.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              </View>
-            )}
-
-            {ovasList.length > 0 && (
-              <View style={styles.groupContainer}>
-                <Text style={styles.groupLabel}>OVA & Özel Bölümler</Text>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.seasonSelectorScroll}
-                >
-                  {ovasList.map((season) => {
-                    const isSelected = season._id === anime._id;
-                    return (
-                      <TouchableOpacity
-                        key={season._id}
-                        style={[
-                          styles.seasonTab,
-                          isSelected && styles.seasonTabSelected,
-                        ]}
-                        activeOpacity={0.7}
-                        onPress={() => handleSeasonSelect(season._id)}
-                      >
-                        <Text
-                          style={[
-                            styles.seasonTabText,
-                            isSelected && styles.seasonTabTextSelected,
-                          ]}
-                        >
-                          {season.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              </View>
-            )}
-
-            {anime.seasons && anime.seasons.length > 1 && 
-             (seasonsList.length === anime.seasons.length || 
-              moviesList.length === anime.seasons.length || 
-              ovasList.length === anime.seasons.length) && (
-              <View style={styles.seasonSelectorContainer}>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.seasonSelectorScroll}
-                >
-                  {anime.seasons.map((season) => {
-                    const isSelected = season._id === anime._id;
-                    return (
-                      <TouchableOpacity
-                        key={season._id}
-                        style={[
-                          styles.seasonTab,
-                          isSelected && styles.seasonTabSelected,
-                        ]}
-                        activeOpacity={0.7}
-                        onPress={() => handleSeasonSelect(season._id)}
-                      >
-                        <Text
-                          style={[
-                            styles.seasonTabText,
-                            isSelected && styles.seasonTabTextSelected,
-                          ]}
-                        >
-                          {season.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              </View>
-            )}
-
-            <View style={styles.episodesHeader}>
-              <View style={styles.sectionTitleRow}>
-                <View style={styles.accentBar} />
-                <Text style={styles.sectionLabel}>Bölümler</Text>
-              </View>
-              <Text style={styles.episodeCount}>
-                {loadingEpisodes ? '...' : `${episodes.length} bölüm`}
-              </Text>
-            </View>
-
-            {loadingEpisodes ? (
-              <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color={COLORS.accent} />
-                <Text style={styles.loadingText}>Bölümler yükleniyor…</Text>
-              </View>
-            ) : episodes.length === 0 ? (
-              <View style={styles.emptyContainer}>
-                <Ionicons name="film-outline" size={48} color={COLORS.textMuted} />
-                <Text style={styles.emptyText}>Henüz bölüm eklenmemiş</Text>
-              </View>
-            ) : (
-              <FlatList
-                data={episodes}
-                keyExtractor={(item) => item._id || `${item.episode_number}`}
-                renderItem={renderEpisodeItem}
-                scrollEnabled={false}
-                contentContainerStyle={styles.episodeList}
-              />
-            )}
-          </View>
+          <TouchableOpacity style={styles.actionButton} onPress={() => setIsListModalVisible(true)} activeOpacity={0.7}>
+            <Ionicons name="list-outline" size={22} color={COLORS.textPrimary} />
+            <Text style={styles.actionText}>Listeye Ekle</Text>
+          </TouchableOpacity>
         </View>
 
-        <View style={{ height: 60 }} />
-      </ScrollView>
-
-      <Modal visible={isListModalVisible} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Listeye Ekle</Text>
-              <TouchableOpacity onPress={() => setIsListModalVisible(false)}>
-                <Ionicons name="close" size={24} color="#FFF" />
+        {/* ── Description ─────────────────────────────── */}
+        {description && (
+          <View style={styles.section}>
+            <Text
+              style={styles.descriptionText}
+              numberOfLines={showFullDescription ? undefined : 4}
+            >
+              {description}
+            </Text>
+            {description.length > 200 && (
+              <TouchableOpacity onPress={() => setShowFullDescription(!showFullDescription)}>
+                <Text style={styles.showMoreText}>
+                  {showFullDescription ? 'Daha az göster' : 'Devamını oku'}
+                </Text>
               </TouchableOpacity>
-            </View>
-            
-            <ScrollView style={styles.modalListScroll}>
-              {customLists.map(list => {
-                const isAdded = list.animes && list.animes.some(a => (a._id || a) === anime._id);
+            )}
+          </View>
+        )}
+
+        {/* ── Genres ──────────────────────────────────── */}
+        {genres.length > 0 && (
+          <View style={styles.genreRow}>
+            {genres.map((genre, i) => (
+              <View key={i} style={styles.genreChip}>
+                <Text style={styles.genreText}>{genre}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {/* ── Season Selector ─────────────────────────── */}
+        {seasons.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Sezonlar</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pillRow}>
+              {seasons.map((season, index) => {
+                const isActive = season.mongo_db_id === activeMongoId;
                 return (
-                  <TouchableOpacity 
-                    key={list._id} 
-                    style={styles.modalListItem}
-                    onPress={() => handleToggleAnimeInList(list._id)}
+                  <TouchableOpacity
+                    key={season.mongo_db_id || index}
+                    style={[styles.pill, isActive && styles.pillActive]}
+                    onPress={() => handleSeasonSelect(season)}
+                    activeOpacity={0.7}
                   >
-                    <Text style={styles.modalListItemText}>{list.name}</Text>
-                    <Ionicons 
-                      name={isAdded ? "checkmark-circle" : "ellipse-outline"} 
-                      size={24} 
-                      color={isAdded ? COLORS.accent : COLORS.textMuted} 
-                    />
+                    <Text style={[styles.pillText, isActive && styles.pillTextActive]}>
+                      {season.season_title}
+                    </Text>
                   </TouchableOpacity>
                 );
               })}
-              {customLists.length === 0 && (
-                <Text style={styles.emptyTextSm}>Henüz özel liste oluşturmadınız. Profil sekmesinden oluşturabilirsiniz.</Text>
-              )}
             </ScrollView>
           </View>
+        )}
+
+        {/* ── Related Movies/OVAs ─────────────────────── */}
+        {relatedMoviesOvas.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>İlgili Film & OVA'lar</Text>
+            <FlatList
+              horizontal
+              data={relatedMoviesOvas}
+              keyExtractor={(item, i) => item.mongo_db_id || `movie-${i}`}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.movieListContent}
+              renderItem={({ item }) => {
+                const isActive = item.mongo_db_id === activeMongoId;
+                return (
+                  <TouchableOpacity
+                    style={[styles.movieCard, isActive && styles.movieCardActive]}
+                    onPress={() => handleMovieSelect(item)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.movieIconContainer}>
+                      <Ionicons name="film-outline" size={24} color={isActive ? COLORS.accent : COLORS.textMuted} />
+                    </View>
+                    <Text style={[styles.movieTitle, isActive && styles.movieTitleActive]} numberOfLines={2}>
+                      {item.title}
+                    </Text>
+                    <View style={[styles.movieFormatBadge, isActive && styles.movieFormatBadgeActive]}>
+                      <Text style={[styles.movieFormatText, isActive && styles.movieFormatTextActive]}>
+                        {item.format}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+        )}
+
+        {/* ── Episodes Grid ───────────────────────────── */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>
+            {activeLabel} — Bölümler {episodes.length > 0 ? `(${episodes.length})` : ''}
+          </Text>
+
+          {loadingStream ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={COLORS.accent} />
+              <Text style={styles.loadingText}>Bölümler yükleniyor...</Text>
+            </View>
+          ) : episodes.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Ionicons name="videocam-off-outline" size={40} color={COLORS.textMuted} />
+              <Text style={styles.emptyText}>Bu seçim için bölüm bulunamadı.</Text>
+            </View>
+          ) : (
+            <Animated.View style={{ opacity: fadeAnim }}>
+              {episodes.map((ep) => (
+                <View key={`ep-${ep.episode_number}`}>
+                  {renderEpisodeCard({ item: ep })}
+                </View>
+              ))}
+            </Animated.View>
+          )}
         </View>
+
+        {/* Bottom spacing */}
+        <View style={{ height: 40 }} />
+      </ScrollView>
+
+      {/* ── Custom List Modal ─────────────────────────── */}
+      <Modal
+        visible={isListModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setIsListModalVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setIsListModalVisible(false)}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Listeye Ekle</Text>
+            {customLists.length === 0 ? (
+              <Text style={styles.modalEmptyText}>Henüz bir liste oluşturmadınız.</Text>
+            ) : (
+              customLists.map((list) => {
+                const isInList = list.animes?.some(a => (a._id || a) === activeMongoId);
+                return (
+                  <TouchableOpacity
+                    key={list._id}
+                    style={styles.modalListItem}
+                    onPress={() => handleToggleAnimeInList(list._id)}
+                  >
+                    <Ionicons
+                      name={isInList ? 'checkbox' : 'square-outline'}
+                      size={22}
+                      color={isInList ? COLORS.accent : COLORS.textSecondary}
+                    />
+                    <Text style={styles.modalListText}>{list.name}</Text>
+                  </TouchableOpacity>
+                );
+              })
+            )}
+          </View>
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );
 }
 
+// ── Styles ──────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
@@ -659,227 +499,312 @@ const styles = StyleSheet.create({
   scrollView: {
     flex: 1,
   },
-
-  coverContainer: {
-    width: SCREEN_WIDTH,
-    height: COVER_HEIGHT,
-    position: 'relative',
-  },
-  coverImage: {
-    width: '100%',
-    height: '100%',
-  },
-  coverPlaceholder: {
-    backgroundColor: COLORS.bgSecondary,
+  centerContainer: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  coverGradient: {
+  errorText: {
+    color: COLORS.textMuted,
+    fontSize: FONT_SIZES.body,
+  },
+
+  // ── Banner ──────────────────────────────────────
+  bannerContainer: {
+    height: BANNER_HEIGHT + 80,
+    position: 'relative',
+  },
+  bannerImage: {
+    width: SCREEN_WIDTH,
+    height: BANNER_HEIGHT,
+    position: 'absolute',
+    top: 0,
+  },
+  bannerPlaceholder: {
+    backgroundColor: COLORS.bgElevated,
+  },
+  bannerGradient: {
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: 0,
-    height: '100%',
+    top: 0,
+    height: BANNER_HEIGHT + 80,
   },
   backButton: {
     position: 'absolute',
-    top: 50,
+    top: SPACING.md,
     left: SPACING.lg,
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    backgroundColor: 'rgba(0, 0, 0, 0.50)',
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.divider,
+    zIndex: 10,
+  },
+  headerOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: SPACING.lg,
+    right: SPACING.lg,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: SPACING.lg,
   },
 
-  infoContainer: {
-    paddingHorizontal: SPACING.xl,
-    marginTop: -SPACING.xxxl,
+  // ── Poster ──────────────────────────────────────
+  posterImage: {
+    width: POSTER_WIDTH,
+    height: POSTER_HEIGHT,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 2,
+    borderColor: COLORS.bgPrimary,
   },
-  title: {
+  posterPlaceholder: {
+    backgroundColor: COLORS.bgElevated,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // ── Title ───────────────────────────────────────
+  titleContainer: {
+    flex: 1,
+    paddingBottom: SPACING.sm,
+  },
+  mainTitle: {
     color: COLORS.textPrimary,
     fontSize: FONT_SIZES.heading,
-    fontWeight: FONT_WEIGHTS.heavy,
-    lineHeight: 32,
-    letterSpacing: -0.5,
-    marginBottom: SPACING.xs,
+    fontWeight: FONT_WEIGHTS.bold,
+    lineHeight: 30,
   },
-  romajiTitle: {
-    color: COLORS.textSecondary,
-    fontSize: FONT_SIZES.body,
-    fontWeight: FONT_WEIGHTS.medium,
-    marginBottom: SPACING.md,
+  jpTitleText: {
+    color: COLORS.textMuted,
+    fontSize: FONT_SIZES.small,
+    marginTop: 4,
     fontStyle: 'italic',
   },
-  metaRow: {
+  typeBadgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: SPACING.md,
-    marginBottom: SPACING.md,
+    gap: SPACING.sm,
+    marginTop: SPACING.sm,
+  },
+  typeBadge: {
+    backgroundColor: 'rgba(255, 107, 0, 0.15)',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 4,
+    borderRadius: BORDER_RADIUS.sm,
+    borderWidth: 0.5,
+    borderColor: 'rgba(255, 107, 0, 0.3)',
+  },
+  typeBadgeText: {
+    color: COLORS.accent,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.bold,
   },
   scoreBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: COLORS.accentGlowSubtle,
+    backgroundColor: 'rgba(255, 215, 0, 0.12)',
     paddingHorizontal: SPACING.sm,
     paddingVertical: 4,
     borderRadius: BORDER_RADIUS.sm,
   },
   scoreText: {
-    color: COLORS.accent,
-    fontSize: FONT_SIZES.body,
+    color: '#FFD700',
+    fontSize: FONT_SIZES.small,
     fontWeight: FONT_WEIGHTS.bold,
   },
-  statusBadge: {
-    paddingHorizontal: SPACING.sm,
-    paddingVertical: 4,
-    borderRadius: BORDER_RADIUS.sm,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+
+  // ── Actions ─────────────────────────────────────
+  actionRow: {
+    flexDirection: 'row',
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.lg,
+    gap: SPACING.md,
   },
-  statusOngoing: {
-    backgroundColor: 'rgba(0, 200, 83, 0.15)',
+  actionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.sm,
+    backgroundColor: COLORS.bgSecondary,
+    paddingVertical: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
-  statusText: {
-    color: COLORS.textSecondary,
-    fontSize: FONT_SIZES.small,
-    fontWeight: FONT_WEIGHTS.semibold,
-  },
-  metaText: {
-    color: COLORS.textSecondary,
+  actionText: {
+    color: COLORS.textPrimary,
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.medium,
   },
-  genreRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: SPACING.sm,
-    marginBottom: SPACING.lg,
-  },
-  genreBadge: {
-    paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.xs + 2,
-    borderRadius: BORDER_RADIUS.pill,
-    backgroundColor: 'rgba(255, 107, 0, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 107, 0, 0.25)',
-  },
-  genreText: {
-    color: COLORS.accentLight,
-    fontSize: FONT_SIZES.caption,
-    fontWeight: FONT_WEIGHTS.semibold,
-  },
 
-  watchButton: {
-    marginBottom: SPACING.xxl,
-    ...SHADOWS.card,
+  // ── Description ─────────────────────────────────
+  section: {
+    paddingHorizontal: SPACING.lg,
+    marginBottom: SPACING.xl,
   },
-  watchButtonGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: SPACING.sm,
-    paddingVertical: SPACING.md + 2,
-    borderRadius: BORDER_RADIUS.lg,
-  },
-  watchButtonText: {
-    color: '#FFF',
+  sectionTitle: {
+    color: COLORS.textPrimary,
     fontSize: FONT_SIZES.subtitle,
     fontWeight: FONT_WEIGHTS.bold,
-    letterSpacing: 0.3,
-  },
-  fixAnilistText: {
-    color: '#FFF',
-    fontSize: FONT_SIZES.caption,
-    fontWeight: FONT_WEIGHTS.bold,
-  },
-  favoriteButton: {
-    padding: SPACING.sm,
-    marginLeft: SPACING.xs,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: COLORS.bgSecondary,
-    borderRadius: BORDER_RADIUS.pill,
-  },
-
-  // ── Description ──────────────────────────────
-  descriptionContainer: {
-    marginBottom: SPACING.xxl,
-  },
-  sectionLabel: {
-    color: COLORS.textPrimary,
-    fontSize: FONT_SIZES.title,
-    fontWeight: FONT_WEIGHTS.bold,
     marginBottom: SPACING.md,
-    letterSpacing: -0.3,
   },
   descriptionText: {
     color: COLORS.textSecondary,
     fontSize: FONT_SIZES.body,
     lineHeight: 22,
   },
-  readMoreText: {
+  showMoreText: {
     color: COLORS.accent,
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.semibold,
     marginTop: SPACING.sm,
   },
 
-  // ── Episodes ─────────────────────────────────
-  episodesSection: {
-    marginBottom: SPACING.xxxl,
-  },
-  episodesHeader: {
+  // ── Genres ──────────────────────────────────────
+  genreRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: SPACING.lg,
-  },
-  sectionTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexWrap: 'wrap',
+    paddingHorizontal: SPACING.lg,
     gap: SPACING.sm,
+    marginBottom: SPACING.xl,
   },
-  accentBar: {
-    width: 4,
-    height: 20,
-    borderRadius: 2,
-    backgroundColor: COLORS.accent,
-    ...SHADOWS.glow,
+  genreChip: {
+    backgroundColor: COLORS.bgSecondary,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 6,
+    borderRadius: BORDER_RADIUS.pill,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
-  episodeCount: {
+  genreText: {
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.medium,
+  },
+
+  // ── Season Pills ────────────────────────────────
+  pillRow: {
+    gap: SPACING.sm,
+    paddingRight: SPACING.lg,
+  },
+  pill: {
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.pill,
+    backgroundColor: COLORS.bgSecondary,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  pillActive: {
+    backgroundColor: 'rgba(255, 107, 0, 0.15)',
+    borderColor: COLORS.accent,
+  },
+  pillText: {
     color: COLORS.textSecondary,
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.medium,
   },
-  episodeList: {
-    gap: SPACING.sm,
+  pillTextActive: {
+    color: COLORS.accent,
+    fontWeight: FONT_WEIGHTS.bold,
   },
 
-  // ── Episode Card ─────────────────────────────
+  // ── Movie Cards ─────────────────────────────────
+  movieListContent: {
+    gap: SPACING.md,
+    paddingRight: SPACING.lg,
+  },
+  movieCard: {
+    width: 140,
+    backgroundColor: COLORS.bgSecondary,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    gap: SPACING.sm,
+  },
+  movieCardActive: {
+    borderColor: COLORS.accent,
+    backgroundColor: 'rgba(255, 107, 0, 0.08)',
+  },
+  movieIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  movieTitle: {
+    color: COLORS.textPrimary,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.semibold,
+    textAlign: 'center',
+  },
+  movieTitleActive: {
+    color: COLORS.accent,
+  },
+  movieFormatBadge: {
+    backgroundColor: 'rgba(147, 51, 234, 0.15)',
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 2,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  movieFormatBadgeActive: {
+    backgroundColor: 'rgba(255, 107, 0, 0.15)',
+  },
+  movieFormatText: {
+    color: '#9333EA',
+    fontSize: 10,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  movieFormatTextActive: {
+    color: COLORS.accent,
+  },
+
+  // ── Episodes ────────────────────────────────────
+  loadingContainer: {
+    alignItems: 'center',
+    paddingVertical: SPACING.xxxl,
+    gap: SPACING.md,
+  },
+  loadingText: {
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.body,
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    paddingVertical: SPACING.xxxl,
+    gap: SPACING.md,
+  },
+  emptyText: {
+    color: COLORS.textMuted,
+    fontSize: FONT_SIZES.body,
+  },
   episodeCard: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: COLORS.bgSecondary,
     borderRadius: BORDER_RADIUS.md,
     padding: SPACING.md,
+    marginBottom: SPACING.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
     gap: SPACING.md,
   },
   episodeNumberBadge: {
-    width: 42,
-    height: 42,
-    borderRadius: BORDER_RADIUS.md,
-    backgroundColor: COLORS.accentGlowSubtle,
+    width: 40,
+    height: 40,
+    borderRadius: BORDER_RADIUS.sm,
+    backgroundColor: 'rgba(255, 107, 0, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.borderAccent,
   },
   episodeNumberText: {
     color: COLORS.accent,
@@ -893,151 +818,57 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.semibold,
-    marginBottom: 2,
   },
   episodeMeta: {
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     fontSize: FONT_SIZES.small,
-    fontWeight: FONT_WEIGHTS.regular,
+    marginTop: 2,
   },
   episodePlayButton: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: COLORS.accentGlowSubtle,
+    backgroundColor: 'rgba(255, 107, 0, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
   },
 
-  // ── Season Selector ──────────────────────────
-  seasonSelectorContainer: {
-    marginBottom: SPACING.lg,
-  },
-  seasonSelectorScroll: {
-    gap: SPACING.sm,
-    paddingRight: SPACING.xl,
-  },
-  seasonTab: {
-    paddingHorizontal: SPACING.lg,
-    paddingVertical: SPACING.sm,
-    borderRadius: BORDER_RADIUS.md,
-    backgroundColor: COLORS.bgSecondary,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  seasonTabSelected: {
-    backgroundColor: COLORS.accentGlowSubtle,
-    borderColor: COLORS.borderAccent,
-  },
-  seasonTabText: {
-    color: COLORS.textSecondary,
-    fontSize: FONT_SIZES.body,
-    fontWeight: FONT_WEIGHTS.semibold,
-  },
-  seasonTabTextSelected: {
-    color: COLORS.accent,
-  },
-  groupContainer: {
-    marginBottom: SPACING.lg,
-  },
-  groupLabel: {
-    color: COLORS.textPrimary,
-    fontSize: FONT_SIZES.subtitle,
-    fontWeight: FONT_WEIGHTS.bold,
-    marginBottom: SPACING.sm,
-    marginLeft: SPACING.lg,
-  },
-
-  // ── Loading / Empty ──────────────────────────
-  loadingContainer: {
-    paddingVertical: SPACING.xxxl,
-    alignItems: 'center',
-    gap: SPACING.md,
-  },
-  loadingText: {
-    color: COLORS.textSecondary,
-    fontSize: FONT_SIZES.body,
-  },
-  emptyContainer: {
-    paddingVertical: SPACING.xxxl,
-    alignItems: 'center',
-    gap: SPACING.md,
-  },
-  emptyText: {
-    color: COLORS.textSecondary,
-    fontSize: FONT_SIZES.body,
-    fontWeight: FONT_WEIGHTS.medium,
-  },
-  actionRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: SPACING.md,
-    marginTop: SPACING.lg,
-    marginBottom: SPACING.xl,
-  },
-  actionButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: COLORS.bgElevated,
-    paddingVertical: SPACING.md,
-    paddingHorizontal: SPACING.lg,
-    borderRadius: BORDER_RADIUS.md,
-    flex: 1,
-  },
-  actionButtonActive: {
-    backgroundColor: 'rgba(255, 59, 48, 0.1)',
-  },
-  actionButtonText: {
-    color: '#FFF',
-    fontSize: FONT_SIZES.body,
-    fontWeight: FONT_WEIGHTS.medium,
-    marginLeft: SPACING.sm,
-  },
+  // ── Modal ───────────────────────────────────────
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'flex-end',
   },
   modalContent: {
-    backgroundColor: COLORS.bgPrimary,
+    backgroundColor: COLORS.bgSecondary,
     borderTopLeftRadius: BORDER_RADIUS.xl,
     borderTopRightRadius: BORDER_RADIUS.xl,
-    padding: SPACING.xl,
-    paddingBottom: SPACING.xl + 32, // Alt kısımdan ekstra boşluk
-    maxHeight: '60%',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: SPACING.lg,
+    padding: SPACING.xxl,
+    maxHeight: '50%',
   },
   modalTitle: {
-    color: '#FFF',
-    fontSize: FONT_SIZES.subtitle,
+    color: COLORS.textPrimary,
+    fontSize: FONT_SIZES.title,
     fontWeight: FONT_WEIGHTS.bold,
+    marginBottom: SPACING.lg,
   },
-  modalListScroll: {
-    marginBottom: SPACING.md,
+  modalEmptyText: {
+    color: COLORS.textMuted,
+    fontSize: FONT_SIZES.body,
+    textAlign: 'center',
+    paddingVertical: SPACING.xl,
   },
   modalListItem: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    gap: SPACING.md,
     paddingVertical: SPACING.md,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.divider,
   },
-  modalListItemText: {
-    color: '#FFF',
+  modalListText: {
+    color: COLORS.textPrimary,
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.medium,
-  },
-  emptyTextSm: {
-    color: COLORS.textSecondary,
-    fontSize: FONT_SIZES.body,
-    textAlign: 'center',
-    marginTop: SPACING.xl,
   },
 });
