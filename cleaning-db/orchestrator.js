@@ -1,20 +1,33 @@
 const fs = require('fs');
 const path = require('path');
 
+// Load environment variables
+const localEnvPath = path.join(__dirname, '.env');
+if (fs.existsSync(localEnvPath)) {
+  require('dotenv').config({ path: localEnvPath });
+} else {
+  const backendEnvPath = path.join(__dirname, '../backend/.env');
+  if (fs.existsSync(backendEnvPath)) {
+    require('dotenv').config({ path: backendEnvPath });
+  }
+}
+
 // Constants for orchestration
 const STATE_FILE = path.join(__dirname, 'orchestrator_state.json');
 const DRAFT_FILE = path.join(__dirname, 'raw_animes_draft.json');
 const FINAL_FILE = path.join(__dirname, 'final_clean_directory.json');
 
 const CHUNK_SIZE = 20; // Processing 20 items per batch to avoid timeouts
-const API_KEY = 'sk-ai-v1-c41a34eed9be5f44a98a4df084b5a42b28be6a9e2e14038d41817426c654a0dd';
-const BASE_URL = 'https://zenmux.ai/api/v1/chat/completions';
+const API_KEY = process.env.GEMINI_API_KEY;
 
-// API Providers for failover rotation
+if (!API_KEY) {
+  console.error('[ORCHESTRATOR] Error: GEMINI_API_KEY is not defined in the environment or .env file.');
+  process.exit(1);
+}
+
+// Using strictly Google Gemini 2.5 Flash model
 const PROVIDERS = [
-  { model: 'moonshotai/kimi-k3-free', name: 'Kimi K3' },
-  { model: 'stepfun/step-3.7-flash', name: 'Step 3.7 Flash' },
-  { model: 'z-ai/glm-4.7-flash-free', name: 'GLM 4.7 Flash' }
+  { model: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' }
 ];
 
 let currentProviderIndex = 0;
@@ -122,23 +135,47 @@ function validateLlmResponse(data) {
   return true;
 }
 
-// Perform LLM API calls with timeouts
+// Perform Gemini API calls with timeouts
 async function callLlmWithTimeout(provider, messages, timeoutMs = 180000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+  // Combine system instruction and user content into parts for Gemini format
+  const systemInstructionText = messages.find(m => m.role === 'system')?.content || '';
+  const userText = messages.find(m => m.role === 'user')?.content || '';
+
+  const requestBody = {
+    contents: [
+      {
+        parts: [
+          { text: userText }
+        ]
+      }
+    ],
+    generationConfig: {
+      temperature: 0.1,
+      responseMimeType: "application/json"
+    }
+  };
+
+  // Add system instruction if present
+  if (systemInstructionText) {
+    requestBody.systemInstruction = {
+      parts: [
+        { text: systemInstructionText }
+      ]
+    };
+  }
+
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
+
   try {
-    const response = await fetch(BASE_URL, {
+    const response = await fetch(geminiUrl, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${API_KEY}`
+        'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        model: provider.model,
-        messages: messages,
-        temperature: 0.1 // Low temperature to enforce strict schema adherence
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal
     });
 
@@ -307,11 +344,11 @@ async function orchestrate() {
         responseText = await response.text();
         const jsonResponse = JSON.parse(responseText);
         
-        if (!jsonResponse.choices || !jsonResponse.choices[0] || !jsonResponse.choices[0].message) {
-          throw new Error(`Unexpected API response structure: ${responseText}`);
+        if (!jsonResponse.candidates || !jsonResponse.candidates[0] || !jsonResponse.candidates[0].content) {
+          throw new Error(`Unexpected Gemini response structure: ${responseText}`);
         }
 
-        const modelContent = jsonResponse.choices[0].message.content;
+        const modelContent = jsonResponse.candidates[0].content.parts[0].text;
         const cleanedText = cleanJsonResponse(modelContent);
 
         // Parse and validate response structure
