@@ -30,6 +30,7 @@ import {
 } from '../constants/theme';
 import { API_BASE_URL } from '../constants/config';
 import { apiFetch, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList } from '../services/api';
+import { useAnimeDirectory } from '../context/AnimeDirectoryContext';
 import { useAlert } from '../context/AlertContext';
 import { AuthContext } from '../context/AuthContext';
 
@@ -55,13 +56,25 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const { showAlert } = useAlert();
   const { user } = useContext(AuthContext);
 
-  // ── Orchestrator Entry (immediate) ───────────────────────────
-  const entry = route.params?.orchestratorEntry;
-  
-  // Fallback for old-style navigation (backwards compatibility)
+  const { getAnimeByMongoId, isLoading: directoryLoading } = useAnimeDirectory();
+
   const legacyAnime = route.params?.anime;
-  
-  if (!entry && !legacyAnime) {
+  const initialId = legacyAnime?._id || legacyAnime?.id;
+
+  // ── Resolved Entry state (from orchestrator or local lookup) ────
+  const [resolvedEntry, setResolvedEntry] = useState(route.params?.orchestratorEntry || null);
+
+  // Background lookup for old-style navigation
+  useEffect(() => {
+    if (!resolvedEntry && initialId && !directoryLoading) {
+      const matched = getAnimeByMongoId(initialId);
+      if (matched) {
+        setResolvedEntry(matched);
+      }
+    }
+  }, [initialId, directoryLoading, getAnimeByMongoId, resolvedEntry]);
+
+  if (!resolvedEntry && !legacyAnime) {
     return (
       <SafeAreaView style={styles.screen}>
         <View style={styles.centerContainer}>
@@ -71,22 +84,45 @@ export default function AnimeDetailScreen({ route, navigation }) {
     );
   }
 
-  // If navigated with old format, display minimal info
-  const isLegacy = !entry && !!legacyAnime;
+  // Derive dynamic details from resolved orchestrator entry or fallback legacy object
+  const mainTitleEn = resolvedEntry?.main_title_en || legacyAnime?.title || legacyAnime?.anime_title || 'Unknown';
+  const mainTitleJp = resolvedEntry?.main_title_jp || legacyAnime?.orijinal_ad || '';
+  const animeType = resolvedEntry?.type || legacyAnime?.format || 'TV';
+  const relatedMoviesOvas = resolvedEntry?.related_movies_or_ovas || [];
 
-  const mainTitleEn = entry?.main_title_en || legacyAnime?.title || legacyAnime?.anime_title || 'Unknown';
-  const mainTitleJp = entry?.main_title_jp || legacyAnime?.orijinal_ad || '';
-  const animeType = entry?.type || legacyAnime?.format || 'TV';
-  const seasons = entry?.seasons || [];
-  const relatedMoviesOvas = entry?.related_movies_or_ovas || [];
+  // Fallback virtual season structure if orchestrator map has no match
+  const seasons = resolvedEntry?.seasons || (legacyAnime ? [{
+    season_number: 1,
+    season_title: legacyAnime.title || legacyAnime.anime_title || 'Sezon 1',
+    format: legacyAnime.format || 'TV',
+    mongo_db_id: initialId
+  }] : []);
 
-  // ── State ────────────────────────────────────────────────────
-  const [activeMongoId, setActiveMongoId] = useState(
-    seasons.length > 0 ? seasons[0].mongo_db_id : (legacyAnime?._id || null)
-  );
-  const [activeLabel, setActiveLabel] = useState(
-    seasons.length > 0 ? seasons[0].season_title : 'Season 1'
-  );
+  // ── Active Selection State ─────────────────────────────────────
+  const [activeMongoId, setActiveMongoId] = useState(initialId || (seasons.length > 0 ? seasons[0].mongo_db_id : null));
+  const [activeLabel, setActiveLabel] = useState('Sezon 1');
+
+  // Synchronize active ID and label when entry is resolved
+  useEffect(() => {
+    if (resolvedEntry?.seasons && resolvedEntry.seasons.length > 0) {
+      const currentActiveId = activeMongoId || initialId;
+      const isInSeasons = resolvedEntry.seasons.some(s => String(s.mongo_db_id) === String(currentActiveId));
+      if (!isInSeasons) {
+        setActiveMongoId(resolvedEntry.seasons[0].mongo_db_id);
+        setActiveLabel(resolvedEntry.seasons[0].season_title);
+      } else {
+        const activeSeason = resolvedEntry.seasons.find(s => String(s.mongo_db_id) === String(currentActiveId));
+        if (activeSeason) {
+          setActiveMongoId(activeSeason.mongo_db_id);
+          setActiveLabel(activeSeason.season_title);
+        }
+      }
+    } else if (legacyAnime) {
+      setActiveMongoId(initialId);
+      setActiveLabel(legacyAnime.title || legacyAnime.anime_title || 'Sezon 1');
+    }
+  }, [resolvedEntry, initialId]);
+
   const [streamData, setStreamData] = useState(null);
   const [loadingStream, setLoadingStream] = useState(true);
   const [episodes, setEpisodes] = useState([]);

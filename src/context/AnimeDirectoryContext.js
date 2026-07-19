@@ -122,6 +122,19 @@ export function AnimeDirectoryProvider({ children }) {
     return results.map(r => r.item);
   }, []);
 
+  // ── Find entry by any season/movie mongo_db_id ───────────────
+  const getAnimeByMongoId = useCallback((mongoId) => {
+    if (!mongoId) return null;
+    const searchIdStr = String(mongoId);
+    return directory.find(item => {
+      const hasSeason = (item.seasons || []).some(s => String(s.mongo_db_id) === searchIdStr);
+      if (hasSeason) return true;
+      const hasMovie = (item.related_movies_or_ovas || []).some(m => String(m.mongo_db_id) === searchIdStr);
+      if (hasMovie) return true;
+      return false;
+    }) || null;
+  }, [directory]);
+
   // ── Direct key lookup ────────────────────────────────────────
   const getAnimeByKey = useCallback((key) => {
     return directory.find(item => item._key === key) || null;
@@ -155,6 +168,7 @@ export function AnimeDirectoryProvider({ children }) {
     directory,
     searchAnime,
     getAnimeByKey,
+    getAnimeByMongoId,
     isLoading,
     forceRefresh,
   };
