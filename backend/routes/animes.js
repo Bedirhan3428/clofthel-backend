@@ -1593,6 +1593,7 @@ router.get('/:id([0-9a-fA-F]{24})', async (req, res) => {
       }];
     }
 
+    res.set('Cache-Control', 'public, max-age=1800, s-maxage=3600');
     res.json({
       success: true,
       data: {
@@ -1643,6 +1644,7 @@ router.get('/:id/episodes', async (req, res) => {
       }
     }
 
+    res.set('Cache-Control', 'public, max-age=600, s-maxage=1800');
     res.json({
       success: true,
       data: formattedEpisodes,

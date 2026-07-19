@@ -64,8 +64,24 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [loadingEpisodes, setLoadingEpisodes] = useState(true);
   const [episodes, setEpisodes] = useState([]);
-  const [seasons, setSeasons] = useState([]);
-  const [relatedMoviesOvas, setRelatedMoviesOvas] = useState([]);
+  
+  // Pre-populate from passed entry to prevent slow loading flash
+  const [seasons, setSeasons] = useState(passedEntry?.seasons?.map(s => ({
+    _id: s.mongo_db_id,
+    season_number: s.season_number,
+    label: s.season_title,
+    category: 'seasons',
+    cover_image: passedEntry?.cover_image || null,
+    banner_image: passedEntry?.banner_image || null
+  })) || []);
+
+  const [relatedMoviesOvas, setRelatedMoviesOvas] = useState(passedEntry?.related_movies_or_ovas?.map(m => ({
+    _id: m.mongo_db_id,
+    title: m.title,
+    format: m.format,
+    category: 'movies'
+  })) || []);
+
   const [showFullDescription, setShowFullDescription] = useState(false);
 
   // User-related state
@@ -74,7 +90,8 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const [isListModalVisible, setIsListModalVisible] = useState(false);
 
   // Animation
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const useRefValue = useRef(new Animated.Value(0));
+  const fadeAnim = useRefValue.current;
 
   // ── Load user status ─────────────────────────────────────────
   useEffect(() => {
@@ -98,6 +115,10 @@ export default function AnimeDetailScreen({ route, navigation }) {
     setLoading(true);
     setLoadingEpisodes(true);
     fadeAnim.setValue(0);
+    
+    // Clear old details and episodes instantly to prevent mismatched data display
+    setAnime(null);
+    setEpisodes([]);
 
     // 1. Fetch detail (includes orchestrator seasons list from backend)
     fetchAnimeDetail(activeMongoId).then(data => {
@@ -165,15 +186,23 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
   // ── Derived dynamic values ───────────────────────────────────
   const mainTitleEn = anime?.title || anime?.anime_title || initialTitle || 'Loading...';
-  const mainTitleJp = anime?.romajiTitle || anime?.orijinal_ad || '';
-  const animeType = anime?.format || 'TV';
-  const bannerImage = anime?.banner_image || anime?.bannerImage || null;
-  const coverImage = anime?.cover_image || anime?.coverImage || null;
+  const mainTitleJp = anime?.romajiTitle || anime?.orijinal_ad || passedAnime?.orijinal_ad || '';
+  const animeType = anime?.format || passedAnime?.format || 'TV';
+  
+  // Use passed images as fallback to prevent slow loading flashes
+  const bannerImage = anime?.banner_image || anime?.bannerImage || passedAnime?.banner_image || passedAnime?.bannerImage || passedEntry?.banner_image || null;
+  const coverImage = anime?.cover_image || anime?.coverImage || passedAnime?.cover_image || passedAnime?.coverImage || passedEntry?.cover_image || null;
+  
   const description = anime?.description && typeof anime.description === 'string'
     ? anime.description.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').trim()
     : null;
-  const genres = anime?.genres || anime?.enrichedGenres || [];
-  const averageScore = anime?.averageScore || anime?.average_score || null;
+    
+  const genresRaw = anime?.genres || anime?.enrichedGenres || passedAnime?.genres || [];
+  const genres = Array.isArray(genresRaw)
+    ? genresRaw
+    : (typeof genresRaw === 'string' ? genresRaw.split(',').map(g => g.trim()).filter(Boolean) : []);
+    
+  const averageScore = anime?.averageScore || anime?.average_score || passedAnime?.average_score || null;
 
   // Active Label resolution
   const activeLabel = (activeMongoId && seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))?.label) ||
