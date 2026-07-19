@@ -766,7 +766,9 @@ function formatAnimeDoc(doc) {
     tranimeizle_url: doc.tranimeizle_url,
     format: doc.format,
     status: 'Yayınlandı',
-    genres: doc.genres || [],
+    genres: Array.isArray(doc.genres)
+      ? doc.genres
+      : (typeof doc.genres === 'string' ? doc.genres.split(',').map(g => g.trim()).filter(Boolean) : []),
     cover_image: doc.cover_image || null,
     banner_image: doc.banner_image || null,
     description: doc.description || null,
