@@ -90,6 +90,62 @@ function getCanonicalInfoForDoc(doc) {
   }
   return null;
 }
+function parseIdParam(idParam) {
+  if (!idParam) return null;
+  // Validates standard 24-character hexadecimal ObjectId or a comma-separated list of them
+  const isValid = /^[0-9a-fA-F]{24}(\s*,\s*[0-9a-fA-F]{24})*$/.test(idParam);
+  if (!isValid) return null;
+  return idParam.split(',').map(s => s.trim());
+}
+
+async function healMissingEpisodes(anime) {
+  if (!anime || !anime.episodes) return;
+  const epsMap = anime.episodes;
+  const keys = Object.keys(epsMap).map(k => parseInt(k, 10)).filter(n => !isNaN(n));
+  if (keys.length === 0) return;
+
+  const maxEp = Math.max(...keys);
+  // If it's a single episode or if we have all episodes, nothing to heal
+  if (maxEp <= 1 || keys.length === maxEp) return;
+
+  console.log(`[Healer] Anime ${anime.tranimeizle_slug} (${anime._id}) has missing episodes. Max ep: ${maxEp}, current count: ${keys.length}`);
+
+  // Find a template URL from existing episodes to reconstruct missing ones
+  let templateKey = keys[0];
+  let templateUrl = epsMap[String(templateKey)];
+  if (!templateUrl) return;
+
+  const matchPattern = new RegExp(`-${templateKey}-bolum-izle`, 'i');
+  if (!matchPattern.test(templateUrl)) {
+    console.log(`[Healer] Template URL does not match standard pattern: ${templateUrl}`);
+    return;
+  }
+
+  const updatedEpisodes = { ...epsMap };
+  let healedAny = false;
+
+  for (let i = 1; i <= maxEp; i++) {
+    if (!updatedEpisodes[String(i)]) {
+      const targetPattern = `-${i}-bolum-izle`;
+      const healedUrl = templateUrl.replace(matchPattern, targetPattern);
+      updatedEpisodes[String(i)] = healedUrl;
+      healedAny = true;
+    }
+  }
+
+  if (healedAny) {
+    try {
+      await Anime.updateOne(
+        { _id: anime._id },
+        { $set: { episodes: updatedEpisodes } }
+      );
+      console.log(`[Healer] Successfully healed and updated ${anime.tranimeizle_slug} in DB.`);
+      anime.episodes = updatedEpisodes;
+    } catch (err) {
+      console.error(`[Healer] Failed to update healed episodes for ${anime.tranimeizle_slug}:`, err.message);
+    }
+  }
+}
 const { resolveSibnetId } = require('../utils/resolver');
 const { apiKeyAuth, protect } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
@@ -1518,9 +1574,21 @@ router.get('/sibnet-proxy', async (req, res) => {
  * GET /api/animes/:id
  * Tek anime detayı
  */
-router.get('/:id([0-9a-fA-F]{24})', async (req, res) => {
+router.get('/:id', async (req, res, next) => {
+  const ids = parseIdParam(req.params.id);
+  if (!ids) return next();
+
   try {
-    let anime = await Anime.findById(req.params.id).lean();
+    let anime = null;
+    let activeId = null;
+    for (const id of ids) {
+      anime = await Anime.findById(id).lean();
+      if (anime) {
+        activeId = id;
+        break;
+      }
+    }
+
     if (!anime) {
       return res.status(404).json({ success: false, error: 'Anime bulunamadı.' });
     }
@@ -1553,7 +1621,7 @@ router.get('/:id([0-9a-fA-F]{24})', async (req, res) => {
     lazyResolveAnilistInfo([anime]);
 
     // 2. Use high-performance memory cache map to resolve orchestrator group
-    const searchIdStr = String(anime._id);
+    const searchIdStr = String(activeId);
     const orchestratorEntry = mongoIdToGroupMap[searchIdStr];
 
     let seasons = [];
@@ -1613,12 +1681,23 @@ router.get('/:id([0-9a-fA-F]{24})', async (req, res) => {
  * GET /api/animes/:id/episodes
  * Anime'nin tüm bölümleri (episodes objesinden parse edilir, episode_number sıralı)
  */
-router.get('/:id/episodes', async (req, res) => {
+router.get('/:id/episodes', async (req, res, next) => {
+  const ids = parseIdParam(req.params.id);
+  if (!ids) return next();
+
   try {
-    const anime = await Anime.findById(req.params.id).select('episodes tranimeizle_url format').lean();
+    let anime = null;
+    for (const id of ids) {
+      anime = await Anime.findById(id).select('episodes tranimeizle_url format tranimeizle_slug').lean();
+      if (anime) break;
+    }
+
     if (!anime) {
       return res.status(404).json({ success: false, error: 'Anime bulunamadı.' });
     }
+
+    // Automatically heal missing episodes dynamically in DB and response
+    await healMissingEpisodes(anime);
 
     const epsMap = anime.episodes || {};
     let formattedEpisodes = Object.keys(epsMap).map(key => ({
@@ -1660,12 +1739,21 @@ router.get('/:id/episodes', async (req, res) => {
  * GET /api/animes/:id/episodes/:episode_number/video-url
  * Bölümün doğrudan .m3u8 oynatma linkini döner. (Sadece DB'den)
  */
-router.get('/:id/episodes/:episode_number/video-url', async (req, res) => {
-  const { id, episode_number } = req.params;
+router.get('/:id/episodes/:episode_number/video-url', async (req, res, next) => {
+  const ids = parseIdParam(req.params.id);
+  if (!ids) return next();
+  const { episode_number } = req.params;
   
   try {
-    console.log(`[INFO] DB kontrol ediliyor... Anime ID: ${id}, Bölüm: ${episode_number}`);
-    const anime = await Anime.findById(id);
+    let anime = null;
+    let activeId = null;
+    for (const id of ids) {
+      anime = await Anime.findById(id);
+      if (anime) {
+        activeId = id;
+        break;
+      }
+    }
     if (!anime) {
       return res.status(404).json({ success: false, error: 'Anime bulunamadı.' });
     }
@@ -1723,7 +1811,7 @@ router.get('/:id/episodes/:episode_number/video-url', async (req, res) => {
     }
     
     if (!episodeUrl) {
-      console.log(`[ERROR] Bölüm adresi bulunamadı. ID: ${id}, Bölüm: ${episode_number}`);
+      console.log(`[ERROR] Bölüm adresi bulunamadı. ID: ${activeId}, Bölüm: ${episode_number}`);
       return res.status(400).json({ success: false, error: 'Bölüm adresi bulunamadı.' });
     }
 
@@ -1746,8 +1834,10 @@ router.get('/:id/episodes/:episode_number/video-url', async (req, res) => {
  * POST /api/animes/:id/episodes/:episode_number/video-url
  * Çözümlenen .m3u8 oynatma linkini DB'ye kaydeder.
  */
-router.post('/:id/episodes/:episode_number/video-url', protect, async (req, res) => {
-  const { id, episode_number } = req.params;
+router.post('/:id/episodes/:episode_number/video-url', protect, async (req, res, next) => {
+  const ids = parseIdParam(req.params.id);
+  if (!ids) return next();
+  const { episode_number } = req.params;
   const { videoUrl } = req.body;
   
   if (!videoUrl) {
@@ -1755,8 +1845,11 @@ router.post('/:id/episodes/:episode_number/video-url', protect, async (req, res)
   }
   
   try {
-    console.log(`[INFO] Oynatma linki kaydediliyor... Anime ID: ${id}, Bölüm: ${episode_number}`);
-    const anime = await Anime.findById(id);
+    let anime = null;
+    for (const id of ids) {
+      anime = await Anime.findById(id);
+      if (anime) break;
+    }
     if (!anime) {
       return res.status(404).json({ success: false, error: 'Anime bulunamadı.' });
     }
@@ -2077,11 +2170,18 @@ router.get('/directory', async (req, res) => {
  * Returns only the episodes map + imagery for a given mongo_db_id.
  * Optimized for the dual-core DetailScreen lazy loading.
  */
-router.get('/:id/stream-data', async (req, res) => {
+router.get('/:id/stream-data', async (req, res, next) => {
+  const ids = parseIdParam(req.params.id);
+  if (!ids) return next();
+
   try {
-    const anime = await Anime.findById(req.params.id)
-      .select('episodes cover_image banner_image anilist_id description genres average_score total_episodes orijinal_ad format')
-      .lean();
+    let anime = null;
+    for (const id of ids) {
+      anime = await Anime.findById(id)
+        .select('episodes cover_image banner_image anilist_id description genres average_score total_episodes orijinal_ad format')
+        .lean();
+      if (anime) break;
+    }
 
     if (!anime) {
       return res.status(404).json({ success: false, error: 'Anime not found.' });

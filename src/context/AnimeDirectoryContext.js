@@ -50,7 +50,8 @@ export function AnimeDirectoryProvider({ children }) {
 
         if (cachedData) {
           const parsed = JSON.parse(cachedData);
-          if (Array.isArray(parsed) && parsed.length > 100) {
+          const hasImages = Array.isArray(parsed) && parsed.length > 100 && parsed.some(item => item && item.cover_image);
+          if (Array.isArray(parsed) && parsed.length > 100 && hasImages) {
             if (mounted) {
               setDirectory(parsed);
               buildFuseIndex(parsed);
