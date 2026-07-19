@@ -26,9 +26,9 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-// Using strictly Stepfun step-3.5-flash model
+// Using strictly Stepfun step-3.7-flash model
 const PROVIDERS = [
-  { model: 'stepfun/step-3.5-flash', name: 'Step 3.5 Flash' }
+  { model: 'stepfun/step-3.7-flash', name: 'Step 3.7 Flash' }
 ];
 
 let currentProviderIndex = 0;
