@@ -10,9 +10,11 @@ const CHUNK_SIZE = 20; // Processing 20 items per batch to avoid timeouts
 const API_KEY = 'sk-ai-v1-643f993801aec896e122be1b7728231f291bb385986c9f851f14180eb21af926';
 const BASE_URL = 'https://zenmux.ai/api/v1/chat/completions';
 
-// API Providers for failover rotation (Using fast Stepfun model)
+// API Providers for failover rotation
 const PROVIDERS = [
-  { model: 'stepfun/step-3.7-flash-free', name: 'Step 3.7 Flash' }
+  { model: 'stepfun/step-3.7-flash', name: 'Step 3.7 Flash' },
+  { model: 'z-ai/glm-4.7-flash-free', name: 'GLM 4.7 Flash' },
+  { model: 'moonshotai/kimi-k3-free', name: 'Kimi K3' }
 ];
 
 let currentProviderIndex = 0;
