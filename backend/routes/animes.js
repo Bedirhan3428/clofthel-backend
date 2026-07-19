@@ -1455,64 +1455,58 @@ router.get('/:id([0-9a-fA-F]{24})', async (req, res) => {
     // Lazily resolve AniList info if still missing
     lazyResolveAnilistInfo([anime]);
 
-    // Sezon gruplama ve tutarlı isimlendirme algoritması:
-    const compBase = anime.comparable_base_slug || getComparableBaseSlug(anime.tranimeizle_slug);
+    // 2. Query 'orchestrator_state' to find the entry containing this mongo_db_id
+    const searchIdStr = String(anime._id);
+    const orchestratorDoc = await OrchestratorState.findOne({
+      state_key: 'orchestrator_state'
+    }).lean();
+
     let seasons = [];
+    let relatedMoviesOvas = [];
     let formattedTitle = getDisplayTitle(anime);
 
-    if (compBase) {
-      const siblingAnimes = await Anime.find({
-        comparable_base_slug: compBase
-      }).select('tranimeizle_slug orijinal_ad chronological_order format descriptive_label category cover_image banner_image').lean();
-
-      // Parse sibling seasons and sort
-      const parsedSiblings = siblingAnimes.map(d => {
-        const info = getBaseSlugAndSeason(d.tranimeizle_slug);
-        const englishType = info.type === 'Kısım' ? 'Part' : 'Season';
-        const label = d.descriptive_label || getDescriptiveLabel(d.tranimeizle_slug, d.format, d.orijinal_ad);
-        const category = d.category || getLabelCategory(label);
-        return {
-          _id: d._id,
-          season_number: info.season,
-          chronological_order: d.chronological_order || 1,
-          label: label,
-          baseSlug: info.baseSlug,
-          orijinal_ad: d.orijinal_ad,
-          tranimeizle_slug: d.tranimeizle_slug,
-          type: englishType,
-          format: d.format,
-          category: category,
-          cover_image: d.cover_image,
-          banner_image: d.banner_image
-        };
-      }).sort((a, b) => {
-        const categoryOrder = { 'seasons': 1, 'movies': 2, 'ovas': 3 };
-        const catA = categoryOrder[a.category] || 1;
-        const catB = categoryOrder[b.category] || 1;
-        if (catA !== catB) {
-          return catA - catB;
-        }
-        if (a.chronological_order !== b.chronological_order) {
-          return a.chronological_order - b.chronological_order;
-        }
-        return a.season_number - b.season_number;
+    if (orchestratorDoc && orchestratorDoc.global_titles_map) {
+      // Find the entry that has a season or movie matching our ID
+      const orchestratorEntry = Object.values(orchestratorDoc.global_titles_map).find(item => {
+        const hasSeason = (item.seasons || []).some(s => String(s.mongo_db_id) === searchIdStr);
+        if (hasSeason) return true;
+        const hasMovie = (item.related_movies_or_ovas || []).some(m => String(m.mongo_db_id) === searchIdStr);
+        if (hasMovie) return true;
+        return false;
       });
 
-      seasons = parsedSiblings;
+      if (orchestratorEntry) {
+        // We found the orchestrator entry! Use its title, seasons and movies
+        formattedTitle = orchestratorEntry.main_title_en;
+        
+        seasons = (orchestratorEntry.seasons || []).map(s => ({
+          _id: s.mongo_db_id,
+          season_number: s.season_number,
+          label: s.season_title,
+          category: 'seasons',
+          cover_image: anime.cover_image, // Fallback to current cover
+          banner_image: anime.banner_image
+        }));
 
-      // Find season 1's title and use it as the base for all seasons
-      const season1 = parsedSiblings.find(s => {
-        return s.label === 'Season 1';
-      });
-      let baseTitle = season1 ? getDisplayTitle(season1) : getDisplayTitle(anime);
-      baseTitle = baseTitle.replace(/\s+(?:[1-9]\d*|the|final|son)[\s.]*(?:sezon|kisim|part|season|movie|film|ova|ona|special).*$/i, '').trim();
-
-      const currentLabel = anime.descriptive_label || getDescriptiveLabel(anime.tranimeizle_slug, anime.format, anime.orijinal_ad);
-      if (currentLabel && currentLabel !== 'Season 1') {
-        formattedTitle = `${baseTitle} - ${currentLabel}`;
-      } else {
-        formattedTitle = baseTitle;
+        relatedMoviesOvas = (orchestratorEntry.related_movies_or_ovas || []).map(m => ({
+          _id: m.mongo_db_id,
+          title: m.title,
+          format: m.format,
+          category: 'movies'
+        }));
       }
+    }
+
+    // Fallback if not found in orchestrator
+    if (seasons.length === 0) {
+      seasons = [{
+        _id: anime._id,
+        season_number: 1,
+        label: 'Season 1',
+        category: 'seasons',
+        cover_image: anime.cover_image,
+        banner_image: anime.banner_image
+      }];
     }
 
     res.json({
@@ -1520,14 +1514,8 @@ router.get('/:id([0-9a-fA-F]{24})', async (req, res) => {
       data: {
         ...formatAnimeDoc(anime),
         anime_title: formattedTitle,
-        seasons: seasons.map(s => ({ 
-          _id: s._id, 
-          season_number: s.season_number, 
-          label: s.label,
-          category: s.category,
-          cover_image: s.cover_image,
-          banner_image: s.banner_image
-        }))
+        seasons: seasons,
+        related_movies_or_ovas: relatedMoviesOvas
       }
     });
   } catch (error) {

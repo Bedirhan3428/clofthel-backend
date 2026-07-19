@@ -1,8 +1,8 @@
 /**
  * Clofthel — AnimeDetailScreen (Dual-Core Architecture)
  * 
- * Orchestrator Layer: Immediate render of titles, seasons, movies from orchestrator_state.
- * MongoDB Layer: Lazy-loaded episodes, imagery, and metadata via /stream-data endpoint.
+ * Orchestrator Layer: seasons and related movies are loaded from the backend (queried from orchestrator_state in DB).
+ * MongoDB Layer: episodes, imagery, and details are fetched from the database for the active season's mongo_db_id.
  */
 import { Image } from 'expo-image';
 import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
@@ -28,9 +28,7 @@ import {
   FONT_WEIGHTS,
   BORDER_RADIUS,
 } from '../constants/theme';
-import { API_BASE_URL } from '../constants/config';
-import { apiFetch, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList } from '../services/api';
-import { useAnimeDirectory } from '../context/AnimeDirectoryContext';
+import { fetchAnimeDetail, fetchEpisodes, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList } from '../services/api';
 import { useAlert } from '../context/AlertContext';
 import { AuthContext } from '../context/AuthContext';
 
@@ -39,42 +37,18 @@ const BANNER_HEIGHT = 320;
 const POSTER_WIDTH = 130;
 const POSTER_HEIGHT = 190;
 
-// ── Stream Data Fetcher ────────────────────────────────────────
-async function fetchStreamData(mongoDbId) {
-  try {
-    const response = await apiFetch(`${API_BASE_URL}/animes/${mongoDbId}/stream-data`);
-    const json = await response.json();
-    if (json.success) return json.data;
-    return null;
-  } catch (error) {
-    console.error('[fetchStreamData] Error:', error);
-    return null;
-  }
-}
-
 export default function AnimeDetailScreen({ route, navigation }) {
   const { showAlert } = useAlert();
   const { user } = useContext(AuthContext);
 
-  const { getAnimeByMongoId, isLoading: directoryLoading } = useAnimeDirectory();
+  // Params passed from navigation
+  const passedAnime = route.params?.anime;
+  const passedEntry = route.params?.orchestratorEntry;
 
-  const legacyAnime = route.params?.anime;
-  const initialId = legacyAnime?._id || legacyAnime?.id;
+  const initialId = passedAnime?._id || passedAnime?.id || passedEntry?.seasons?.[0]?.mongo_db_id;
+  const initialTitle = passedAnime?.title || passedAnime?.anime_title || passedEntry?.main_title_en;
 
-  // ── Resolved Entry state (from orchestrator or local lookup) ────
-  const [resolvedEntry, setResolvedEntry] = useState(route.params?.orchestratorEntry || null);
-
-  // Background lookup for old-style navigation
-  useEffect(() => {
-    if (!resolvedEntry && initialId && !directoryLoading) {
-      const matched = getAnimeByMongoId(initialId);
-      if (matched) {
-        setResolvedEntry(matched);
-      }
-    }
-  }, [initialId, directoryLoading, getAnimeByMongoId, resolvedEntry]);
-
-  if (!resolvedEntry && !legacyAnime) {
+  if (!initialId) {
     return (
       <SafeAreaView style={styles.screen}>
         <View style={styles.centerContainer}>
@@ -84,48 +58,14 @@ export default function AnimeDetailScreen({ route, navigation }) {
     );
   }
 
-  // Derive dynamic details from resolved orchestrator entry or fallback legacy object
-  const mainTitleEn = resolvedEntry?.main_title_en || legacyAnime?.title || legacyAnime?.anime_title || 'Unknown';
-  const mainTitleJp = resolvedEntry?.main_title_jp || legacyAnime?.orijinal_ad || '';
-  const animeType = resolvedEntry?.type || legacyAnime?.format || 'TV';
-  const relatedMoviesOvas = resolvedEntry?.related_movies_or_ovas || [];
-
-  // Fallback virtual season structure if orchestrator map has no match
-  const seasons = resolvedEntry?.seasons || (legacyAnime ? [{
-    season_number: 1,
-    season_title: legacyAnime.title || legacyAnime.anime_title || 'Sezon 1',
-    format: legacyAnime.format || 'TV',
-    mongo_db_id: initialId
-  }] : []);
-
-  // ── Active Selection State ─────────────────────────────────────
-  const [activeMongoId, setActiveMongoId] = useState(initialId || (seasons.length > 0 ? seasons[0].mongo_db_id : null));
-  const [activeLabel, setActiveLabel] = useState('Sezon 1');
-
-  // Synchronize active ID and label when entry is resolved
-  useEffect(() => {
-    if (resolvedEntry?.seasons && resolvedEntry.seasons.length > 0) {
-      const currentActiveId = activeMongoId || initialId;
-      const isInSeasons = resolvedEntry.seasons.some(s => String(s.mongo_db_id) === String(currentActiveId));
-      if (!isInSeasons) {
-        setActiveMongoId(resolvedEntry.seasons[0].mongo_db_id);
-        setActiveLabel(resolvedEntry.seasons[0].season_title);
-      } else {
-        const activeSeason = resolvedEntry.seasons.find(s => String(s.mongo_db_id) === String(currentActiveId));
-        if (activeSeason) {
-          setActiveMongoId(activeSeason.mongo_db_id);
-          setActiveLabel(activeSeason.season_title);
-        }
-      }
-    } else if (legacyAnime) {
-      setActiveMongoId(initialId);
-      setActiveLabel(legacyAnime.title || legacyAnime.anime_title || 'Sezon 1');
-    }
-  }, [resolvedEntry, initialId]);
-
-  const [streamData, setStreamData] = useState(null);
-  const [loadingStream, setLoadingStream] = useState(true);
+  // ── States ───────────────────────────────────────────────────
+  const [activeMongoId, setActiveMongoId] = useState(initialId);
+  const [anime, setAnime] = useState(passedAnime || null);
+  const [loading, setLoading] = useState(true);
+  const [loadingEpisodes, setLoadingEpisodes] = useState(true);
   const [episodes, setEpisodes] = useState([]);
+  const [seasons, setSeasons] = useState([]);
+  const [relatedMoviesOvas, setRelatedMoviesOvas] = useState([]);
   const [showFullDescription, setShowFullDescription] = useState(false);
 
   // User-related state
@@ -136,7 +76,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
   // Animation
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
-  // ── Load user data ───────────────────────────────────────────
+  // ── Load user status ─────────────────────────────────────────
   useEffect(() => {
     if (user && activeMongoId) {
       getProfileData().then(data => {
@@ -150,63 +90,57 @@ export default function AnimeDetailScreen({ route, navigation }) {
     }
   }, [user, activeMongoId]);
 
-  // ── Load stream data when active selection changes ───────────
+  // ── Fetch Details & Episodes ─────────────────────────────────
   useEffect(() => {
-    if (!activeMongoId) {
-      setLoadingStream(false);
-      return;
-    }
+    if (!activeMongoId) return;
 
     let cancelled = false;
-    setLoadingStream(true);
+    setLoading(true);
+    setLoadingEpisodes(true);
+    fadeAnim.setValue(0);
 
-    fetchStreamData(activeMongoId).then(data => {
+    // 1. Fetch detail (includes orchestrator seasons list from backend)
+    fetchAnimeDetail(activeMongoId).then(data => {
       if (cancelled) return;
-      setStreamData(data);
-
-      // Parse episodes map to sorted array
-      if (data?.episodes) {
-        const episodeArray = Object.entries(data.episodes)
-          .map(([num, url]) => ({
-            episode_number: parseInt(num, 10) || num,
-            source_url: url,
-          }))
-          .sort((a, b) => {
-            const numA = typeof a.episode_number === 'number' ? a.episode_number : 0;
-            const numB = typeof b.episode_number === 'number' ? b.episode_number : 0;
-            return numA - numB;
-          });
-        setEpisodes(episodeArray);
-      } else {
-        setEpisodes([]);
+      if (data) {
+        setAnime(data);
+        if (data.seasons && data.seasons.length > 0) {
+          setSeasons(data.seasons);
+        }
+        if (data.related_movies_or_ovas) {
+          setRelatedMoviesOvas(data.related_movies_or_ovas);
+        }
       }
+      setLoading(false);
+    }).catch(err => {
+      console.error('[Detail] Error loading detail:', err);
+      if (!cancelled) setLoading(false);
+    });
 
-      setLoadingStream(false);
+    // 2. Fetch episodes
+    fetchEpisodes(activeMongoId).then(eps => {
+      if (cancelled) return;
+      setEpisodes(eps || []);
+      setLoadingEpisodes(false);
 
-      // Fade in animation
+      // Animate fade-in
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 400,
         useNativeDriver: true,
       }).start();
+    }).catch(err => {
+      console.error('[Detail] Error loading episodes:', err);
+      if (!cancelled) setLoadingEpisodes(false);
     });
 
     return () => { cancelled = true; };
   }, [activeMongoId]);
 
   // ── Handlers ─────────────────────────────────────────────────
-  const handleSeasonSelect = (season) => {
-    if (season.mongo_db_id === activeMongoId) return;
-    fadeAnim.setValue(0);
-    setActiveMongoId(season.mongo_db_id);
-    setActiveLabel(season.season_title);
-  };
-
-  const handleMovieSelect = (movie) => {
-    if (movie.mongo_db_id === activeMongoId) return;
-    fadeAnim.setValue(0);
-    setActiveMongoId(movie.mongo_db_id);
-    setActiveLabel(movie.title);
+  const handleSeasonSelect = (seasonId) => {
+    if (seasonId === activeMongoId) return;
+    setActiveMongoId(seasonId);
   };
 
   const handleToggleFavorite = async () => {
@@ -229,14 +163,22 @@ export default function AnimeDetailScreen({ route, navigation }) {
     }
   };
 
-  // ── Derived values ──────────────────────────────────────────
-  const bannerImage = streamData?.banner_image || null;
-  const coverImage = streamData?.cover_image || null;
-  const description = streamData?.description
-    ? streamData.description.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').trim()
+  // ── Derived dynamic values ───────────────────────────────────
+  const mainTitleEn = anime?.title || anime?.anime_title || initialTitle || 'Loading...';
+  const mainTitleJp = anime?.romajiTitle || anime?.orijinal_ad || '';
+  const animeType = anime?.format || 'TV';
+  const bannerImage = anime?.banner_image || anime?.bannerImage || null;
+  const coverImage = anime?.cover_image || anime?.coverImage || null;
+  const description = anime?.description
+    ? anime.description.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').trim()
     : null;
-  const genres = streamData?.genres || [];
-  const averageScore = streamData?.average_score || null;
+  const genres = anime?.genres || anime?.enrichedGenres || [];
+  const averageScore = anime?.averageScore || anime?.average_score || null;
+
+  // Active Label resolution
+  const activeLabel = seasons.find(s => String(s._id) === String(activeMongoId))?.label ||
+                      relatedMoviesOvas.find(m => String(m._id) === String(activeMongoId))?.title ||
+                      'Sezon 1';
 
   // ── Render Episode Card ──────────────────────────────────────
   const renderEpisodeCard = useCallback(({ item }) => (
@@ -250,7 +192,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
         navigation.navigate('Resolve', {
           animeId: activeMongoId,
           episodeNumber: item.episode_number,
-          episodeTitle: `Bölüm ${item.episode_number}`,
+          episodeTitle: item.episode_title || `Bölüm ${item.episode_number}`,
           animeTitle: mainTitleEn,
         });
       }}
@@ -260,7 +202,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
       </View>
       <View style={styles.episodeInfo}>
         <Text style={styles.episodeTitle} numberOfLines={1}>
-          Bölüm {item.episode_number}
+          {item.episode_title || `Bölüm ${item.episode_number}`}
         </Text>
         <Text style={styles.episodeMeta}>
           {item.source_url ? 'Hazır' : 'Kaynak yok'}
@@ -272,7 +214,6 @@ export default function AnimeDetailScreen({ route, navigation }) {
     </TouchableOpacity>
   ), [activeMongoId, mainTitleEn, navigation, user]);
 
-  // ── Render ───────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
       <ScrollView
@@ -394,21 +335,21 @@ export default function AnimeDetailScreen({ route, navigation }) {
         )}
 
         {/* ── Season Selector ─────────────────────────── */}
-        {seasons.length > 0 && (
+        {seasons.length > 1 && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Sezonlar</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pillRow}>
               {seasons.map((season, index) => {
-                const isActive = season.mongo_db_id === activeMongoId;
+                const isActive = String(season._id) === String(activeMongoId);
                 return (
                   <TouchableOpacity
-                    key={season.mongo_db_id || index}
+                    key={season._id || index}
                     style={[styles.pill, isActive && styles.pillActive]}
-                    onPress={() => handleSeasonSelect(season)}
+                    onPress={() => handleSeasonSelect(season._id)}
                     activeOpacity={0.7}
                   >
                     <Text style={[styles.pillText, isActive && styles.pillTextActive]}>
-                      {season.season_title}
+                      {season.label}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -424,15 +365,15 @@ export default function AnimeDetailScreen({ route, navigation }) {
             <FlatList
               horizontal
               data={relatedMoviesOvas}
-              keyExtractor={(item, i) => item.mongo_db_id || `movie-${i}`}
+              keyExtractor={(item, i) => item._id || `movie-${i}`}
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.movieListContent}
               renderItem={({ item }) => {
-                const isActive = item.mongo_db_id === activeMongoId;
+                const isActive = String(item._id) === String(activeMongoId);
                 return (
                   <TouchableOpacity
                     style={[styles.movieCard, isActive && styles.movieCardActive]}
-                    onPress={() => handleMovieSelect(item)}
+                    onPress={() => handleSeasonSelect(item._id)}
                     activeOpacity={0.7}
                   >
                     <View style={styles.movieIconContainer}>
@@ -459,7 +400,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
             {activeLabel} — Bölümler {episodes.length > 0 ? `(${episodes.length})` : ''}
           </Text>
 
-          {loadingStream ? (
+          {loadingEpisodes ? (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color={COLORS.accent} />
               <Text style={styles.loadingText}>Bölümler yükleniyor...</Text>
@@ -526,7 +467,6 @@ export default function AnimeDetailScreen({ route, navigation }) {
   );
 }
 
-// ── Styles ──────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
