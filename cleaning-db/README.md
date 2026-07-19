@@ -30,3 +30,13 @@ Splits the raw draft records into chunks and passes them through an AI rotation 
 *   **Memory & Resume:** Creates `orchestrator_state.json` to store memory of mapped titles and keep track of completed chunks. If interrupted, running the script again resumes where it left off.
 *   **Rotation Providers:** Dynamically falls back and rotates between Grok 4.5, Step 3.7 Flash, and GLM 4.7 Flash APIs if rate limits (429) or timeouts are hit.
 *   **Output:** `final_clean_directory.json` containing the final clean directory structure.
+
+### 3. State Syncing Utilities
+
+#### Upload State (`upload_state.js`)
+Connects to the database and uploads the local progress cache (`orchestrator_state.json`) to the `orchestrator_state` collection.
+*   **Run:** `node upload_state.js`
+
+#### Download State (`download_state.js`)
+Connects to the database and downloads the stored progress cache from the `orchestrator_state` collection to a local `orchestrator_state.json` file.
+*   **Run:** `node download_state.js`
