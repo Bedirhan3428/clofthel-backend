@@ -26,9 +26,9 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-// Using strictly Stepfun step-3.7-flash model
+// Using strictly DeepSeek v4 Flash model
 const PROVIDERS = [
-  { model: 'stepfun/step-3.7-flash', name: 'Step 3.7 Flash' }
+  { model: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash' }
 ];
 
 let currentProviderIndex = 0;
