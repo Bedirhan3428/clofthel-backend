@@ -7,14 +7,14 @@ const DRAFT_FILE = path.join(__dirname, 'raw_animes_draft.json');
 const FINAL_FILE = path.join(__dirname, 'final_clean_directory.json');
 
 const CHUNK_SIZE = 20; // Processing 20 items per batch to avoid timeouts
-const API_KEY = 'sk-ai-v1-643f993801aec896e122be1b7728231f291bb385986c9f851f14180eb21af926';
+const API_KEY = 'sk-ai-v1-c41a34eed9be5f44a98a4df084b5a42b28be6a9e2e14038d41817426c654a0dd';
 const BASE_URL = 'https://zenmux.ai/api/v1/chat/completions';
 
 // API Providers for failover rotation
 const PROVIDERS = [
+  { model: 'moonshotai/kimi-k3-free', name: 'Kimi K3' },
   { model: 'stepfun/step-3.7-flash', name: 'Step 3.7 Flash' },
-  { model: 'z-ai/glm-4.7-flash-free', name: 'GLM 4.7 Flash' },
-  { model: 'moonshotai/kimi-k3-free', name: 'Kimi K3' }
+  { model: 'z-ai/glm-4.7-flash-free', name: 'GLM 4.7 Flash' }
 ];
 
 let currentProviderIndex = 0;
