@@ -167,7 +167,7 @@ async function callLlmWithTimeout(provider, messages, timeoutMs = 180000) {
     };
   }
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
 
   try {
     const response = await fetch(geminiUrl, {
@@ -338,7 +338,8 @@ async function orchestrate() {
         const duration = ((Date.now() - startTime) / 1000).toFixed(2);
 
         if (!response.ok) {
-          throw new Error(`HTTP Error Status: ${response.status} - ${response.statusText}`);
+          const errText = await response.text();
+          throw new Error(`HTTP Error Status: ${response.status} - ${response.statusText}. Details: ${errText}`);
         }
 
         responseText = await response.text();
