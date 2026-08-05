@@ -313,7 +313,7 @@ export default function WatchScreen({ route, navigation }) {
         setBackgroundResolveUrl(null);
         setBackgroundTargetEp(null);
       } else if (data.type === 'native_touch') {
-        const { x, y } = data;
+        const { x, y, cssX, cssY, dpr, url } = data;
         if (TouchInjector && bgWebViewRef.current) {
           const reactTag = findNodeHandle(bgWebViewRef.current);
           if (reactTag) {
@@ -321,8 +321,28 @@ export default function WatchScreen({ route, navigation }) {
             const scaledX = x / scale;
             const scaledY = y / scale;
 
-            console.log(`[Bg Scraper Touch Fix] Ölçeklendi X:${scaledX} Y:${scaledY}`);
+            console.log(`[Bg Scraper Touch Fix] Density: ${scale} | DPR: ${dpr} | Scaled X:${scaledX} Y:${scaledY}`);
             
+            fetch(`${API_BASE_URL}/internal/debug-log`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'bg_captcha_touch_event',
+                x: Math.round(x),
+                y: Math.round(y),
+                scaledX: Math.round(scaledX),
+                scaledY: Math.round(scaledY),
+                cssX,
+                cssY,
+                scale,
+                dpr,
+                url,
+                animeId,
+                episodeNumber: backgroundTargetEp,
+                timestamp: Date.now()
+              })
+            }).catch(err => console.log('[Bg Debug Log Error]', err.message));
+
             setTimeout(() => {
               TouchInjector.simulateTouch(reactTag, scaledX, scaledY)
                 .then(res => console.log('[Bg Touch Success]', res))

@@ -342,8 +342,19 @@ export const scraperInjectedJs = `
               var physicalX = x * window.devicePixelRatio;
               var physicalY = y * window.devicePixelRatio;
 
-              sendToNative({ type: 'log', message: 'Donanımsal (Native) Tıklama gönderiliyor: X:' + Math.round(x) + ' Y:' + Math.round(y) + ' (Fiziksel X:' + Math.round(physicalX) + ' Y:' + Math.round(physicalY) + ')' });
-              sendToNative({ type: 'native_touch', x: physicalX, y: physicalY });
+              sendToNative({ 
+                type: 'log', 
+                message: 'Donanımsal (Native) Tıklama gönderiliyor: X:' + Math.round(x) + ' Y:' + Math.round(y) + ' (Fiziksel X:' + Math.round(physicalX) + ' Y:' + Math.round(physicalY) + ' DPR:' + window.devicePixelRatio + ')' 
+              });
+              sendToNative({ 
+                type: 'native_touch', 
+                x: physicalX, 
+                y: physicalY, 
+                cssX: Math.round(x), 
+                cssY: Math.round(y), 
+                dpr: window.devicePixelRatio,
+                url: window.location.href
+              });
             } catch(e) {
               sendToNative({ type: 'log', message: 'Native touch hatasi: ' + e.message });
             }
@@ -497,37 +508,13 @@ export const scraperInjectedJs = `
                 loggedNoCaptcha = true;
                 sendToNative({ type: 'log', message: 'Captcha yok — kaynak butonlari dogrudan gorunuyor. (' + sourceButtons.length + ' kaynak)' });
               }
-            } else if (captchaImgs.length === 0 && checkCount % 10 === 0) {
-              try {
-                var sourceListEl = document.getElementById('sourceList') || document.querySelector('.sources') || document.querySelector('.video-sources');
-                if (sourceListEl) {
-                  var elInfo = 'tag=' + sourceListEl.tagName + ', id=' + sourceListEl.id + ', class=' + sourceListEl.className;
-                  sendToNative({ type: 'log', message: 'Kaynak alani bulundu (' + elInfo + ')' });
-                } else {
-                  sendToNative({ type: 'log', message: 'Sayfada kaynak alani (sourcelist) bulunamadi!' });
-                }
-                
-                var allSourceBtnEls = Array.from(document.querySelectorAll('.sourceBtn')).map(function(el) {
-                  return (el.textContent || el.innerText || '').trim();
-                }).join(' | ');
-                if(allSourceBtnEls) sendToNative({ type: 'log', message: '.sourceBtn: ' + allSourceBtnEls });
-
-                var aitrEls = Array.from(document.querySelectorAll('*')).filter(function(el) {
-                  var text = (el.textContent || el.innerText || '').toLowerCase();
-                  return (text.includes('aitr') || text.includes('sibnet')) && el.children.length === 0;
-                }).map(function(el) {
-                  return el.tagName + ': ' + (el.textContent || el.innerText || '').trim();
-                }).slice(0, 3).join(' | ');
-                if(aitrEls) sendToNative({ type: 'log', message: 'Aitr/Sibnet yapraklari: ' + aitrEls });
-              } catch(e) {
-                sendToNative({ type: 'log', message: 'Log hatasi: ' + e.message });
-              }
             }
 
             if (captchaImgs.length === 5 && !captchaChecked) {
               captchaChecked = true;
               var detectionTime = Date.now();
               sendToNative({ type: 'log', message: 'Captcha tespit edildi. Piksel analizi (Canvas) baslatiliyor...' });
+              sendToNative({ type: 'captcha_detected', message: 'Bot koruması bulundu.' });
 
               (function() {
                 var imgs = captchaImgs;
@@ -536,11 +523,9 @@ export const scraperInjectedJs = `
 
                 function analyzePixels() {
                   try {
-                    var canvases = [];
-                    var ctxs = [];
-                    var pixelData = [];
                     var width = 40;
                     var height = 40;
+                    var pixelData = [];
 
                     for (var i = 0; i < imgs.length; i++) {
                       var canvas = document.createElement('canvas');
@@ -552,7 +537,6 @@ export const scraperInjectedJs = `
                       pixelData.push(imgData);
                     }
 
-                    // Calculate pairwise differences
                     var diffSums = [0, 0, 0, 0, 0];
                     for (var i = 0; i < 5; i++) {
                       for (var j = i + 1; j < 5; j++) {
@@ -569,7 +553,6 @@ export const scraperInjectedJs = `
                       }
                     }
 
-                    // Outlier has the maximum sum of differences
                     var maxDiff = -1;
                     var outlierIndex = 0;
                     for (var i = 0; i < 5; i++) {
@@ -590,26 +573,28 @@ export const scraperInjectedJs = `
                       sendToNative({ type: 'log', message: 'Donanımsal (Native) Tıklama gönderiliyor...' });
                       requestNativeTouch(targetEl);
 
-                      // 4 saniye bekle, çözülmezse yenile veya sıfırla
+                      // 3.5 saniye bekle, çözülmezse manuel butonu göster ve bildirim at
                       setTimeout(function() {
                         if (!_resolved) {
+                          sendToNative({ type: 'captcha_failed', message: 'Otomatik bot koruması 1. denemede geçilemedi. Manuel geçiş yapılabilir.' });
                           var reloadCount = parseInt(sessionStorage.getItem('captcha_reloads') || '0');
-                          if (reloadCount < 2) {
+                          if (reloadCount < 1) {
                             sessionStorage.setItem('captcha_reloads', reloadCount + 1);
-                            sendToNative({ type: 'log', message: 'Sistem zorlanıyor, sayfa YENİLENİYOR (Reload ' + (reloadCount+1) + ')...' });
+                            sendToNative({ type: 'log', message: '1. Deneme basarisiz. Yenileniyor...' });
                             window.location.reload();
                           } else {
-                            sendToNative({ type: 'log', message: 'Tüm donanımsal dokunuşlar başarısız. Lütfen ekrana BİR KEZ dokunun.' });
+                            sendToNative({ type: 'log', message: 'Tüm otomatik denemeler tamamlandı. Lütfen manuel geçiş butonunu kullanın veya captcha ekranına dokunun.' });
                             captchaChecked = false;
                           }
                         } else {
                           captchaChecked = false;
                         }
-                      }, 4000);
+                      }, 3500);
 
                     }, remainingDelay);
                   } catch(e) {
                     sendToNative({ type: 'log', message: 'Piksel analiz hatasi: ' + e.message });
+                    sendToNative({ type: 'captcha_failed', message: 'Piksel analiz hatası oluştu.' });
                     captchaChecked = false;
                   }
                 }

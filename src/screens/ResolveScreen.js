@@ -46,6 +46,12 @@ export default function ResolveScreen({ route, navigation }) {
   const animatedProgress = useRef(new Animated.Value(10)).current;
   const [displayedPercent, setDisplayedPercent] = useState(10);
 
+  const [debugMode, setDebugMode] = useState(false);
+  const [debugTapCount, setDebugTapCount] = useState(0);
+  const [lastTouchCoords, setLastTouchCoords] = useState(null);
+  const [showManualButton, setShowManualButton] = useState(false);
+  const [debugToastMsg, setDebugToastMsg] = useState(null);
+
   // Pulse animation for loading indicator
   useEffect(() => {
     Animated.loop(
@@ -63,6 +69,21 @@ export default function ResolveScreen({ route, navigation }) {
       ])
     ).start();
   }, []);
+
+  const handlePercentTap = () => {
+    const nextCount = debugTapCount + 1;
+    setDebugTapCount(nextCount);
+    if (nextCount >= 7) {
+      const nextState = !debugMode;
+      setDebugMode(nextState);
+      setDebugTapCount(0);
+      setDebugToastMsg(nextState ? '🐞 HATA AYIKLAMA MODU AÇILDI (DEBUG MODE ON)' : '🔒 Hata Ayıklama Modu Kapatıldı');
+      setTimeout(() => setDebugToastMsg(null), 3000);
+    } else if (nextCount >= 3) {
+      setDebugToastMsg(`Hata Ayıklama Modu için ${7 - nextCount} dokunuş kaldı...`);
+      setTimeout(() => setDebugToastMsg(null), 1500);
+    }
+  };
 
   // Smoothly animate progress bar and count up percentage text
   useEffect(() => {
@@ -160,11 +181,16 @@ export default function ResolveScreen({ route, navigation }) {
         const msg = data.message.toLowerCase();
         if (msg.includes('sayfa')) setProgressPercent(15);
         else if (msg.includes('iframe') || msg.includes('yok')) setProgressPercent(30);
-        else if (msg.includes('captcha tespit')) setProgressPercent(45);
+        else if (msg.includes('captcha tespit')) { setProgressPercent(45); setShowManualButton(true); }
         else if (msg.includes('tekrar')) setProgressPercent(55);
         else if (msg.includes('farkli') || msg.includes('farklı')) setProgressPercent(70);
         else if (msg.includes('tiklaniyor') || msg.includes('tıklanıyor') || msg.includes('basildi')) setProgressPercent(85);
         
+      } else if (data.type === 'captcha_detected' || data.type === 'captcha_failed') {
+        setShowManualButton(true);
+        if (data.type === 'captcha_failed') {
+          setResolvingState('Otomatik Geçiş Tamamlanamadı (Manuel Geçiş Yapabilirsiniz)');
+        }
       } else if (data.type === 'resolved') {
         setProgressPercent(100);
         let finalUrl = data.videoUrl;
@@ -192,21 +218,51 @@ export default function ResolveScreen({ route, navigation }) {
         setErrorMsg(data.message || 'Anime bulunamadı.');
         setLoading(false);
       } else if (data.type === 'native_touch') {
-        const { x, y } = data;
+        const { x, y, cssX, cssY, dpr, url } = data;
         if (TouchInjector && webViewRef.current) {
           
-          // 1. ADIM: Belirsiz event.target yerine WebView'ın kendi sabit native tag'ini kilitliyoruz
           const reactTag = findNodeHandle(webViewRef.current); 
 
           if (reactTag) {
-            // 2. ADIM: WebView'dan gelen CSS piksellerini React Native'in anladığı DP birimine bölüyoruz
             const scale = PixelRatio.get();
             const scaledX = x / scale;
             const scaledY = y / scale;
 
-            console.log(`[Resolve Touch Fix] Density: ${scale} | Orijinal X:${x} Y:${y} -> Ölçeklenmiş X:${scaledX} Y:${scaledY}`);
+            console.log(`[Resolve Touch Fix] Density: ${scale} | DPR: ${dpr} | Orijinal X:${x} Y:${y} -> Scaled X:${scaledX} Y:${scaledY}`);
             
-            // 3. ADIM: Sayfa yenileme / captcha render anında native çakışma olmasın diye hafif bir gecikme veriyoruz
+            // Save coordinates to debug state
+            setLastTouchCoords({ 
+              x: Math.round(x), 
+              y: Math.round(y), 
+              scaledX: Math.round(scaledX), 
+              scaledY: Math.round(scaledY), 
+              cssX, 
+              cssY, 
+              scale, 
+              dpr 
+            });
+
+            // Send debug report to backend MongoDB
+            fetch(`${API_BASE_URL}/internal/debug-log`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'captcha_touch_event',
+                x: Math.round(x),
+                y: Math.round(y),
+                scaledX: Math.round(scaledX),
+                scaledY: Math.round(scaledY),
+                cssX,
+                cssY,
+                scale,
+                dpr,
+                url,
+                animeId,
+                episodeNumber,
+                timestamp: Date.now()
+              })
+            }).catch(err => console.log('[Debug Log Report Error]', err.message));
+
             setTimeout(() => {
               TouchInjector.simulateTouch(reactTag, scaledX, scaledY)
                 .then(res => console.log('[Resolve Touch Success]', res))
@@ -269,7 +325,6 @@ export default function ResolveScreen({ route, navigation }) {
                     setSupportMultipleWindows={false}
                     onShouldStartLoadWithRequest={(request) => {
                       const url = request.url;
-                      // Izin verilecek guvenilir domain listesi
                       const isTrAnime = url.includes('tranimeizle.io');
                       const isOptraco = url.includes('optraco.top');
                       const isSibnet = url.includes('sibnet.ru');
@@ -290,8 +345,32 @@ export default function ResolveScreen({ route, navigation }) {
               {/* Temiz Yükleme Perdesi (Full Screen Loading Overlay) */}
               {!showWebView ? (
                 <View style={styles.webViewOverlay}>
-                  <Text style={styles.overlayText}>Bölüm Yükleniyor...</Text>
-                  <Text style={styles.overlayPercentText}>%{displayedPercent}</Text>
+                  {debugToastMsg && (
+                    <View style={styles.debugToast}>
+                      <Text style={styles.debugToastText}>{debugToastMsg}</Text>
+                    </View>
+                  )}
+
+                  {debugMode && (
+                    <View style={styles.debugBanner}>
+                      <Text style={styles.debugBannerTitle}>🐞 HATA AYIKLAMA MODU (DEBUG MODE)</Text>
+                      <Text style={styles.debugBannerSubtext}>
+                        Piksel Yoğunluğu (Scale): {PixelRatio.get()} | DPR: {lastTouchCoords?.dpr || '-'}
+                      </Text>
+                      {lastTouchCoords && (
+                        <Text style={styles.debugBannerSubtext}>
+                          Son Tıklama Konumu: CSS({lastTouchCoords.cssX}, {lastTouchCoords.cssY}) → DP({lastTouchCoords.scaledX}, {lastTouchCoords.scaledY})
+                        </Text>
+                      )}
+                    </View>
+                  )}
+
+                  <Text style={styles.overlayText}>{resolvingState}</Text>
+
+                  {/* 7 Defa Tıklayınca Hata Ayıklama Modunu Açan Yüzde Göstergesi */}
+                  <TouchableOpacity activeOpacity={0.7} onPress={handlePercentTap}>
+                    <Text style={styles.overlayPercentText}>%{displayedPercent}</Text>
+                  </TouchableOpacity>
                   
                   <View style={styles.progressContainerCompact}>
                     <Animated.View style={[styles.progressBar, { width: animatedProgress.interpolate({
@@ -300,28 +379,48 @@ export default function ResolveScreen({ route, navigation }) {
                     }) }]} />
                   </View>
 
-                  <TouchableOpacity 
-                    style={styles.cancelButtonOverlay}
-                    onPress={() => {
-                      navigation.goBack();
-                    }}
-                  >
-                    <Text style={styles.cancelButtonText}>İptal Et</Text>
-                  </TouchableOpacity>
+                  {/* Alt Buton Alanı: İptal Et & Manuel Geçiş */}
+                  <View style={styles.buttonRowOverlay}>
+                    <TouchableOpacity 
+                      style={styles.cancelButtonOverlay}
+                      onPress={() => navigation.goBack()}
+                    >
+                      <Text style={styles.cancelButtonText}>İptal Et</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity 
+                      style={[
+                        styles.manualButtonOverlay, 
+                        showManualButton && styles.manualButtonHighlighted
+                      ]}
+                      onPress={() => setShowWebView(true)}
+                    >
+                      <Ionicons name="finger-print" size={18} color="#00E5FF" style={{ marginRight: 6 }} />
+                      <Text style={styles.manualButtonText}>Manuel Geçiş</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               ) : (
-                <TouchableOpacity 
-                  style={styles.floatingCloseDebugButton}
-                  onPress={() => setShowWebView(false)}
-                >
-                  <Ionicons name="eye-off" size={20} color="#FFF" />
-                  <Text style={{ color: '#FFF', marginLeft: 8, fontWeight: 'bold' }}>Tarayıcıyı Gizle</Text>
-                </TouchableOpacity>
+                <View style={{ position: 'absolute', bottom: 30, right: 20, zIndex: 999 }}>
+                  {debugMode && lastTouchCoords && (
+                    <View style={styles.debugTouchIndicator}>
+                      <Text style={styles.debugTouchText}>
+                        📍 Tıklama: DP({lastTouchCoords.scaledX}, {lastTouchCoords.scaledY})
+                      </Text>
+                    </View>
+                  )}
+                  <TouchableOpacity 
+                    style={styles.floatingCloseDebugButton}
+                    onPress={() => setShowWebView(false)}
+                  >
+                    <Ionicons name="eye-off" size={20} color="#FFF" />
+                    <Text style={{ color: '#FFF', marginLeft: 8, fontWeight: 'bold' }}>Tarayıcıyı Gizle</Text>
+                  </TouchableOpacity>
+                </View>
               )}
             </View>
           </SafeAreaView>
         ) : (
-          // Initial Database/Cache check: Show standard loading screen
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color={COLORS.accent} style={{ marginBottom: 20 }} />
             <Text style={styles.loadingTitle}>{resolvingState}</Text>
@@ -497,20 +596,104 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.accent,
     borderRadius: 4,
   },
-  cancelButtonOverlay: {
+  buttonRowOverlay: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
     position: 'absolute',
-    bottom: 60,
+    bottom: 50,
+    width: '100%',
+  },
+  cancelButtonOverlay: {
     paddingVertical: 12,
-    paddingHorizontal: 30,
+    paddingHorizontal: 22,
     borderRadius: 25,
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.15)',
+    marginRight: 10,
   },
   cancelButtonText: {
     color: 'rgba(255, 255, 255, 0.7)',
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.semibold,
+  },
+  manualButtonOverlay: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 25,
+    backgroundColor: 'rgba(0, 229, 255, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 229, 255, 0.4)',
+  },
+  manualButtonHighlighted: {
+    backgroundColor: 'rgba(0, 229, 255, 0.25)',
+    borderColor: '#00E5FF',
+    shadowColor: '#00E5FF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  manualButtonText: {
+    color: '#00E5FF',
+    fontSize: FONT_SIZES.body,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  debugBanner: {
+    position: 'absolute',
+    top: 30,
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(20, 20, 30, 0.95)',
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#00E5FF',
+    zIndex: 999,
+  },
+  debugBannerTitle: {
+    color: '#00E5FF',
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  debugBannerSubtext: {
+    color: '#0F0',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    marginTop: 2,
+  },
+  debugToast: {
+    position: 'absolute',
+    top: 90,
+    backgroundColor: '#00E5FF',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    zIndex: 1000,
+  },
+  debugToastText: {
+    color: '#000',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  debugTouchIndicator: {
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#00E5FF',
+    marginBottom: 8,
+  },
+  debugTouchText: {
+    color: '#0F0',
+    fontSize: 10,
+    fontWeight: 'bold',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   debugButtonOverlay: {
     marginBottom: 20,
@@ -527,9 +710,6 @@ const styles = StyleSheet.create({
     fontWeight: FONT_WEIGHTS.medium,
   },
   floatingCloseDebugButton: {
-    position: 'absolute',
-    bottom: 30,
-    right: 20,
     backgroundColor: 'rgba(255, 59, 48, 0.9)',
     paddingVertical: 10,
     paddingHorizontal: 16,

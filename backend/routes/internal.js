@@ -140,6 +140,31 @@ router.post('/reload-orchestrator', apiKeyAuth, async (req, res) => {
   }
 });
 
+/**
+ * POST /api/internal/debug-log
+ * Receives touch coordinates and bot protection debug diagnostics from mobile app and saves to MongoDB.
+ */
+router.post('/debug-log', async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const db = mongoose.connection.db;
+    const logData = req.body || {};
+    
+    if (db) {
+      await db.collection('debug_logs').insertOne({
+        ...logData,
+        createdAt: new Date()
+      });
+      console.log(`📍 [DEBUG-LOG] Click/Captcha report saved to MongoDB: Action: ${logData.action || 'click'} | X:${logData.x} Y:${logData.y}`);
+    }
+    
+    res.json({ success: true, message: 'Debug log recorded in MongoDB.' });
+  } catch (error) {
+    console.error('❌ [DEBUG-LOG] Error saving report:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;
 
 
