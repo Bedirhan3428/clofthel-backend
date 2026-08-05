@@ -2213,10 +2213,10 @@ router.get('/:id/stream-data', async (req, res, next) => {
  * POST /api/animes/reload-orchestrator
  * Reloads the orchestrator state from MongoDB into the server's cache immediately.
  */
-router.post('/reload-orchestrator', protect, async (req, res) => {
+router.post('/reload-orchestrator', async (req, res) => {
   try {
     await loadOrchestratorMap();
-    res.json({ success: true, message: 'Orchestrator cache successfully reloaded.' });
+    res.json({ success: true, message: 'Orchestrator cache successfully reloaded into RAM memory.' });
   } catch (err) {
     console.error('[POST /api/animes/reload-orchestrator] Error:', err);
     res.status(500).json({ success: false, error: 'Failed to reload orchestrator cache.' });

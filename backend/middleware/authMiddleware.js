@@ -79,8 +79,8 @@ const verifyRequestSignature = (req, res, next) => {
     req.isWebClient = true;
   }
 
-  // Stream ve Proxy endpointleri için imzayı bypass et (Video Player'lar HMAC header gönderemez)
-  const bypassPaths = ['/stream.m3u8', '/chunk.ts', '/sibnet-proxy', '/resolve-source'];
+  // Stream, Proxy ve Admin Reload endpointleri için imzayı bypass et
+  const bypassPaths = ['/stream.m3u8', '/chunk.ts', '/sibnet-proxy', '/resolve-source', '/reload-orchestrator'];
   if (bypassPaths.some(p => req.originalUrl.includes(p))) {
     return next();
   }
