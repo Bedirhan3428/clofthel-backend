@@ -2223,5 +2223,6 @@ router.post('/reload-orchestrator', protect, async (req, res) => {
   }
 });
 
+router.loadOrchestratorMap = loadOrchestratorMap;
 module.exports = router;
 

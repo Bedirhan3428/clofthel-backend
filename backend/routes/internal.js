@@ -122,6 +122,24 @@ router.post('/orchestrator/ingest', apiKeyAuth, async (req, res) => {
   }
 });
 
+/**
+ * POST /api/internal/reload-orchestrator
+ * Trigger immediate reload of orchestrator state cache into backend RAM memory.
+ */
+router.post('/reload-orchestrator', apiKeyAuth, async (req, res) => {
+  try {
+    const animesRouter = require('./animes');
+    if (typeof animesRouter.loadOrchestratorMap === 'function') {
+      await animesRouter.loadOrchestratorMap();
+    }
+    console.log('✅ [INTERNAL] Orchestrator cache reloaded successfully into memory.');
+    res.json({ success: true, message: 'Orchestrator cache successfully reloaded into memory.' });
+  } catch (error) {
+    console.error('❌ [INTERNAL] Reload error:', error);
+    res.status(500).json({ success: false, message: 'Failed to reload orchestrator cache.', error: error.message });
+  }
+});
+
 module.exports = router;
 
 
