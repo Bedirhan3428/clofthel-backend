@@ -1,17 +1,16 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const cron = require('node-cron');
-const mongoose = require('mongoose');
-const { runScraper } = require('./sync_homepage');
+const axios = require('axios');
+const { connectDatabase } = require('./config/database');
+const ingestRoutes = require('./routes/ingestRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-// Güvenlik: CORS sadece kendi backend'imizden ve kendi alan adımızdan gelen isteklere izin ver
+// CORS configuration
 app.use(cors({
   origin: function (origin, callback) {
-    // Sadece yerel ağdan ve kendi alan adımızdan gelen istekler
     if (!origin || 
         origin.startsWith('http://localhost') || 
         origin.startsWith('http://192.168.') || 
@@ -22,74 +21,44 @@ app.use(cors({
     callback(new Error('CORS izni yok.'));
   }
 }));
-app.use(express.json({ limit: '256kb' }));
 
-// MongoDB'ye bağlan
-mongoose.connect(process.env.MONGO_URI, { family: 4 })
-  .then(() => console.log('✅ MongoDB connected in scraper service'))
-  .catch(err => console.error('❌ MongoDB connection error:', err));
+// Body Parsers with increased payload limit for bulk ingestion
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
+// Initialize Database Connection
+connectDatabase();
+
+// Health Check Endpoint
 app.get('/health', (req, res) => {
-  res.json({ status: 'Scraper microservice is running', uptime: process.uptime() });
+  res.json({
+    status: 'Ingestion & Middleware Routing Service is active',
+    role: 'API Gateway / Orchestrator Adapter',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
 });
 
-// API key kontrolü middleware
-const checkApiKey = (req, res, next) => {
-  const apiKey = req.headers['x-internal-api-key'];
-  const expectedKey = process.env.INTERNAL_API_KEY;
-  
-  if (!expectedKey) {
-    console.error('❌ INTERNAL_API_KEY .env dosyasında tanımlı değil!');
-    return res.status(500).json({ success: false, error: 'Sunucu yapılandırma hatası.' });
-  }
-  
-  if (!apiKey || apiKey !== expectedKey) {
-    return res.status(403).json({ success: false, error: 'Yetkisiz erişim.' });
-  }
-  next();
-};
+// Ingestion Routes (Dual-Dispatch API Gateway)
+app.use(ingestRoutes);
 
-// Manuel tetikleme endpoint'i (API key ile korunuyor)
-app.post('/api/scrape/trigger', checkApiKey, async (req, res) => {
-  try {
-    const result = await runScraper();
-    res.json({ success: true, message: 'Scraping finished', result });
-  } catch (error) {
-    console.error('Manual scrape error:', error);
-    res.status(500).json({ success: false, error: 'Scraping sırasında hata oluştu.' });
-  }
-});
-
-// Günde 5 defa belirli saatlerde çalışacak şekilde ayarla (02:00, 08:00, 12:00, 16:00, 20:00)
-cron.schedule('0 2,8,12,16,20 * * *', async () => {
-  console.log(`[CRON] Starting scheduled scrape at ${new Date().toISOString()}`);
-  try {
-    await runScraper();
-    console.log(`[CRON] Scheduled scrape completed successfully.`);
-  } catch (error) {
-    console.error(`[CRON] Scheduled scrape failed:`, error);
-  }
-});
-
+// Server Listener
 app.listen(PORT, () => {
-  console.log(`🚀 Scraper Microservice is running on port ${PORT}`);
-  console.log(`🔒 Güvenlik: CORS kısıtlı, API key koruması aktif`);
-  console.log(`⏰ Cron job scheduled to run 5 times a day (02:00, 08:00, 12:00, 16:00, 20:00).`);
+  console.log(`🚀 [Ingestion & Middleware Routing Service] Running on port ${PORT}`);
+  console.log(`🔒 Security: CORS restricted, API key verification active`);
+  console.log(`⚡ Dual-Dispatch Adapter: Target A (Legacy Animes) & Target B (Orchestrator) non-blocking routing enabled.`);
 
-  // ── Self-ping: Render free tier 15 dk sonra uyutuyor, bunu engelle ──
+  // Self-ping to prevent sleep on free hosting platforms
   const RENDER_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_PING_URL;
   if (RENDER_URL) {
-    console.log(`🏓 Self-ping aktif: ${RENDER_URL}/health (her 14 dk)`);
+    console.log(`🏓 Self-ping active: ${RENDER_URL}/health (every 14 mins)`);
     setInterval(async () => {
       try {
         await axios.get(`${RENDER_URL}/health`);
         console.log(`[SELF-PING] OK - ${new Date().toISOString()}`);
       } catch (err) {
-        console.warn(`[SELF-PING] Failed: ${err.message}`);
+        console.warn(`[SELF-PING] Notice: ${err.message}`);
       }
-    }, 14 * 60 * 1000); // 14 dakika
-  } else {
-    console.warn('⚠️ RENDER_EXTERNAL_URL veya SELF_PING_URL tanımlı değil. Self-ping devre dışı.');
-    console.warn('   Render free tier servisi uyuyabilir ve cron çalışmayabilir.');
+    }, 14 * 60 * 1000);
   }
 });

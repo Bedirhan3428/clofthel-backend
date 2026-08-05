@@ -98,5 +98,30 @@ router.post('/bulk-episode-sync', apiKeyAuth, async (req, res) => {
   }
 });
 
+/**
+ * POST /api/internal/orchestrator/ingest
+ * Primary endpoint for Orchestrator Service ingestion events.
+ */
+router.post('/orchestrator/ingest', apiKeyAuth, async (req, res) => {
+  try {
+    const { data, source, timestamp } = req.body;
+    console.log(`[ORCHESTRATOR-INGEST] Event received from ${source || 'unknown'} at ${timestamp || new Date().toISOString()}`);
+
+    if (!data || !Array.isArray(data)) {
+      return res.status(400).json({ success: false, message: 'Invalid or missing data array' });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Orchestrator event ingested successfully',
+      count: data.length
+    });
+  } catch (error) {
+    console.error('[ORCHESTRATOR-INGEST] Error:', error);
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+});
+
 module.exports = router;
+
 
