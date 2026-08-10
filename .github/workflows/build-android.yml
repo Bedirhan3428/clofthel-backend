@@ -10,6 +10,10 @@ jobs:
   build-phone:
     name: Build Phone APK (ARM32 / ARM64)
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+      packages: write
     env:
       NODE_OPTIONS: "--max-old-space-size=3072"
       CMAKE_BUILD_PARALLEL_LEVEL: 1
