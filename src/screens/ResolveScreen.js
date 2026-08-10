@@ -19,6 +19,7 @@ import { fetchEpisodeVideoUrl, cacheEpisodeVideoUrl } from '../services/api';
 import TouchInjector from '../modules/TouchInjector';
 import { API_BASE_URL } from '../constants/config';
 import { scraperInjectedJs } from '../modules/ScraperScript';
+import NetworkChallengeResolver from '../components/NetworkChallengeResolver';
 
 let WebView = null;
 if (Platform.OS !== 'web') {

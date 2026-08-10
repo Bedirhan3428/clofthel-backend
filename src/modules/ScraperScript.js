@@ -462,6 +462,60 @@ export const scraperInjectedJs = `
               return;
             }
 
+            // --- NETWORK CHALLENGE / TURNSTILE DETECTOR ---
+            try {
+              var isNetworkChallenge = window.location.pathname.includes('/_aitr/network-challenge') || document.querySelector('form[action*="network-challenge"]');
+              if (isNetworkChallenge && !window.__challenge_notified) {
+                window.__challenge_notified = true;
+                sendToNative({ type: 'log', message: '⚠️ Network Challenge (Görüntülü/Soru Koruması) tespit edildi!' });
+
+                var questionImg = document.querySelector('img.question');
+                var questionText = questionImg ? (questionImg.getAttribute('alt') || 'Görseldeki sorunun cevabını seçin') : 'Bağlantınızı doğrulayın';
+                var questionImgUrl = questionImg ? (questionImg.src || questionImg.getAttribute('src')) : null;
+
+                var options = [];
+                var radioLabels = document.querySelectorAll('label.option, label:has(input[type="radio"])');
+                for (var r = 0; r < radioLabels.length; r++) {
+                  var labelEl = radioLabels[r];
+                  var radioInput = labelEl.querySelector('input[type="radio"]');
+                  var spanText = labelEl.querySelector('span') || labelEl;
+                  if (radioInput) {
+                    var rect = radioInput.getBoundingClientRect();
+                    var x = rect.left + (rect.width / 2);
+                    var y = rect.top + (rect.height / 2);
+                    options.push({
+                      id: radioInput.value,
+                      text: (spanText.textContent || spanText.innerText || '').trim(),
+                      physicalX: x * window.devicePixelRatio,
+                      physicalY: y * window.devicePixelRatio
+                    });
+                  }
+                }
+
+                sendToNative({
+                  type: 'network_challenge_detected',
+                  questionText: questionText,
+                  questionImageUrl: questionImgUrl,
+                  options: options
+                });
+              }
+
+              // Turnstile Token Observer Loop
+              var turnstileInput = document.querySelector('input[name="cf-turnstile-response"]') || document.querySelector('input[id*="cf-chl-widget"]');
+              if (turnstileInput && turnstileInput.value && !window.__turnstile_submitted) {
+                window.__turnstile_submitted = true;
+                sendToNative({ type: 'log', message: '✅ Turnstile Token alındı! Submit butonuna JNI dokunuşu gönderiliyor...' });
+
+                var submitBtn = document.querySelector('button[type="submit"]') || document.querySelector('form[action*="network-challenge"] button');
+                if (submitBtn) {
+                  requestNativeTouch(submitBtn);
+                }
+              }
+            } catch(chErr) {
+              sendToNative({ type: 'log', message: 'Challenge detector hatası: ' + chErr.message });
+            }
+            // ----------------------------------------------
+
             checkPageForExplorerUrls();
             if (_resolved) { clearInterval(automationInterval); return; }
 
