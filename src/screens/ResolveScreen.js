@@ -288,138 +288,34 @@ export default function ResolveScreen({ route, navigation }) {
       
       {loading ? (
         episodeUrl ? (
-          // Scraper/Automation is running (WebView runs in background, user sees a clean full-screen loading overlay)
           <SafeAreaView style={styles.resolvingContainer} edges={['top', 'left', 'right', 'bottom']}>
-            <View style={{ flex: 1, position: 'relative' }}>
-              <View style={styles.webViewContainer}>
-                {IS_WEB ? (
-                  <View style={{ flex: 1, width: '100%', height: '100%' }}>
-                    <iframe
-                      src={episodeUrl}
-                      style={{
-                        width: '100%',
-                        height: '100%',
-                        border: 'none',
-                        backgroundColor: '#000',
-                      }}
-                      sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-                      title="Video Resolver"
-                    />
-                  </View>
-                ) : WebView ? (
-                  <WebView
-                    ref={webViewRef}
-                    source={{ uri: episodeUrl }}
-                    injectedJavaScriptBeforeContentLoaded={injectedJs}
-                    injectedJavaScript={injectedJs}
-                    onMessage={handleWebViewMessage}
-                    javaScriptEnabled={true}
-                    domStorageEnabled={true}
-                    mixedContentMode="always"
-                    mediaPlaybackRequiresUserAction={false}
-                    style={{ flex: 1, width: '100%', height: '100%' }}
-                    onLoadStart={(e) => console.log('[WebView] Load Start:', e.nativeEvent.url)}
-                    onLoad={(e) => console.log('[WebView] Loaded successfully')}
-                    onLoadEnd={(e) => console.log('[WebView] Load End')}
-                    onError={(e) => console.error('[WebView] Error:', e.nativeEvent)}
-                    onHttpError={(e) => console.error('[WebView] HTTP Error:', e.nativeEvent)}
-                    setSupportMultipleWindows={false}
-                    onShouldStartLoadWithRequest={(request) => {
-                      const url = request.url;
-                      const isTrAnime = url.includes('tranimeizle.io');
-                      const isOptraco = url.includes('optraco.top');
-                      const isSibnet = url.includes('sibnet.ru');
-                      const isCaptcha = url.includes('Captcha') || url.includes('challenge');
-                      const isGoogle = url.includes('google');
-                      
-                      if (isTrAnime || isOptraco || isSibnet || isCaptcha || isGoogle || url.startsWith('about:blank') || url.startsWith('data:')) {
-                        return true;
-                      }
-                      
-                      console.log('[Ad Blocker] Engellenen reklam yönlendirmesi:', url);
-                      return false;
-                    }}
-                  />
-                ) : null}
-              </View>
-
-              {/* Temiz Yükleme Perdesi (Full Screen Loading Overlay) */}
-              {!showWebView ? (
-                <View style={styles.webViewOverlay}>
-                  {debugToastMsg && (
-                    <View style={styles.debugToast}>
-                      <Text style={styles.debugToastText}>{debugToastMsg}</Text>
-                    </View>
-                  )}
-
-                  {debugMode && (
-                    <View style={styles.debugBanner}>
-                      <Text style={styles.debugBannerTitle}>🐞 HATA AYIKLAMA MODU (DEBUG MODE)</Text>
-                      <Text style={styles.debugBannerSubtext}>
-                        Piksel Yoğunluğu (Scale): {PixelRatio.get()} | DPR: {lastTouchCoords?.dpr || '-'}
-                      </Text>
-                      {lastTouchCoords && (
-                        <Text style={styles.debugBannerSubtext}>
-                          Son Tıklama Konumu: CSS({lastTouchCoords.cssX}, {lastTouchCoords.cssY}) → DP({lastTouchCoords.scaledX}, {lastTouchCoords.scaledY})
-                        </Text>
-                      )}
-                    </View>
-                  )}
-
-                  <Text style={styles.overlayText}>{resolvingState}</Text>
-
-                  {/* 7 Defa Tıklayınca Hata Ayıklama Modunu Açan Yüzde Göstergesi */}
-                  <TouchableOpacity activeOpacity={0.7} onPress={handlePercentTap}>
-                    <Text style={styles.overlayPercentText}>%{displayedPercent}</Text>
-                  </TouchableOpacity>
-                  
-                  <View style={styles.progressContainerCompact}>
-                    <Animated.View style={[styles.progressBar, { width: animatedProgress.interpolate({
-                      inputRange: [0, 100],
-                      outputRange: ['0%', '100%'],
-                    }) }]} />
-                  </View>
-
-                  {/* Alt Buton Alanı: İptal Et & Manuel Geçiş */}
-                  <View style={styles.buttonRowOverlay}>
-                    <TouchableOpacity 
-                      style={styles.cancelButtonOverlay}
-                      onPress={() => navigation.goBack()}
-                    >
-                      <Text style={styles.cancelButtonText}>İptal Et</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity 
-                      style={[
-                        styles.manualButtonOverlay, 
-                        showManualButton && styles.manualButtonHighlighted
-                      ]}
-                      onPress={() => setShowWebView(true)}
-                    >
-                      <Ionicons name="finger-print" size={18} color="#00E5FF" style={{ marginRight: 6 }} />
-                      <Text style={styles.manualButtonText}>Manuel Geçiş</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              ) : (
-                <View style={{ position: 'absolute', bottom: 30, right: 20, zIndex: 999 }}>
-                  {debugMode && lastTouchCoords && (
-                    <View style={styles.debugTouchIndicator}>
-                      <Text style={styles.debugTouchText}>
-                        📍 Tıklama: DP({lastTouchCoords.scaledX}, {lastTouchCoords.scaledY})
-                      </Text>
-                    </View>
-                  )}
-                  <TouchableOpacity 
-                    style={styles.floatingCloseDebugButton}
-                    onPress={() => setShowWebView(false)}
-                  >
-                    <Ionicons name="eye-off" size={20} color="#FFF" />
-                    <Text style={{ color: '#FFF', marginLeft: 8, fontWeight: 'bold' }}>Tarayıcıyı Gizle</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-            </View>
+            <NetworkChallengeResolver
+              targetUrl={episodeUrl}
+              visible={true}
+              onResolved={async (data) => {
+                let finalUrl = data.videoUrl;
+                await cacheEpisodeVideoUrl(animeId, episodeNumber, finalUrl);
+                if (finalUrl.startsWith('sibnet-direct:')) {
+                  finalUrl = finalUrl.replace('sibnet-direct:', '');
+                } else if (finalUrl.startsWith('sibnet:')) {
+                  const sibnetId = finalUrl.replace('sibnet:', '');
+                  finalUrl = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sibnetId}`;
+                }
+                navigation.replace('Watch', {
+                  animeId,
+                  episodeNumber,
+                  episodeTitle,
+                  animeTitle,
+                  videoUrl: finalUrl,
+                  startAt: startAt || 0
+                });
+              }}
+              onError={(err) => {
+                setErrorMsg(err || 'Video adresi alınamadı.');
+                setLoading(false);
+              }}
+              onClose={() => navigation.goBack()}
+            />
           </SafeAreaView>
         ) : (
           <View style={styles.loadingContainer}>
