@@ -1,174 +1,144 @@
-# 🎬 Clofthel | Mobile & Distributed Scraper Architecture
+<p align="center">
+  <img src="./assets/mainLogo.png" width="260" alt="Clofthel Logo" />
+</p>
 
-Clofthel is a highly optimized, multi-tier streaming and content aggregation platform. Rather than relying on a simple monolithic backend, the platform is architected as a distributed network of decoupled services communicating securely via API-key handshakes, custom native bridges, and JWT-authenticated sessions.
+<h1 align="center">Clofthel — Next-Generation Anime Streaming & Distributed Aggregation Platform</h1>
+
+<p align="center">
+  <b>Dual-Core Orchestration • Hardware-Level JNI Touch Injection • Self-Learning On-Demand Scraper • Fansub-Aware AniSkip Intro Skipping</b>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Version-1.4.0-00E5FF?style=for-the-badge" alt="Version 1.4.0" />
+  <img src="https://img.shields.io/badge/Expo-SDK%2054-000000?style=for-the-badge&logo=expo" alt="Expo SDK 54" />
+  <img src="https://img.shields.io/badge/React%20Native-0.81.5-61DAFB?style=for-the-badge&logo=react" alt="React Native 0.81.5" />
+  <img src="https://img.shields.io/badge/Node.js-v24-339933?style=for-the-badge&logo=node.js" alt="Node.js 24" />
+  <img src="https://img.shields.io/badge/Database-MongoDB%20Atlas-47A248?style=for-the-badge&logo=mongodb" alt="MongoDB Atlas" />
+  <img src="https://img.shields.io/badge/AI%20Solver-Llama%208B%20%2B%20Heuristics-FF6B00?style=for-the-badge" alt="Llama 8B AI" />
+</p>
 
 ---
 
-## 🏗️ Architecture Overview
+## 🌟 Overview & System Highlights
 
-The system is structured as a monorepo containing three core architectural pillars:
+**Clofthel** is an enterprise-grade, multi-tier streaming and content aggregation ecosystem engineered for uncompromising speed, visual clarity, and full automation. Rather than relying on fragile monolithic scrapers, Clofthel features an autonomous **Dual-Core Architecture** combining client-side hardware-level gesture execution, real-time on-demand self-healing, precision season alignment with AniList, and fansub-specific intro skipping.
 
 ```mermaid
 graph TD
-    A[React Native Mobile Client] -->|OAuth 2.0 / JWT| B[Express Backend API]
-    A -->|Native JNI Bridge| F[TouchInjector Android Module]
-    F -->|Simulate Native Gestures| G[Background WebView]
-    C[Axios/Cheerio Scraper Service] -->|REST / Internal Auth Headers| B
-    B -->|Mongoose ODM| D[(MongoDB Atlas Cluster)]
-    G -.->|Client-Side Link Resolution| B
-```
-
-### 1. 📱 Mobile Client (Root Directory)
-A cross-platform mobile application built using **React Native / Expo** providing a fluid interface for content exploration, bookmarks, and high-performance media playback.
-* **Curtain WebView Pattern:** To extract direct video URLs from ad-heavy, anti-iframe hosters, the client instantiates an invisible `WebView` container. A custom UI loading curtain overlays it to present a clean, animated progress indicator while keeping the underlying web view active for interaction.
-* **Hardware-Level Gesture Injection:** Integrates a custom React Native Java Native Interface (JNI) module to inject raw hardware-level motion events (`MotionEvent.ACTION_DOWN` / `ACTION_UP`) into the WebView hierarchy. This bypasses hoster security restrictions that block standard JavaScript `.click()` events.
-* **Authentication:** Integrates Google Sign-In with backend token exchange protocols.
-
-### 2. ⚡ Express API Backend (`/backend`)
-A high-performance Node.js & Express REST API server acting as the central state controller and media catalog.
-* **Security & Auth:** Restricts routes using custom JWT validation middlewares, Google token validation, and verified client headers signed via `MOBILE_APP_SECRET` to prevent unauthorized API requests.
-* **Database Management:** Interfaces with MongoDB Atlas utilizing replica sets, custom indexing (`tranimeizle_slug`, `anilist_id`), and Mongoose schemas to cache resolved streams.
-* **Proxy Server:** Incorporates a custom streaming proxy to bypass CORS policies and Referer constraints from external video providers, ensuring direct client-side playback.
-
-### 3. 🤖 Scraper Microservice (`/scraper-service`)
-A standalone web-scraping daemon driven by **Axios & Cheerio** designed to index records in real-time.
-* **Scraping Routine:** Executes dynamic target navigation (`sync_homepage.js`) to parse updates from host directories.
-* **Automation Scheduler:** Leverages `node-cron` jobs to run background sweeps 5 times a day (02:00, 08:00, 12:00, 16:00, 20:00).
-* **Inter-Service Notifications:** Automatically notifies the central Express backend of new episodes to dispatch real-time push notifications.
-* **Standalone Execution:** Supports command-line triggering (`run_once.js`) for system administrators.
-
----
-
-## 🛠️ Technical Deep Dive & Core Pillars
-
-### A. The Native Touch Injection Bridge (`TouchInjector`)
-Many premium video hosters detect programmatic JavaScript click triggers and block them to protect their advertising overlays. To bypass this, Clofthel features a custom native Java module (`TouchInjectorModule.java`) loaded into the React Native runtime:
-
-1. **View Resolution:** The JavaScript thread passes the React View Tag of the active WebView container.
-2. **Thread Marshalling:** The module shifts execution to the Android UI thread (`runOnUiQueueThread`).
-3. **Android View Lookup:** Resolves the raw `android.view.View` hierarchy using Fabric-compatible `UIManagerHelper` and legacy `UIManagerModule` fallbacks.
-4. **MotionEvent Dispatching:** Generates and dispatches physical touch gestures directly into the resolved view's input stream:
-   ```java
-   long downTime = SystemClock.uptimeMillis();
-   MotionEvent downEvent = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, physicalX, physicalY, 0);
-   view.dispatchTouchEvent(downEvent);
-   
-   MotionEvent upEvent = MotionEvent.obtain(downTime, downTime + 50, MotionEvent.ACTION_UP, physicalX, physicalY, 0);
-   view.dispatchTouchEvent(upEvent);
-   ```
-
-### B. Client-Side Video Link Resolution Flow
-When a user requests an episode, the system resolves media links in a multi-stage fallback cycle:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as Mobile Client
-    participant API as Express API Backend
-    participant DB as MongoDB Atlas
-    participant WV as WebView (Background)
-    participant Host as Media Hoster
-
-    User->>API: GET /api/animes/video-url (animeId, episodeNum)
-    API->>DB: Check Cache
-    alt URL is already Cached
-        DB-->>API: Return Cached Direct Stream Link
-        API-->>User: Return Direct URL (200 OK)
-    else URL Not Cached
-        DB-->>API: Return 404 (Not Cached)
-        API-->>User: Return Episode Web Page URL (404 NOT_CACHED)
-        User->>WV: Initialize Invisible WebView with Web Page URL
-        WV->>Host: Load Webpage
-        Host-->>WV: Render Player iFrame
-        User->>User: Launch Analog Progress Curtain
-        Note over User, WV: Custom Native Bridge injects simulated touch gestures onto Player
-        WV->>Host: Programmatic Native Click on Play Target
-        Host-->>WV: Start Direct Video Buffer
-        Note over User, WV: WebView intercepts network request containing direct .mp4 source
-        User->>API: POST /api/animes/cache-video-url (directUrl)
-        API->>DB: Save Direct Link to Cache (TTL / Index)
-        User->>User: Play video in Native Video Player
-    end
+    A[📱 Mobile Client - React Native / Expo] -->|HMAC-SHA256 Signed REST / JWT| B[⚡ Express API Backend]
+    A -->|JNI Bridge on UI Thread| C[🎮 TouchInjector Android Module]
+    C -->|Simulate Native MotionEvent| D[🛡️ Background WebView / Scraper]
+    B -->|Mongoose ODM| E[(🍃 MongoDB Atlas Cluster)]
+    B -->|Season Precision Search| F[🌐 AniList GraphQL / Kitsu API]
+    B -->|AI Challenge Solver| G[🤖 Llama 8B Service]
+    D -.->|Extracted Video & Fansub| B
+    A -->|AniSkip OP/ED Query| H[🎬 AniSkip API]
 ```
 
 ---
 
-## 🛠️ Tech Stack & Core Dependencies
+## 🚀 Key Architectural Pillars & Innovations
 
-| Tier | Component | Technology Used |
+### 1. 🛡️ Autonomous Network Challenge & Turnstile Bypass (`TouchInjector`)
+Anti-bot systems (Cloudflare Turnstile, image verification, residential proxy checks) actively detect and block synthetic JavaScript `.click()` calls. Clofthel eliminates this barrier at the hardware level:
+* **Android UI Thread Dispatch:** Uses custom JNI bindings (`TouchInjector.java`) executing directly on the Android UI Thread via `runOnUiQueueThread`.
+* **Hardware Motion Events:** Converts CSS element bounds into physical hardware coordinates $(x \times \text{devicePixelRatio}, y \times \text{devicePixelRatio})$ and dispatches genuine `MotionEvent.ACTION_DOWN` and `MotionEvent.ACTION_UP` gestures.
+* **Turnstile Token Observer:** Continuously observes `input[name="cf-turnstile-response"]`. The EXACT millisecond the token arrives, a native hardware tap is dispatched to the Submit button.
+* **Self-Learning AI Hybrid Solver:**
+  $$\text{Device Local Cache (0ms)} \longrightarrow \text{Central DB Question Pool} \longrightarrow \text{Llama 8B AI Service}$$
+  Answers are memorized globally across all users to prevent redundant solving.
+
+---
+
+### 2. 🔄 Self-Healing On-Demand Scraper & Dual Sync (`animeSelfHealer.js`)
+If an anime has missing episodes or has never been indexed before, the system triggers an instantaneous, zero-delay on-demand self-healing sweep:
+* **Overview Page Scraping:** Queries the anime's root directory page (`https://www.tranimeizle.io/anime/[slug]`) rather than individual episode pages.
+* **Full Metadata Extraction:** Extracts official English/Romaji aliases (*Diğer İsimleri*), poster imagery, genres, episode maps, and translation teams (*Fansublar*).
+* **Dual-Target MongoDB Sync:**
+  1. **Target A (`animes` collection):** Upserts the anime record with all episode stream endpoints.
+  2. **Target B (`orchestrator_state` collection):** Links the new season into its canonical franchise group and immediately refreshes the in-memory RAM cache.
+
+---
+
+### 3. 🎯 Precision Season & Part AniList Matcher (`anilistSeasonMatcher.js`)
+Generic title searches often misassign sequel seasons (e.g., *Season 2 Part 2* getting mapped to *Season 1*'s AniList ID). Clofthel implements an exact heuristic scoring engine:
+* **Attribute Discrimination:** Detects season numbers (*2. Sezon*, *Season 2*), part divisions (*2. Kısım*, *Part 2*, *Cour 2*), and formats (*Movie*, *TV*, *OVA*, *Special*).
+* **Tranimeizle Alias Matching:** Matches official alternative names against AniList synonyms for a **+100 score boost**.
+* **Penalty Elimination:** Penalizes Season 1 candidates when querying for Season 2+ to guarantee 100% correct AniList ID assignment.
+
+---
+
+### 4. ⚡ Fansub-Aware AniSkip Intro Skipping (`aniSkipService.js`)
+Turkish fansub teams (e.g., *Seicode*, *TAÇE*, *FGL Çeviri*, *TRanimeizle*, *Tempura*) frequently prepend custom intro bumpers (5s to 12s) to episode streams, causing standard AniSkip timestamps to desynchronize.
+* **Per-Episode Fansub Tracking:** When a stream link is resolved, the scraper identifies the exact translation team for that specific source and persists it into `episodes_cache[episodeNumber]`.
+* **Dynamic Time Adjustment:**
+  $$\text{Adjusted Start} = \text{AniSkip OP Start} + \text{Fansub Offset}$$
+  $$\text{Adjusted End} = \text{AniSkip OP End} + \text{Fansub Offset}$$
+* **Versioned Database Sync:** Fansub offsets are synced on app launch against `/api/v1/fansub-offsets` with automatic versioning.
+* **Interactive Player HUD:** Displays an animated **"İntroyu Geç (Skip Intro)"** button that skips to **3 seconds before intro finish** on one tap.
+
+---
+
+## 🛠️ Technology Stack
+
+| Layer | Component | Technologies |
 | :--- | :--- | :--- |
-| **Mobile Client** | UI & Routing | React Native, Expo (SDK 54), React Navigation v7, Expo Video |
-| | Native Modules | Java, JNI Bridges (`TouchInjectorModule`) |
-| **Backend API** | Server Engine | Node.js, Express, Mongoose ODM |
-| | Security | JWT (JSON Web Tokens), Google Auth APIs, CORS limits |
-| **Microservice**| Scraper Engine | Axios, Cheerio, Node-Cron |
-| **Database** | Storage | MongoDB Atlas (Replica Sets) |
+| **Mobile App** | Interface & Media | React Native 0.81.5, Expo SDK 54, Expo Video, Reanimated 4, React Navigation v7 |
+| | Native Modules | Java, JNI MotionEvent Injection (`TouchInjector`), UltraClarity View |
+| **Backend API** | Server & Security | Node.js v24, Express.js, Mongoose ODM, Helmet, XSS-Clean, HMAC-SHA256 Signatures |
+| **Data & AI** | Persistence & Solvers | MongoDB Atlas Cluster, Llama 8B, AniList GraphQL, Kitsu API, AniSkip API |
+| **DevOps & CI/CD** | Automation | GitHub Actions (Node 24, Gradle Android Build, GitHub Releases), Render Deployment |
 
 ---
 
-## ⚙️ Environment Variables Config
-
-Each service requires specific environment files to boot up.
+## ⚙️ Environment Configuration
 
 ### `/backend/.env`
 ```env
-MONGO_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/clofthel_db
 PORT=5000
+MONGO_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/clofthel_db
+JWT_SECRET=your_super_secret_jwt_key
+MOBILE_APP_SECRET=your_hmac_sha256_client_verification_secret
+GROQ_API_KEY=your_llama_8b_groq_api_key
+RESEND_API_KEY=your_resend_email_api_key
 GOOGLE_CLIENT_ID=your_google_web_client_id.apps.googleusercontent.com
-JWT_SECRET=your_secure_jwt_secret_token
-INTERNAL_API_KEY=your_internal_service_handshake_key
-MOBILE_APP_SECRET=your_mobile_client_verification_secret
-GROQ_API_KEY=optional_ai_integration_key
-RESEND_API_KEY=optional_email_service_key
 ```
 
-### `/scraper-service/.env`
-```env
-MONGO_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/clofthel_db
-MAIN_BACKEND_URL=http://localhost:5000
-INTERNAL_API_KEY=your_internal_service_handshake_key
+### `/src/constants/config.js`
+App version and build codes are dynamically loaded from `app.json`:
+```javascript
+export const API_BASE_URL = 'https://api.clofthel.com.tr/api';
+export const APP_VERSION = Constants?.expoConfig?.version || '1.4.0';
+export const APP_BUILD_CODE = Constants?.expoConfig?.android?.versionCode || 140;
 ```
 
 ---
 
-## 🚀 Getting Started & Local Setup
+## 🚀 Running Locally & Building
 
-### 1. Prerequisites
-* **Node.js:** version 18.0.0 or higher.
-* **Android SDK:** required to compile custom native Android code (`TouchInjector`).
-
-### 2. Setup & Start Scraper Microservice
-```bash
-cd scraper-service
-npm install
-node server.js
-```
-> [!TIP]
-> You can trigger the scraper database synchronization routine manually outside of schedules by running:
-> `node run_once.js`
-
-### 3. Setup & Start Express Backend
+### 1. Backend API
 ```bash
 cd backend
 npm install
-node server.js
+npm run dev
 ```
 
-### 4. Run Mobile App
+### 2. React Native Client
 ```bash
-# From the project root
+# In the root directory
 npm install
 npx expo start
 ```
 
-### 5. Build Release APK (Android)
-To compile the application containing the custom Java Native Touch injection modules:
+### 3. Compiling Android Release APK
 ```bash
 cd android
-# Windows Powershell
-./gradlew assembleRelease
+./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=armeabi-v7a,arm64-v8a
 ```
-The compiled output will be generated at `./android/app/build/outputs/apk/release/app-release.apk`.
+Compiled APK: `./android/app/build/outputs/apk/release/app-release.apk`
 
 ---
-*Architected and developed by Bedirhan İmer.*
+
+<p align="center">
+  <sub>Architected and developed with ❤️ for the anime community by <b>Bedirhan İmer</b>.</sub>
+</p>

@@ -1,6 +1,6 @@
 {
   "name": "clofthel",
-  "version": "1.3.01",
+  "version": "1.4.0",
   "main": "index.js",
   "scripts": {
     "start": "expo start",

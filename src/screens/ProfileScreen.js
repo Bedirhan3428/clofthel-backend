@@ -14,6 +14,7 @@ import { AuthContext } from '../context/AuthContext';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { getProfileData, createCustomList, deleteCustomList, updateAvatar, toggleFavoritesNotificationsApi, toggleListNotificationsApi } from '../services/api';
 import { AVATAR_LIST } from '../constants/avatars';
+import { APP_VERSION } from '../constants/config';
 import { Modal, TextInput, Switch } from 'react-native';
 
 export default function ProfileScreen({ navigation }) {
@@ -285,7 +286,7 @@ export default function ProfileScreen({ navigation }) {
           <Text style={styles.logoutText}>Çıkış Yap</Text>
         </TouchableOpacity>
 
-        <Text style={styles.versionText}>Clofthel v1.0.0</Text>
+        <Text style={styles.versionText}>Clofthel v{APP_VERSION}</Text>
       </ScrollView>
 
       {/* Create List Modal */}
