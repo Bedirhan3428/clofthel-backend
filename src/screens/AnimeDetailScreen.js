@@ -257,6 +257,8 @@ export default function AnimeDetailScreen({ route, navigation }) {
           episodeNumber: item.episode_number,
           episodeTitle: item.episode_title || `Bölüm ${item.episode_number}`,
           animeTitle: mainTitleEn,
+          anilistId: anime?.anilist_id || null,
+          fansubs: anime?.fansubs || []
         });
       }}
     >

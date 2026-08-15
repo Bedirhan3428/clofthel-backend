@@ -806,6 +806,7 @@ function formatAnimeDoc(doc) {
     description: doc.description || null,
     average_score: doc.average_score || null,
     season_year: doc.season_year || null,
+    fansubs: doc.fansubs || [],
   };
 }
 
@@ -1569,32 +1570,33 @@ router.get('/:id', async (req, res, next) => {
       return res.status(404).json({ success: false, error: 'Anime bulunamadı.' });
     }
 
-    // Resolve sibling if missing
+    // Synchronously resolve exact AniList ID if missing
     if (!anime.anilist_id) {
-      const compBase = anime.comparable_base_slug || getComparableBaseSlug(anime.tranimeizle_slug);
-      if (compBase) {
-        const sibling = await Anime.findOne({
-          comparable_base_slug: compBase,
-          orijinal_ad: { $ne: null }
-        }).select('orijinal_ad format').lean();
-        
-        if (sibling) {
+      try {
+        const slugTitle = formatSlugToTitle(anime.tranimeizle_slug);
+        const exactMatch = await resolveExactAniListId(anime.orijinal_ad || slugTitle, anime.tranimeizle_slug);
+        if (exactMatch && exactMatch.anilist_id) {
+          anime.anilist_id = exactMatch.anilist_id;
+          anime.orijinal_ad = exactMatch.title_en || anime.orijinal_ad;
+          anime.format = exactMatch.format || anime.format || 'TV';
+          anime.season_year = exactMatch.season_year || anime.season_year;
           Anime.updateOne(
             { _id: anime._id },
             { 
               $set: { 
-                orijinal_ad: sibling.orijinal_ad
+                anilist_id: exactMatch.anilist_id, 
+                orijinal_ad: exactMatch.title_en || anime.orijinal_ad,
+                format: exactMatch.format || anime.format || 'TV',
+                season_year: exactMatch.season_year || anime.season_year
               } 
             }
-          ).exec().catch(err => console.error('[Detail Route] Background update failed:', err));
-          
-          anime.orijinal_ad = sibling.orijinal_ad;
+          ).exec().catch(() => {});
+          console.log(`🎯 [Detail Route] Synchronously resolved exact AniList ID: ${exactMatch.anilist_id} for ${anime.tranimeizle_slug}`);
         }
+      } catch (err) {
+        console.warn('[Detail Route] Exact match warning:', err.message);
       }
     }
-
-    // Lazily resolve AniList info if still missing
-    lazyResolveAnilistInfo([anime]);
 
     // 2. Use high-performance memory cache map to resolve orchestrator group
     const searchIdStr = String(activeId);

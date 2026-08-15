@@ -20,7 +20,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
-import { fetchAnimeDetail, fetchEpisodes, resetAnimeAnilistId, saveAnimeAnilistId, addToHistory, fetchEpisodeVideoUrl, cacheEpisodeVideoUrl } from '../services/api';
+import { fetchAnimeDetail, fetchEpisodes, resetAnimeAnilistId, saveAnimeAnilistId, addToHistory, fetchEpisodeVideoUrl, cacheEpisodeVideoUrl, fetchAniListSingle } from '../services/api';
 import { API_BASE_URL } from '../constants/config';
 import TouchInjector from '../modules/TouchInjector';
 import { scraperInjectedJs } from '../modules/ScraperScript';
@@ -44,13 +44,23 @@ const IS_WEB = Platform.OS === 'web';
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function WatchScreen({ route, navigation }) {
-  const { animeId, episodeNumber: initialEpisodeNumber, episodeTitle: initialEpisodeTitle, videoUrl: initialVideoUrl, fansub: initialFansub, startAt } = route.params;
+  const { 
+    animeId, 
+    episodeNumber: initialEpisodeNumber, 
+    episodeTitle: initialEpisodeTitle, 
+    videoUrl: initialVideoUrl, 
+    fansub: initialFansub, 
+    fansubs: initialFansubs,
+    anilistId: initialAnilistId,
+    startAt 
+  } = route.params;
   const { showAlert } = useAlert();
 
   const [currentEpisodeNumber, setCurrentEpisodeNumber] = useState(initialEpisodeNumber);
   const [currentEpisodeTitle, setCurrentEpisodeTitle] = useState(initialEpisodeTitle);
   const [currentVideoUrl, setCurrentVideoUrl] = useState(initialVideoUrl);
   const [currentEpisodeFansub, setCurrentEpisodeFansub] = useState(initialFansub || null);
+  const [currentAnilistId, setCurrentAnilistId] = useState(initialAnilistId || null);
   const [currentStartAt, setCurrentStartAt] = useState(startAt || 0);
 
   const [isInlineResolving, setIsInlineResolving] = useState(false);
@@ -64,8 +74,9 @@ export default function WatchScreen({ route, navigation }) {
     setCurrentEpisodeTitle(initialEpisodeTitle);
     setCurrentVideoUrl(initialVideoUrl);
     setCurrentEpisodeFansub(initialFansub || null);
+    if (initialAnilistId) setCurrentAnilistId(initialAnilistId);
     setCurrentStartAt(startAt || 0);
-  }, [initialEpisodeNumber, initialEpisodeTitle, initialVideoUrl, initialFansub, startAt]);
+  }, [initialEpisodeNumber, initialEpisodeTitle, initialVideoUrl, initialFansub, initialAnilistId, startAt]);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('main'); // 'main' | 'quality' | 'speed'
@@ -92,27 +103,77 @@ export default function WatchScreen({ route, navigation }) {
     syncFansubOffsetsWithBackend().catch(() => {});
   }, []);
 
+  // 1. Fetch full anime detail from DB on mount
   useEffect(() => {
+    let isMounted = true;
+    const loadDetail = async () => {
+      try {
+        const detail = await fetchAnimeDetail(animeId);
+        if (detail && isMounted) {
+          setCurrentAnime(detail);
+          if (detail.anilist_id) {
+            setCurrentAnilistId(detail.anilist_id);
+          }
+        }
+      } catch (err) {
+        console.warn('[WatchScreen] Detail load error:', err);
+      }
+    };
+    if (animeId) loadDetail();
+    return () => { isMounted = false; };
+  }, [animeId]);
+
+  // 2. Resolve AniList ID and load AniSkip times with fansub intro offset
+  useEffect(() => {
+    let isCancelled = false;
     const loadSkipTimes = async () => {
-      if (currentAnime?.anilist_id && currentEpisodeNumber) {
-        try {
-          const activeFansubs = currentEpisodeFansub ? [currentEpisodeFansub] : (currentAnime.fansubs || []);
-          console.log(`[WatchScreen AniSkip] Loading skip times for Ep ${currentEpisodeNumber} with exact fansub: "${currentEpisodeFansub || 'default'}"`);
+      if (!currentEpisodeNumber) return;
+      try {
+        let anilistId = currentAnilistId || currentAnime?.anilist_id;
+
+        // Fallback AniList lookup if still null
+        if (!anilistId && (currentAnime?.title || currentAnime?.anime_title || currentAnime?.orijinal_ad)) {
+          const searchTitle = currentAnime.orijinal_ad || currentAnime.title || currentAnime.anime_title;
+          const matched = await fetchAniListSingle(null, searchTitle);
+          if (matched?.id && !isCancelled) {
+            anilistId = matched.id;
+            setCurrentAnilistId(matched.id);
+            saveAnimeAnilistId(animeId, matched.id, null, null, matched.title?.english || matched.title?.romaji, matched.format).catch(() => {});
+          }
+        }
+
+        if (anilistId) {
+          const activeFansubs = currentEpisodeFansub 
+            ? [currentEpisodeFansub] 
+            : (currentAnime?.fansubs && currentAnime.fansubs.length > 0 ? currentAnime.fansubs : (initialFansubs || []));
+
+          console.log(`🎬 [WatchScreen AniSkip] Fetching skip times for AniList ID: ${anilistId}, Episode: ${currentEpisodeNumber}, Fansubs:`, activeFansubs);
+
           const skipTimes = await fetchAniSkipTimes(
-            currentAnime.anilist_id,
+            anilistId,
             currentEpisodeNumber,
             0,
             activeFansubs
           );
-          setAniSkipData(skipTimes);
-          if (skipTimes?.fansubOffset) {
-            setFansubOffsetSeconds(skipTimes.fansubOffset);
+
+          if (!isCancelled && skipTimes) {
+            console.log(`✅ [WatchScreen AniSkip] Skip intervals loaded:`, JSON.stringify(skipTimes));
+            setAniSkipData(skipTimes);
+            if (skipTimes.fansubOffset) {
+              setFansubOffsetSeconds(skipTimes.fansubOffset);
+            }
           }
-        } catch (e) {}
+        } else {
+          console.log(`ℹ️ [WatchScreen AniSkip] No AniList ID available for anime ${animeId} yet.`);
+        }
+      } catch (e) {
+        console.warn('[WatchScreen AniSkip] Error loading skip times:', e.message);
       }
     };
+
     loadSkipTimes();
-  }, [currentAnime?.anilist_id, currentEpisodeNumber, currentEpisodeFansub]);
+    return () => { isCancelled = true; };
+  }, [animeId, currentAnilistId, currentAnime, currentEpisodeNumber, currentEpisodeFansub]);
 
   useEffect(() => {
     const loadPrefs = async () => {

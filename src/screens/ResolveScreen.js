@@ -33,7 +33,7 @@ if (Platform.OS !== 'web') {
 const IS_WEB = Platform.OS === 'web';
 
 export default function ResolveScreen({ route, navigation }) {
-  const { animeId, episodeNumber, episodeTitle, animeTitle, startAt } = route.params;
+  const { animeId, episodeNumber, episodeTitle, animeTitle, anilistId, fansubs, startAt } = route.params;
 
   const [loading, setLoading] = useState(true);
   const [resolvingState, setResolvingState] = useState('Veritabanı kontrol ediliyor...');
@@ -152,6 +152,9 @@ export default function ResolveScreen({ route, navigation }) {
           episodeTitle,
           animeTitle,
           videoUrl: finalUrl,
+          fansub: result.fansub || null,
+          fansubs: fansubs || result.fansubs || [],
+          anilistId: anilistId || result.anilist_id || null,
           startAt: startAt || 0
         });
       } else if (result.code === 'NOT_CACHED') {
@@ -213,6 +216,9 @@ export default function ResolveScreen({ route, navigation }) {
           episodeTitle,
           animeTitle,
           videoUrl: finalUrl,
+          fansub: data.fansub || null,
+          fansubs: fansubs || [],
+          anilistId: anilistId || null,
           startAt: startAt || 0
         });
       } else if (data.type === 'noSource' || data.type === 'error') {
@@ -309,6 +315,8 @@ export default function ResolveScreen({ route, navigation }) {
                   animeTitle,
                   videoUrl: finalUrl,
                   fansub: detectedFansub,
+                  fansubs: fansubs || [],
+                  anilistId: anilistId || null,
                   startAt: startAt || 0
                 });
               }}

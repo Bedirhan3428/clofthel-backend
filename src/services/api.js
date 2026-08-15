@@ -260,7 +260,7 @@ async function fetchMediaBatch(animes) {
  * @param {string|null} searchTitle
  * @returns {Object|null}
  */
-async function fetchAniListSingle(anilistId, searchTitle = null) {
+export async function fetchAniListSingle(anilistId, searchTitle = null) {
   if (!anilistId && !searchTitle) return null;
 
   // Rate limit aktifse hemen iptal et
