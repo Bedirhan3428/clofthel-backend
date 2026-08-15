@@ -294,7 +294,8 @@ export default function ResolveScreen({ route, navigation }) {
               visible={true}
               onResolved={async (data) => {
                 let finalUrl = data.videoUrl;
-                await cacheEpisodeVideoUrl(animeId, episodeNumber, finalUrl);
+                const detectedFansub = data.fansub || null;
+                await cacheEpisodeVideoUrl(animeId, episodeNumber, finalUrl, detectedFansub);
                 if (finalUrl.startsWith('sibnet-direct:')) {
                   finalUrl = finalUrl.replace('sibnet-direct:', '');
                 } else if (finalUrl.startsWith('sibnet:')) {
@@ -307,6 +308,7 @@ export default function ResolveScreen({ route, navigation }) {
                   episodeTitle,
                   animeTitle,
                   videoUrl: finalUrl,
+                  fansub: detectedFansub,
                   startAt: startAt || 0
                 });
               }}

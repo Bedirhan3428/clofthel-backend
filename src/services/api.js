@@ -753,10 +753,7 @@ export async function fetchEpisodeVideoUrl(animeId, episodeNumber) {
   }
 }
 
-/**
- * Çözümlenen .m3u8 linkini backend önbelleğine kaydeder.
- */
-export async function cacheEpisodeVideoUrl(animeId, episodeNumber, videoUrl) {
+export async function cacheEpisodeVideoUrl(animeId, episodeNumber, videoUrl, fansub = null) {
   try {
     const userToken = await AsyncStorage.getItem('userToken');
     const headers = {
@@ -768,7 +765,7 @@ export async function cacheEpisodeVideoUrl(animeId, episodeNumber, videoUrl) {
     const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}/episodes/${episodeNumber}/video-url`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ videoUrl })
+      body: JSON.stringify({ videoUrl, fansub })
     });
     const json = await response.json();
     return json;

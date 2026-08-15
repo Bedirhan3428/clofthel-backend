@@ -1770,6 +1770,15 @@ router.get('/:id/episodes/:episode_number/video-url', async (req, res, next) => 
             videoUrl: videoUrl,
             cached: true
           });
+        if (typeof cached !== 'string' && ageMs < maxAgeMs) {
+          console.log(`[SUCCESS] Doğrudan akış linki (${type}) DB'de bulundu (Fansub: ${cached.fansub || 'N/A'}). Dönülüyor.`);
+          
+          return res.json({
+            success: true,
+            videoUrl: videoUrl,
+            fansub: cached.fansub || null,
+            cached: true
+          });
         } else {
           console.log(`[INFO] Doğrudan akış linki DB'de bulundu ama süresi dolmuş (${Math.round(ageMs / 1000 / 60)} dk geçmiş). Yeniden çözülecek.`);
         }
@@ -1783,6 +1792,7 @@ router.get('/:id/episodes/:episode_number/video-url', async (req, res, next) => 
             return res.json({
               success: true,
               videoUrl: directMp4Url,
+              fansub: cached.fansub || null,
               cached: true
             });
           } catch (sibnetErr) {
@@ -1829,7 +1839,7 @@ router.post('/:id/episodes/:episode_number/video-url', protect, async (req, res,
   const ids = parseIdParam(req.params.id);
   if (!ids) return next();
   const { episode_number } = req.params;
-  const { videoUrl } = req.body;
+  const { videoUrl, fansub } = req.body;
   
   if (!videoUrl) {
     return res.status(400).json({ success: false, error: 'videoUrl parametresi gerekli.' });
@@ -1855,24 +1865,27 @@ router.post('/:id/episodes/:episode_number/video-url', protect, async (req, res,
       anime.episodes_cache[episode_number] = {
         type: 'sibnet-direct',
         videoUrl: pureUrl,
+        fansub: fansub || null,
         resolvedAt: Date.now()
       };
-      console.log(`[SUCCESS] Saf Sibnet linki (.mp4) veritabanına kaydedildi.`);
+      console.log(`[SUCCESS] Saf Sibnet linki (.mp4) veritabanına kaydedildi. (Fansub: ${fansub || 'N/A'})`);
     } else if (videoUrl.startsWith('sibnet:')) {
       const sibnetId = videoUrl.replace('sibnet:', '');
       anime.episodes_cache[episode_number] = {
         type: 'sibnet',
         sibnetId: sibnetId,
+        fansub: fansub || null,
         resolvedAt: Date.now()
       };
-      console.log(`[SUCCESS] Sibnet Video ID'si veritabanına kaydedildi: ${sibnetId}`);
+      console.log(`[SUCCESS] Sibnet Video ID'si veritabanına kaydedildi: ${sibnetId} (Fansub: ${fansub || 'N/A'})`);
     } else {
       anime.episodes_cache[episode_number] = {
         type: 'aitrvip',
         videoUrl: videoUrl,
+        fansub: fansub || null,
         resolvedAt: Date.now()
       };
-      console.log(`[SUCCESS] AitrVip linki veritabanına kaydedildi.`);
+      console.log(`[SUCCESS] AitrVip linki veritabanına kaydedildi. (Fansub: ${fansub || 'N/A'})`);
     }
     anime.markModified('episodes_cache');
     await anime.save();

@@ -136,11 +136,33 @@ export const scraperInjectedJs = `
           logToScreen("Console override error: " + e.message);
         }
 
+        function detectCurrentFansub() {
+          try {
+            var activeBtn = document.querySelector('.fansubBtn.active, .sourceBtn.active, .selected-fansub, .selected-source, .source.active, .btn-primary');
+            if (activeBtn) {
+              var txt = (activeBtn.textContent || activeBtn.innerText || '').trim();
+              if (txt) return txt;
+            }
+            if (clickedBtnText) return clickedBtnText;
+            
+            var fansubEl = document.querySelector('.fansub-name, .fansub-title, .anime-fansub, .post-category');
+            if (fansubEl) {
+              return (fansubEl.textContent || fansubEl.innerText || '').trim();
+            }
+          } catch(e) {}
+          return null;
+        }
+
         var _resolved = false;
         function sendResolved(videoUrl) {
           if (_resolved) return;
           _resolved = true;
-          sendToNative({ type: 'resolved', videoUrl: videoUrl });
+          var detectedFansub = detectCurrentFansub();
+          sendToNative({ 
+            type: 'resolved', 
+            videoUrl: videoUrl,
+            fansub: detectedFansub
+          });
         }
 
         sendToNative({ type: 'log', message: 'Scraper baslatildi (JS yuklendi)...' });

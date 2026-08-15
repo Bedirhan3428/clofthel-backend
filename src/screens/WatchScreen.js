@@ -44,12 +44,13 @@ const IS_WEB = Platform.OS === 'web';
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function WatchScreen({ route, navigation }) {
-  const { animeId, episodeNumber: initialEpisodeNumber, episodeTitle: initialEpisodeTitle, videoUrl: initialVideoUrl, startAt } = route.params;
+  const { animeId, episodeNumber: initialEpisodeNumber, episodeTitle: initialEpisodeTitle, videoUrl: initialVideoUrl, fansub: initialFansub, startAt } = route.params;
   const { showAlert } = useAlert();
 
   const [currentEpisodeNumber, setCurrentEpisodeNumber] = useState(initialEpisodeNumber);
   const [currentEpisodeTitle, setCurrentEpisodeTitle] = useState(initialEpisodeTitle);
   const [currentVideoUrl, setCurrentVideoUrl] = useState(initialVideoUrl);
+  const [currentEpisodeFansub, setCurrentEpisodeFansub] = useState(initialFansub || null);
   const [currentStartAt, setCurrentStartAt] = useState(startAt || 0);
 
   const [isInlineResolving, setIsInlineResolving] = useState(false);
@@ -62,8 +63,9 @@ export default function WatchScreen({ route, navigation }) {
     setCurrentEpisodeNumber(initialEpisodeNumber);
     setCurrentEpisodeTitle(initialEpisodeTitle);
     setCurrentVideoUrl(initialVideoUrl);
+    setCurrentEpisodeFansub(initialFansub || null);
     setCurrentStartAt(startAt || 0);
-  }, [initialEpisodeNumber, initialEpisodeTitle, initialVideoUrl, startAt]);
+  }, [initialEpisodeNumber, initialEpisodeTitle, initialVideoUrl, initialFansub, startAt]);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('main'); // 'main' | 'quality' | 'speed'
@@ -94,11 +96,13 @@ export default function WatchScreen({ route, navigation }) {
     const loadSkipTimes = async () => {
       if (currentAnime?.anilist_id && currentEpisodeNumber) {
         try {
+          const activeFansubs = currentEpisodeFansub ? [currentEpisodeFansub] : (currentAnime.fansubs || []);
+          console.log(`[WatchScreen AniSkip] Loading skip times for Ep ${currentEpisodeNumber} with exact fansub: "${currentEpisodeFansub || 'default'}"`);
           const skipTimes = await fetchAniSkipTimes(
             currentAnime.anilist_id,
             currentEpisodeNumber,
             0,
-            currentAnime.fansubs || []
+            activeFansubs
           );
           setAniSkipData(skipTimes);
           if (skipTimes?.fansubOffset) {
@@ -108,7 +112,7 @@ export default function WatchScreen({ route, navigation }) {
       }
     };
     loadSkipTimes();
-  }, [currentAnime?.anilist_id, currentEpisodeNumber]);
+  }, [currentAnime?.anilist_id, currentEpisodeNumber, currentEpisodeFansub]);
 
   useEffect(() => {
     const loadPrefs = async () => {
@@ -321,9 +325,10 @@ export default function WatchScreen({ route, navigation }) {
         console.log(`[Bg Scraper Log for Ep ${backgroundTargetEp}]`, data.message);
       } else if (data.type === 'resolved') {
         const resolvedUrl = data.videoUrl;
-        console.log(`[Bg Scraper Ep ${backgroundTargetEp}] Resolved source:`, resolvedUrl);
+        const resolvedFansub = data.fansub || null;
+        console.log(`[Bg Scraper Ep ${backgroundTargetEp}] Resolved source:`, resolvedUrl, `(Fansub: ${resolvedFansub || 'N/A'})`);
         
-        await cacheEpisodeVideoUrl(animeId, backgroundTargetEp, resolvedUrl);
+        await cacheEpisodeVideoUrl(animeId, backgroundTargetEp, resolvedUrl, resolvedFansub);
         console.log(`[Bg Scraper Ep ${backgroundTargetEp}] Cached resolved source in DB.`);
 
         const resolvedEp = backgroundTargetEp;
@@ -468,10 +473,11 @@ export default function WatchScreen({ route, navigation }) {
         }
       } else if (data.type === 'resolved') {
         const resolvedUrl = data.videoUrl;
-        console.log(`[Inline Scraper Ep ${inlineTargetEp}] Resolved source:`, resolvedUrl);
+        const resolvedFansub = data.fansub || null;
+        console.log(`[Inline Scraper Ep ${inlineTargetEp}] Resolved source:`, resolvedUrl, `(Fansub: ${resolvedFansub || 'N/A'})`);
         setInlineResolveProgress(100);
         
-        await cacheEpisodeVideoUrl(animeId, inlineTargetEp, resolvedUrl);
+        await cacheEpisodeVideoUrl(animeId, inlineTargetEp, resolvedUrl, resolvedFansub);
         console.log(`[Inline Scraper Ep ${inlineTargetEp}] Cached resolved source in DB.`);
 
         let finalUrl = resolvedUrl;
@@ -488,6 +494,7 @@ export default function WatchScreen({ route, navigation }) {
         setCurrentEpisodeNumber(inlineTargetEp);
         setCurrentEpisodeTitle(epTitle);
         setCurrentVideoUrl(finalUrl);
+        setCurrentEpisodeFansub(resolvedFansub);
         setCurrentStartAt(0); // Transitioned episode always starts at 0
         
         setIsInlineResolving(false);
