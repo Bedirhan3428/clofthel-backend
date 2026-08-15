@@ -55,6 +55,21 @@ function parseAnimeMainPageHtml(html, defaultSlug = '') {
     if (fullText) description = fullText;
   }
 
+  // 4.5 Fansubs (Fansublar)
+  const fansubs = [];
+  $('dd').each((_, el) => {
+    const txt = $(el).text().trim();
+    if (txt.includes('Fansublar')) {
+      let nextDt = $(el).next('dt');
+      if (nextDt.length) {
+        nextDt.find('li a, a, .post-category').each((_, fEl) => {
+          const fName = $(fEl).text().trim();
+          if (fName && !fansubs.includes(fName)) fansubs.push(fName);
+        });
+      }
+    }
+  });
+
   // 5. Release / Info attributes
   let totalEpStr = '';
   $('dl dt, dl dd').each((_, el) => {
@@ -132,7 +147,9 @@ function parseAnimeMainPageHtml(html, defaultSlug = '') {
     title,
     poster,
     genres,
+    fansubs,
     description,
+    otherNames,
     episodes: episodesMap,
     totalEpisodes: episodeCount,
     slug: defaultSlug
@@ -190,6 +207,7 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null) {
     if (parsedData.poster && !animeDoc.cover_image) animeDoc.cover_image = parsedData.poster;
     if (parsedData.description && !animeDoc.description) animeDoc.description = parsedData.description;
     if (parsedData.genres && (!animeDoc.genres || animeDoc.genres.length === 0)) animeDoc.genres = parsedData.genres;
+    if (parsedData.fansubs && parsedData.fansubs.length > 0) animeDoc.fansubs = parsedData.fansubs;
     if (exactAniList) {
       if (exactAniList.anilist_id) animeDoc.anilist_id = exactAniList.anilist_id;
       if (exactAniList.title_en) animeDoc.orijinal_ad = exactAniList.title_en;
@@ -201,7 +219,7 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null) {
 
     animeDoc.markModified('episodes');
     await animeDoc.save();
-    console.log(`✅ [SelfHealer] Updated Anime "${animeDoc.orijinal_ad || animeDoc.tranimeizle_slug}" (${animeDoc._id}) with ${Object.keys(mergedEpisodes).length} episodes (AniList: ${animeDoc.anilist_id || 'N/A'}).`);
+    console.log(`✅ [SelfHealer] Updated Anime "${animeDoc.orijinal_ad || animeDoc.tranimeizle_slug}" (${animeDoc._id}) with ${Object.keys(mergedEpisodes).length} episodes (AniList: ${animeDoc.anilist_id || 'N/A'}, Fansubs: ${(animeDoc.fansubs || []).join(', ') || 'N/A'}).`);
   } else {
     // Create new anime in DB
     animeDoc = new Anime({
@@ -213,6 +231,7 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null) {
       banner_image: parsedData.poster,
       description: parsedData.description,
       genres: parsedData.genres || [],
+      fansubs: parsedData.fansubs || [],
       total_episodes: parsedData.totalEpisodes || Object.keys(parsedData.episodes).length,
       episodes: parsedData.episodes,
       format: exactAniList?.format || 'TV',
@@ -221,7 +240,7 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null) {
     });
 
     await animeDoc.save();
-    console.log(`✨ [SelfHealer] Created NEW Anime in DB: "${animeDoc.orijinal_ad}" (${animeDoc._id}) with ${parsedData.totalEpisodes} episodes (AniList: ${animeDoc.anilist_id || 'N/A'}).`);
+    console.log(`✨ [SelfHealer] Created NEW Anime in DB: "${animeDoc.orijinal_ad}" (${animeDoc._id}) with ${parsedData.totalEpisodes} episodes (AniList: ${animeDoc.anilist_id || 'N/A'}, Fansubs: ${(animeDoc.fansubs || []).join(', ') || 'N/A'}).`);
   }
 
   // 3. Update OrchestratorState if exists

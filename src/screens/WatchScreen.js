@@ -29,6 +29,7 @@ import { UltraClarityView } from '../../modules/ultra-clarity/src';
 import { getQualitySettings, saveQualitySettings } from '../utils/qualitySettings';
 import { getPlayerPreferences } from '../utils/preferences';
 import { useAlert } from '../context/AlertContext';
+import { syncFansubOffsetsWithBackend, fetchAniSkipTimes } from '../services/aniSkipService';
 
 let WebView = null;
 if (Platform.OS !== 'web') {
@@ -81,6 +82,33 @@ export default function WatchScreen({ route, navigation }) {
   const [currentAnime, setCurrentAnime] = useState(null);
   const [isFixingAnilist, setIsFixingAnilist] = useState(false);
   const [playerPrefs, setPlayerPrefs] = useState(null);
+  const [aniSkipData, setAniSkipData] = useState(null);
+  const [showSkipIntro, setShowSkipIntro] = useState(false);
+  const [fansubOffsetSeconds, setFansubOffsetSeconds] = useState(0);
+
+  useEffect(() => {
+    syncFansubOffsetsWithBackend().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const loadSkipTimes = async () => {
+      if (currentAnime?.anilist_id && currentEpisodeNumber) {
+        try {
+          const skipTimes = await fetchAniSkipTimes(
+            currentAnime.anilist_id,
+            currentEpisodeNumber,
+            0,
+            currentAnime.fansubs || []
+          );
+          setAniSkipData(skipTimes);
+          if (skipTimes?.fansubOffset) {
+            setFansubOffsetSeconds(skipTimes.fansubOffset);
+          }
+        } catch (e) {}
+      }
+    };
+    loadSkipTimes();
+  }, [currentAnime?.anilist_id, currentEpisodeNumber]);
 
   useEffect(() => {
     const loadPrefs = async () => {
@@ -609,6 +637,14 @@ export default function WatchScreen({ route, navigation }) {
 
       if (data.type === 'timeupdate') {
         currentVideoTimeRef.current = data.currentTime;
+        if (aniSkipData?.op) {
+          const { startTime, endTime } = aniSkipData.op;
+          if (data.currentTime >= startTime && data.currentTime <= endTime) {
+            if (!showSkipIntro) setShowSkipIntro(true);
+          } else if (showSkipIntro) {
+            setShowSkipIntro(false);
+          }
+        }
       }
 
       if (data.type === 'playerReady' && startAt > 0) {
@@ -678,6 +714,22 @@ export default function WatchScreen({ route, navigation }) {
                 <Text style={styles.inlineCancelText}>İptal Et</Text>
               </TouchableOpacity>
             </View>
+          )}
+
+          {/* AniSkip Auto/Manual Intro Skip Button with Fansub Offset */}
+          {showSkipIntro && aniSkipData?.op && (
+            <TouchableOpacity
+              activeOpacity={0.8}
+              style={styles.skipIntroButton}
+              onPress={() => {
+                const targetSeek = Math.max(0, (aniSkipData.op.endTime || 0) - 3);
+                sendControlCommand('seekTo', targetSeek);
+                setShowSkipIntro(false);
+              }}
+            >
+              <Ionicons name="play-forward" size={18} color="#000" style={{ marginRight: 6 }} />
+              <Text style={styles.skipIntroText}>İntroyu Geç</Text>
+            </TouchableOpacity>
           )}
           
           {/* Overlay Back Button on Video */}
@@ -2543,5 +2595,27 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: FONT_SIZES.small,
     fontWeight: FONT_WEIGHTS.medium,
+  },
+  skipIntroButton: {
+    position: 'absolute',
+    bottom: 80,
+    right: 25,
+    backgroundColor: '#00E5FF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 25,
+    zIndex: 999,
+    shadowColor: '#00E5FF',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  skipIntroText: {
+    color: '#000',
+    fontSize: FONT_SIZES.body,
+    fontWeight: FONT_WEIGHTS.bold,
   },
 });

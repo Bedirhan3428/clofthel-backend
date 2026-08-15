@@ -21,6 +21,7 @@ const notificationsRouter = require('./routes/notifications');
 const internalRouter = require('./routes/internal');
 const commentsRouter = require('./routes/comments');
 const challengeRouter = require('./routes/challengeRoutes');
+const fansubRouter = require('./routes/fansubRoutes');
 const { verifyRequestSignature } = require('./middleware/authMiddleware');
 
 const app = express();
@@ -111,6 +112,7 @@ app.use('/api/notifications', verifyRequestSignature, notificationsRouter);
 app.use('/api/internal', internalRouter);
 app.use('/api/comments', commentsRouter);
 app.use('/api/v1/challenge', challengeRouter);
+app.use('/api/v1/fansub-offsets', fansubRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {
