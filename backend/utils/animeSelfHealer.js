@@ -2,6 +2,8 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
 
+const { resolveExactAniListId } = require('./anilistSeasonMatcher');
+
 /**
  * Parses the HTML of a tranimeizle.io main anime overview page (e.g. /anime/slug-izle)
  */
@@ -24,6 +26,25 @@ function parseAnimeMainPageHtml(html, defaultSlug = '') {
     const gText = $(el).text().trim();
     if (gText && !genres.includes(gText)) {
       genres.push(gText);
+    }
+  });
+
+  // 3.5 Other Names (Diğer İsimleri) for 100% exact AniList & English title mapping
+  const otherNames = [];
+  $('dd').each((_, el) => {
+    const txt = $(el).text().trim();
+    if (txt.includes('Diğer İsimleri')) {
+      let nextDt = $(el).next('dt');
+      while (nextDt && nextDt.length && nextDt.is('dt')) {
+        const raw = nextDt.text().trim();
+        raw.split(/,\s*|\n/).forEach(n => {
+          const clean = n.trim();
+          if (clean && clean.length > 2 && !otherNames.includes(clean)) {
+            otherNames.push(clean);
+          }
+        });
+        nextDt = nextDt.next('dt');
+      }
     }
   });
 
@@ -147,6 +168,17 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null) {
 
   const cleanSlug = (parsedData.slug || (animeDoc && animeDoc.tranimeizle_slug) || parsedData.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')).replace(/^-|-$/g, '');
 
+  // 0. Resolve Exact Season-Specific AniList ID
+  let exactAniList = null;
+  try {
+    exactAniList = await resolveExactAniListId(parsedData.title, cleanSlug, parsedData.otherNames || []);
+    if (exactAniList) {
+      console.log(`🎯 [SelfHealer] Exact Season AniList Matched: "${exactAniList.title_en}" -> AniList ID: ${exactAniList.anilist_id} (Format: ${exactAniList.format})`);
+    }
+  } catch (aniErr) {
+    console.warn('[SelfHealer] AniList exact match warning:', aniErr.message);
+  }
+
   if (animeDoc) {
     // Update existing anime
     const currentEps = animeDoc.episodes || {};
@@ -158,29 +190,38 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null) {
     if (parsedData.poster && !animeDoc.cover_image) animeDoc.cover_image = parsedData.poster;
     if (parsedData.description && !animeDoc.description) animeDoc.description = parsedData.description;
     if (parsedData.genres && (!animeDoc.genres || animeDoc.genres.length === 0)) animeDoc.genres = parsedData.genres;
-    if (parsedData.title && !animeDoc.orijinal_ad) animeDoc.orijinal_ad = parsedData.title;
+    if (exactAniList) {
+      if (exactAniList.anilist_id) animeDoc.anilist_id = exactAniList.anilist_id;
+      if (exactAniList.title_en) animeDoc.orijinal_ad = exactAniList.title_en;
+      if (exactAniList.format) animeDoc.format = exactAniList.format;
+      if (exactAniList.season_year) animeDoc.season_year = exactAniList.season_year;
+    } else if (parsedData.title && !animeDoc.orijinal_ad) {
+      animeDoc.orijinal_ad = parsedData.title;
+    }
 
     animeDoc.markModified('episodes');
     await animeDoc.save();
-    console.log(`✅ [SelfHealer] Updated Anime "${animeDoc.orijinal_ad || animeDoc.tranimeizle_slug}" (${animeDoc._id}) with ${Object.keys(mergedEpisodes).length} episodes.`);
+    console.log(`✅ [SelfHealer] Updated Anime "${animeDoc.orijinal_ad || animeDoc.tranimeizle_slug}" (${animeDoc._id}) with ${Object.keys(mergedEpisodes).length} episodes (AniList: ${animeDoc.anilist_id || 'N/A'}).`);
   } else {
     // Create new anime in DB
     animeDoc = new Anime({
       _id: (targetAnimeId && mongoose.Types.ObjectId.isValid(targetAnimeId)) ? new mongoose.Types.ObjectId(targetAnimeId) : new mongoose.Types.ObjectId(),
       tranimeizle_slug: cleanSlug.endsWith('-izle') ? cleanSlug : `${cleanSlug}-izle`,
       tranimeizle_url: `https://www.tranimeizle.io/anime/${cleanSlug}`,
-      orijinal_ad: parsedData.title,
+      orijinal_ad: exactAniList?.title_en || parsedData.title,
       cover_image: parsedData.poster,
       banner_image: parsedData.poster,
       description: parsedData.description,
       genres: parsedData.genres || [],
       total_episodes: parsedData.totalEpisodes || Object.keys(parsedData.episodes).length,
       episodes: parsedData.episodes,
-      format: 'TV'
+      format: exactAniList?.format || 'TV',
+      anilist_id: exactAniList?.anilist_id || null,
+      season_year: exactAniList?.season_year || null
     });
 
     await animeDoc.save();
-    console.log(`✨ [SelfHealer] Created NEW Anime in DB: "${animeDoc.orijinal_ad}" (${animeDoc._id}) with ${parsedData.totalEpisodes} episodes.`);
+    console.log(`✨ [SelfHealer] Created NEW Anime in DB: "${animeDoc.orijinal_ad}" (${animeDoc._id}) with ${parsedData.totalEpisodes} episodes (AniList: ${animeDoc.anilist_id || 'N/A'}).`);
   }
 
   // 3. Update OrchestratorState if exists
@@ -197,18 +238,21 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null) {
       const group = titlesMap[cleanKey];
       if (group) {
         let matchedSeason = (group.seasons || []).find(s => String(s.mongo_db_id) === String(animeDoc._id));
-        if (!matchedSeason) {
+        if (matchedSeason) {
+          if (exactAniList?.anilist_id) matchedSeason.anilist_id = exactAniList.anilist_id;
+        } else {
           const nextSeasonNum = (group.seasons || []).length + 1;
           group.seasons.push({
             season_number: nextSeasonNum,
             season_title: parsedData.title || `Season ${nextSeasonNum}`,
-            format: 'TV',
-            mongo_db_id: String(animeDoc._id)
+            format: exactAniList?.format || 'TV',
+            mongo_db_id: String(animeDoc._id),
+            anilist_id: exactAniList?.anilist_id || null
           });
-          stateDoc.markModified('global_titles_map');
-          await stateDoc.save();
-          console.log(`🔗 [SelfHealer] Linked new anime to Orchestrator group "${cleanKey}".`);
         }
+        stateDoc.markModified('global_titles_map');
+        await stateDoc.save();
+        console.log(`🔗 [SelfHealer] Linked new anime to Orchestrator group "${cleanKey}".`);
       }
     }
   } catch (orchErr) {

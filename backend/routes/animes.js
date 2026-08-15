@@ -715,8 +715,10 @@ const failedAnilistSlugs = new Set();
 const genreCache = {};
 const GENRE_CACHE_TTL = 1000 * 60 * 60 * 24; // 24 hours
 
+const { resolveExactAniListId } = require('../utils/anilistSeasonMatcher');
+
 /**
- * Helper: Lazily resolve missing anilist_id from AniList API in the background
+ * Helper: Lazily resolve missing anilist_id from AniList API in the background with season precision
  */
 function lazyResolveAnilistInfo(docs) {
   if (!Array.isArray(docs) || docs.length === 0) return;
@@ -728,56 +730,30 @@ function lazyResolveAnilistInfo(docs) {
       
       try {
         const slugTitle = formatSlugToTitle(doc.tranimeizle_slug);
-        const cleanTitle = slugTitle.replace(/\s+\d+[\s.]*(?:sezon|kisim|part|season).*$/i, '').trim();
         
-        if (cleanTitle && cleanTitle.length > 2) {
-          // Check if we already failed to find this
-          if (failedAnilistSlugs.has(cleanTitle)) continue;
+        if (slugTitle && slugTitle.length > 2) {
+          if (failedAnilistSlugs.has(slugTitle)) continue;
 
-          // Wait 500ms to respect AniList API rate limits
-          await new Promise(resolve => setTimeout(resolve, 500));
+          // Wait 300ms to respect API rate limits
+          await new Promise(resolve => setTimeout(resolve, 300));
           
-          let mediaList = await searchAniListTitles(cleanTitle);
+          const exactMatch = await resolveExactAniListId(doc.orijinal_ad || slugTitle, doc.tranimeizle_slug);
           
-          // Fallback: search with first 3 words of the clean title if no results found
-          if ((!mediaList || mediaList.length === 0) && cleanTitle.split(/\s+/).length > 3) {
-            const fallbackQuery = cleanTitle.split(/\s+/).slice(0, 3).join(' ');
-            mediaList = await searchAniListTitles(fallbackQuery);
-          }
-
-          if (mediaList && mediaList.length > 0) {
-            const docSeason = getBaseSlugAndSeason(doc.tranimeizle_slug).season;
-            
-            // Find a match with correct season number and valid token structure
-            let matched = mediaList.find(m => {
-              const mTitle = m.title?.english || m.title?.romaji;
-              const seasonMatch = getSeasonFromTitle(mTitle) === docSeason;
-              const tokenMatch = isValidMatch(doc.tranimeizle_slug, m.title?.romaji, m.title?.english);
-              return seasonMatch && tokenMatch;
-            });
-            
-            // Fallback to first valid match if none match the season specifically
-            if (!matched) {
-              matched = mediaList.find(m => isValidMatch(doc.tranimeizle_slug, m.title?.romaji, m.title?.english));
-            }
-            
-            const englishTitle = matched.title?.english || matched.title?.romaji;
-            
+          if (exactMatch && exactMatch.anilist_id) {
             await Anime.updateOne(
               { _id: doc._id },
               { 
                 $set: { 
-                  anilist_id: matched.id, 
-                  orijinal_ad: englishTitle,
-                  format: matched.format || 'TV'
+                  anilist_id: exactMatch.anilist_id, 
+                  orijinal_ad: exactMatch.title_en || doc.orijinal_ad,
+                  format: exactMatch.format || doc.format || 'TV',
+                  season_year: exactMatch.season_year || doc.season_year
                 } 
               }
             );
-            console.log(`[Lazy Resolver] Resolved ${doc.tranimeizle_slug} -> AniList ID: ${matched.id}, English Name: ${englishTitle}`);
+            console.log(`[Lazy Resolver] Resolved ${doc.tranimeizle_slug} -> Exact Season AniList ID: ${exactMatch.anilist_id}, English Name: ${exactMatch.title_en}`);
           } else {
-            // Blacklist so we don't spam AniList
-            failedAnilistSlugs.add(cleanTitle);
-            console.log(`[Lazy Resolver] Not found on AniList: ${cleanTitle}. Blacklisted for this session.`);
+            failedAnilistSlugs.add(slugTitle);
           }
         }
       } catch (err) {
