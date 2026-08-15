@@ -1021,3 +1021,37 @@ export async function checkAppUpdate() {
   }
 }
 
+/**
+ * On-demand self-healing: Scrapes anime main overview page on tranimeizle.io and syncs to DB & Orchestrator
+ */
+export async function selfHealAnime(animeId, slug, title, url) {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/animes/self-heal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ animeId, slug, title, url })
+    });
+    return await response.json();
+  } catch (err) {
+    console.error('[selfHealAnime] Error:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Syncs raw scraped HTML from client WebView to DB & Orchestrator
+ */
+export async function syncScrapedAnimeHtml(html, url, slug, animeId) {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/animes/sync-scraped-page`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html, url, slug, animeId })
+    });
+    return await response.json();
+  } catch (err) {
+    console.error('[syncScrapedAnimeHtml] Error:', err);
+    return { success: false, error: err.message };
+  }
+}
+

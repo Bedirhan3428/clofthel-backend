@@ -28,7 +28,7 @@ import {
   FONT_WEIGHTS,
   BORDER_RADIUS,
 } from '../constants/theme';
-import { fetchAnimeDetail, fetchEpisodes, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList } from '../services/api';
+import { fetchAnimeDetail, fetchEpisodes, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList, selfHealAnime } from '../services/api';
 import { useAlert } from '../context/AlertContext';
 import { AuthContext } from '../context/AuthContext';
 
@@ -138,11 +138,33 @@ export default function AnimeDetailScreen({ route, navigation }) {
       if (!cancelled) setLoading(false);
     });
 
-    // 2. Fetch episodes
-    fetchEpisodes(activeMongoId).then(eps => {
+    // 2. Fetch episodes with automated on-demand self-healing
+    fetchEpisodes(activeMongoId).then(async (eps) => {
       if (cancelled) return;
-      setEpisodes(eps || []);
-      setLoadingEpisodes(false);
+      if (eps && eps.length > 0) {
+        setEpisodes(eps);
+        setLoadingEpisodes(false);
+      } else {
+        console.log('[Detail] 0 episodes found. Triggering client-side self-heal for:', initialTitle);
+        const healResult = await selfHealAnime(activeMongoId, anime?.tranimeizle_slug, initialTitle);
+        if (!cancelled) {
+          if (healResult?.success && healResult?.data?.episodes) {
+            const healedEps = Object.keys(healResult.data.episodes).map(key => ({
+              _id: `${healResult.data._id}_${key}`,
+              episode_number: parseInt(key) || 1,
+              episode_title: `Bölüm ${key}`,
+              source_url: healResult.data.episodes[key],
+            })).sort((a, b) => a.episode_number - b.episode_number);
+            setEpisodes(healedEps);
+            if (healResult.data.cover_image && !anime?.cover_image) {
+              setAnime(prev => ({ ...prev, ...healResult.data }));
+            }
+          } else {
+            setEpisodes([]);
+          }
+          setLoadingEpisodes(false);
+        }
+      }
 
       // Animate fade-in
       Animated.timing(fadeAnim, {
@@ -150,9 +172,21 @@ export default function AnimeDetailScreen({ route, navigation }) {
         duration: 400,
         useNativeDriver: true,
       }).start();
-    }).catch(err => {
+    }).catch(async (err) => {
       console.error('[Detail] Error loading episodes:', err);
-      if (!cancelled) setLoadingEpisodes(false);
+      const healResult = await selfHealAnime(activeMongoId, anime?.tranimeizle_slug, initialTitle);
+      if (!cancelled) {
+        if (healResult?.success && healResult?.data?.episodes) {
+          const healedEps = Object.keys(healResult.data.episodes).map(key => ({
+            _id: `${healResult.data._id}_${key}`,
+            episode_number: parseInt(key) || 1,
+            episode_title: `Bölüm ${key}`,
+            source_url: healResult.data.episodes[key],
+          })).sort((a, b) => a.episode_number - b.episode_number);
+          setEpisodes(healedEps);
+        }
+        setLoadingEpisodes(false);
+      }
     });
 
     return () => { cancelled = true; };

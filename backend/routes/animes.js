@@ -1707,6 +1707,21 @@ router.get('/:id/episodes', async (req, res, next) => {
       source_url: epsMap[key],
     })).sort((a, b) => a.episode_number - b.episode_number);
 
+    // If 0 episodes found, trigger On-Demand Self-Healing to scrape main anime overview page
+    if (formattedEpisodes.length === 0) {
+      console.log(`[Episodes Route] 0 episodes found for ${anime.tranimeizle_slug}. Triggering On-Demand Self-Healing...`);
+      const healed = await fetchAndHealAnime(anime.tranimeizle_slug || anime.tranimeizle_url, anime._id, anime.orijinal_ad);
+      if (healed && healed.episodes) {
+        const healedMap = healed.episodes;
+        formattedEpisodes = Object.keys(healedMap).map(key => ({
+          _id: `${healed._id}_${key}`,
+          episode_number: parseInt(key) || 1,
+          episode_title: `Bölüm ${key}`,
+          source_url: healedMap[key],
+        })).sort((a, b) => a.episode_number - b.episode_number);
+      }
+    }
+
     // If it's a Movie or Single-episode content with no parsed episodes map, return a single episode pointing to the main url
     // BUT only for genuinely single-content entries (movies, OVAs, specials), NOT root series pages
     if (formattedEpisodes.length === 0 && anime.tranimeizle_url) {
@@ -2213,13 +2228,65 @@ router.get('/:id/stream-data', async (req, res, next) => {
  * POST /api/animes/reload-orchestrator
  * Reloads the orchestrator state from MongoDB into the server's cache immediately.
  */
-router.post('/reload-orchestrator', async (req, res) => {
+/**
+ * POST /api/animes/self-heal
+ * Triggers on-demand background scrape and sync of main anime overview page
+ */
+const { fetchAndHealAnime, saveScrapedAnimeData, parseAnimeMainPageHtml } = require('../utils/animeSelfHealer');
+
+router.post('/self-heal', async (req, res) => {
   try {
-    await loadOrchestratorMap();
-    res.json({ success: true, message: 'Orchestrator cache successfully reloaded into RAM memory.' });
+    const { animeId, slug, title, url } = req.body;
+    console.log(`[POST /api/animes/self-heal] Request for animeId: ${animeId}, slug: ${slug}, title: ${title}`);
+
+    let healedDoc = await fetchAndHealAnime(slug || url, animeId, title);
+
+    if (healedDoc) {
+      await loadOrchestratorMap();
+      return res.json({
+        success: true,
+        message: 'Anime başarıyla tarandı ve veritabanına kaydedildi.',
+        data: healedDoc
+      });
+    }
+
+    res.status(404).json({ success: false, message: 'Anime ana sayfası taranamadı veya bulunamadı.' });
   } catch (err) {
-    console.error('[POST /api/animes/reload-orchestrator] Error:', err);
-    res.status(500).json({ success: false, error: 'Failed to reload orchestrator cache.' });
+    console.error('[POST /api/animes/self-heal] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/animes/sync-scraped-page
+ * Receives raw HTML of anime overview page from client-side WebView scraper and saves to DB & Orchestrator
+ */
+router.post('/sync-scraped-page', async (req, res) => {
+  try {
+    const { html, url, slug, animeId } = req.body;
+    if (!html) {
+      return res.status(400).json({ success: false, error: 'HTML içeriği gerekli.' });
+    }
+
+    console.log(`[POST /api/animes/sync-scraped-page] Parsing scraped HTML for animeId: ${animeId}, slug: ${slug}`);
+    const parsed = parseAnimeMainPageHtml(html, slug || '');
+
+    if (!parsed || Object.keys(parsed.episodes || {}).length === 0) {
+      return res.status(422).json({ success: false, error: 'HTML içinden bölüm listesi ayıklanamadı.' });
+    }
+
+    const savedDoc = await saveScrapedAnimeData(parsed, animeId);
+    await loadOrchestratorMap();
+
+    res.json({
+      success: true,
+      message: 'Bölümler ve anime bilgisi başarıyla veritabanına ve orkestraya kaydedildi.',
+      totalEpisodes: Object.keys(parsed.episodes).length,
+      data: savedDoc
+    });
+  } catch (err) {
+    console.error('[POST /api/animes/sync-scraped-page] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
