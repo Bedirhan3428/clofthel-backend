@@ -70,30 +70,37 @@ export default function ProfileScreen({ navigation }) {
 
   // Helper to extract a clean title from a URL or raw scraped title
   const extractCleanTitleFromUrl = (urlOrSlug, rawTitle = '') => {
-    let title = (rawTitle || '')
+    const isGeneric = !rawTitle || /^(tranimeizle|anime\s*izle|bağlantı\s*doğrulaması|cloudflare|ana\s*sayfa|yükleniyor|error|404)/i.test(String(rawTitle).trim());
+    let title = (!isGeneric ? rawTitle : '')
       .replace(/\s*\d+\.\s*Bölüm\s*İzle.*$/i, '')
       .replace(/\s*Türkçe\s*(?:Altyazılı|Dublaj)?\s*İzle.*$/i, '')
       .replace(/\s*İzle.*$/i, '')
       .trim();
 
-    if (!title && urlOrSlug) {
-      const slug = String(urlOrSlug)
-        .replace(/^https?:\/\/[^\/]+\/(?:anime\/)?/i, '')
-        .replace(/-(?:\d+)-bolum.*$/i, '')
-        .replace(/-izle.*$/i, '')
-        .replace(/^\/+|\/+$/g, '')
-        .trim();
+    if ((!title || isGeneric) && urlOrSlug) {
+      try {
+        let slug = decodeURIComponent(String(urlOrSlug))
+          .split(/[?#]/)[0]
+          .replace(/^https?:\/\/[^\/]+\/(?:anime\/)?/i, '')
+          .replace(/-(?:\d+)-bolum.*$/i, '')
+          .replace(/-izle.*$/i, '')
+          .replace(/^\/+|\/+$/g, '')
+          .trim();
 
-      if (slug) {
-        title = slug
-          .replace(/-/g, ' ')
-          .replace(/\b(izle|turkce|altyazi|dublaj|full|hd)\b/gi, '')
-          .replace(/\bsezon\b/gi, 'Season')
-          .replace(/\bbolum\b/gi, 'Episode')
-          .replace(/\s+/g, ' ')
-          .trim()
-          .replace(/\b\w/g, c => c.toUpperCase());
-      }
+        if (slug) {
+          title = slug
+            .replace(/-/g, ' ')
+            .replace(/\b(izle|turkce|altyazi|altyazili|dublaj|dublajli|full|hd)\b/gi, '')
+            .replace(/\b(\d+)\.?\s*sezon\b/gi, 'Season $1')
+            .replace(/\bsezon\b/gi, 'Season')
+            .replace(/\b(\d+)\.?\s*kisim\b/gi, 'Part $1')
+            .replace(/\bkisim\b/gi, 'Part')
+            .replace(/\bbolum\b/gi, 'Episode')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/\b\w/g, c => c.toUpperCase());
+        }
+      } catch (e) {}
     }
 
     return title || rawTitle || '';
@@ -692,7 +699,7 @@ export default function ProfileScreen({ navigation }) {
                 onChangeText={(text) => {
                   setAnimeInputUrl(text);
                   const extracted = extractCleanTitleFromUrl(text);
-                  if (extracted && (!animeTitleInput || animeTitleInput.length < 3)) {
+                  if (extracted) {
                     setAnimeTitleInput(extracted);
                   }
                 }}
