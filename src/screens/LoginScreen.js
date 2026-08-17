@@ -13,10 +13,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as WebBrowser from 'expo-web-browser';
-import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { AuthContext } from '../context/AuthContext';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { useAlert } from '../context/AlertContext';
+
+let GoogleSignin = null;
+try {
+  GoogleSignin = require('@react-native-google-signin/google-signin').GoogleSignin;
+} catch (e) {
+  console.warn('[LoginScreen] @react-native-google-signin/google-signin not available in current runtime (e.g. Expo Go).');
+}
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -25,9 +31,13 @@ export default function LoginScreen({ navigation }) {
   const { showAlert } = useAlert();
 
   React.useEffect(() => {
-    GoogleSignin.configure({
-      webClientId: '732024089569-c3cnb2soqe1me7ilp5k714nh7crdgth3.apps.googleusercontent.com',
-    });
+    if (GoogleSignin && typeof GoogleSignin.configure === 'function') {
+      try {
+        GoogleSignin.configure({
+          webClientId: '732024089569-c3cnb2soqe1me7ilp5k714nh7crdgth3.apps.googleusercontent.com',
+        });
+      } catch (e) {}
+    }
   }, []);
 
   const [email, setEmail] = useState('');
@@ -59,6 +69,11 @@ export default function LoginScreen({ navigation }) {
   };
 
   const handleGoogleLogin = async () => {
+    if (!GoogleSignin) {
+      showAlert('Geliştirici Uyarısı', 'Google ile Giriş özelliği standart Expo Go ortamında desteklenmez. Lütfen e-posta/şifre ile giriş yapın veya derlenmiş APK kullanın.');
+      return;
+    }
+
     try {
       setIsLoading(true);
       await GoogleSignin.hasPlayServices();
