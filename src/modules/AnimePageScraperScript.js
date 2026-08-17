@@ -14,18 +14,47 @@ export const animePageScraperInjectedJs = `
       var currentUrl = window.location.href;
       sendToApp({ type: 'page_navigated', url: currentUrl });
 
-      // 1. If on Search Results Page (e.g. /arama?q=... or duckduckgo)
+      // 1. Check for 404 / Sayfa Bulunamadı -> Auto-Search Healing
+      var is404 = document.title.includes('404') || 
+                  document.title.includes('Sayfa Bulunamadı') || 
+                  (document.body && (document.body.innerText.includes('Sayfa bulunamadı') || document.body.innerText.includes('Aradığınız sayfa bulunamadı')));
+
+      if (is404 && !currentUrl.includes('/arama')) {
+        var cleanSlug = currentUrl.replace(/^https?:\/\/[^\/]+\/(?:anime\/)?/i, '').replace(/-izle.*$/i, '').replace(/-/g, ' ').trim();
+        if (cleanSlug) {
+          var searchTarget = 'https://www.tranimeizle.io/arama?q=' + encodeURIComponent(cleanSlug);
+          sendToApp({ type: 'page_404_redirecting', targetUrl: searchTarget });
+          window.location.href = searchTarget;
+          return;
+        }
+      }
+
+      // 2. If on Search Results Page (e.g. /arama?q=... or duckduckgo)
       if (currentUrl.includes('/arama') || currentUrl.includes('duckduckgo') || currentUrl.includes('google')) {
-        var foundLink = null;
-        var links = document.querySelectorAll('a[href*="tranimeizle.io/anime/"], a[href^="/anime/"], a[href*="-izle"]');
+        var links = document.querySelectorAll('a[href*="tranimeizle.io/anime/"], a[href^="/anime/"], a[href*="-izle"], .flx-block[data-href]');
+        var urlParams = new URLSearchParams(window.location.search);
+        var q = (urlParams.get('q') || '').toLowerCase();
+        
+        var candidateLinks = [];
         for (var i = 0; i < links.length; i++) {
-          var href = links[i].getAttribute('href');
+          var href = links[i].getAttribute('data-href') || links[i].getAttribute('href');
           if (href && (href.includes('/anime/') || (href.includes('-izle') && !href.includes('/arama')))) {
-            foundLink = href.startsWith('/') ? 'https://www.tranimeizle.io' + href : href;
-            break;
+            var full = href.startsWith('/') ? 'https://www.tranimeizle.io' + href : href;
+            if (candidateLinks.indexOf(full) === -1) candidateLinks.push(full);
           }
         }
-        if (foundLink) {
+
+        if (candidateLinks.length > 0) {
+          var foundLink = candidateLinks[0];
+          // Smart season/part matching
+          if (q.includes('part 2') || q.includes('2. kisim') || q.includes('2-kisim') || q.includes('2 kısım')) {
+            var part2Link = candidateLinks.find(function(l) { return l.includes('part-2') || l.includes('2-kisim') || l.includes('2-sezon-2'); });
+            if (part2Link) foundLink = part2Link;
+          } else if (q.includes('sezon 2') || q.includes('season 2') || q.includes('2-sezon')) {
+            var s2Link = candidateLinks.find(function(l) { return l.includes('2-sezon') && !l.includes('kisim') && !l.includes('part'); });
+            if (s2Link) foundLink = s2Link;
+          }
+
           sendToApp({ type: 'search_result_found', targetUrl: foundLink });
           window.location.href = foundLink;
           return;
