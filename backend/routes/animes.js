@@ -1552,19 +1552,14 @@ router.get('/sibnet-proxy', async (req, res) => {
  * Tek anime detayı
  */
 router.get('/:id', async (req, res, next) => {
-  const ids = parseIdParam(req.params.id);
-  if (!ids) return next();
+  const { id } = req.params;
+  if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+    return next();
+  }
 
   try {
-    let anime = null;
-    let activeId = null;
-    for (const id of ids) {
-      anime = await Anime.findById(id).lean();
-      if (anime) {
-        activeId = id;
-        break;
-      }
-    }
+    const anime = await Anime.findById(id).lean();
+    const activeId = id;
 
     if (!anime) {
       return res.status(404).json({ success: false, error: 'Anime bulunamadı.' });

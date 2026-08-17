@@ -20,6 +20,7 @@ import { APP_VERSION } from '../constants/config';
 import { Modal, TextInput, Switch } from 'react-native';
 import { animePageScraperInjectedJs } from '../modules/AnimePageScraperScript';
 import { resolveTargetTranimeizleUrl } from '../utils/clientAnimeHealer';
+import * as Clipboard from 'expo-clipboard';
 
 let WebView = null;
 if (Platform.OS !== 'web') {
@@ -46,8 +47,20 @@ export default function ProfileScreen({ navigation }) {
   const [totalEpisodesInput, setTotalEpisodesInput] = useState('');
   const [isAddingAnime, setIsAddingAnime] = useState(false);
   const [scrapeStatusText, setScrapeStatusText] = useState('');
+  const [lastErrorMessage, setLastErrorMessage] = useState(null);
   const [clientScrapeUrl, setClientScrapeUrl] = useState(null);
   const clientWebViewRef = useRef(null);
+
+  const handleCopyError = async () => {
+    if (lastErrorMessage) {
+      try {
+        await Clipboard.setStringAsync(String(lastErrorMessage));
+        Alert.alert('Kopyalandı 📋', 'Hata kodu panoya kopyalandı.');
+      } catch (err) {
+        console.warn('Clipboard copy error:', err);
+      }
+    }
+  };
 
   const fetchProfile = async () => {
     if (user) {
@@ -90,41 +103,51 @@ export default function ProfileScreen({ navigation }) {
 
   const startAddAnimeScrape = async () => {
     if (!animeInputUrl.trim()) {
-      Alert.alert('Uyarı', 'Lütfen bir Tranimeizle linki veya anime adı girin.');
+    const rawInput = animeInputUrl.trim();
+    if (!rawInput) {
+      Alert.alert('Uyarı', 'Lütfen bir anime sayfası linki veya anime adı girin.');
       return;
     }
 
-    const resolvedUrl = resolveTargetTranimeizleUrl(animeInputUrl.trim());
-    if (!resolvedUrl) {
-      Alert.alert('Hata', 'Geçerli bir link veya arama sorgusu oluşturulamadı.');
-      return;
-    }
-
+    setLastErrorMessage(null);
     setIsAddingAnime(true);
-    setScrapeStatusText('Veritabanı kontrol ediliyor (Zaten var mı?)...');
+    setScrapeStatusText('Veritabanı kontrol ediliyor...');
 
     try {
-      const existsCheck = await checkAnimeExistsApi({
-        url: resolvedUrl,
-        slug: animeInputUrl.trim(),
-        title: animeInputUrl.trim()
-      });
-
-      if (existsCheck?.exists && existsCheck.anime) {
+      // 1. Check if already in DB
+      const existsRes = await checkAnimeExistsApi({ url: rawInput, slug: rawInput, title: rawInput });
+      if (existsRes?.exists && existsRes.anime) {
         Alert.alert(
-          'Bilgi',
-          `Bu anime zaten veritabanında mevcut: "${existsCheck.anime.title}" (${existsCheck.anime.total_episodes} Bölüm). Yine de yeniden taransın mı?`,
+          'Anime Zaten Mevcut',
+          `"${existsRes.anime.title}" zaten veritabanında mevcut (${existsRes.anime.total_episodes} Bölüm).\nYine de taranıp güncellensin mi?`,
           [
-            { text: 'İptal', style: 'cancel', onPress: () => { setIsAddingAnime(false); setScrapeStatusText(''); } },
-            { text: 'Yeniden Tara', onPress: () => proceedWithClientScrape(resolvedUrl) }
+            {
+              text: 'İptal',
+              style: 'cancel',
+              onPress: () => {
+                setIsAddingAnime(false);
+                setScrapeStatusText('');
+              }
+            },
+            {
+              text: 'Güncelle',
+              onPress: () => {
+                const targetUrl = resolveTargetTranimeizleUrl(rawInput);
+                proceedWithClientScrape(targetUrl);
+              }
+            }
           ]
         );
         return;
       }
 
-      proceedWithClientScrape(resolvedUrl);
+      // 2. Resolve URL and start client scraping
+      const targetUrl = resolveTargetTranimeizleUrl(rawInput);
+      proceedWithClientScrape(targetUrl);
     } catch (err) {
-      proceedWithClientScrape(resolvedUrl);
+      console.warn('[startAddAnimeScrape] Check error:', err.message);
+      const targetUrl = resolveTargetTranimeizleUrl(rawInput);
+      proceedWithClientScrape(targetUrl);
     }
   };
 
@@ -144,7 +167,9 @@ export default function ProfileScreen({ navigation }) {
       } else if (data.type === 'anime_overview_scraped') {
         const scraped = data.data;
         if (!scraped || Object.keys(scraped.episodes || {}).length === 0) {
-          Alert.alert('Hata', 'Sayfadan bölüm bilgisi ayıklanamadı.');
+          const err = 'Sayfadan bölüm bilgisi ayıklanamadı. (Sayfa yapısı veya Cloudflare engeli)';
+          Alert.alert('Hata', err);
+          setLastErrorMessage(err);
           setIsAddingAnime(false);
           setClientScrapeUrl(null);
           return;
@@ -165,20 +190,26 @@ export default function ProfileScreen({ navigation }) {
           setAnimeInputUrl('');
           setTotalEpisodesInput('');
           setClientScrapeUrl(null);
+          setLastErrorMessage(null);
           setIsAddingAnime(false);
           fetchProfile();
         } else {
-          Alert.alert('Hata', saveRes?.error || 'Anime kaydedilemedi.');
+          const err = saveRes?.error || 'Anime kaydedilemedi.';
+          Alert.alert('Hata', err);
+          setLastErrorMessage(`[POST /client-add-anime error]: ${err}`);
           setIsAddingAnime(false);
           setClientScrapeUrl(null);
         }
       } else if (data.type === 'scraper_error') {
-        Alert.alert('Hata', data.error || 'Tarayıcı hatası.');
+        const err = data.error || 'Tarayıcı hatası.';
+        Alert.alert('Hata', err);
+        setLastErrorMessage(`[WebView Scraper error]: ${err}`);
         setIsAddingAnime(false);
         setClientScrapeUrl(null);
       }
     } catch (err) {
       console.warn('[handleClientScraperMessage] Parse error:', err);
+      setLastErrorMessage(`[JSON Parse error]: ${err.message}`);
     }
   };
 
@@ -489,13 +520,67 @@ export default function ProfileScreen({ navigation }) {
               </View>
             )}
 
+            {/* Live WebView Browser Preview */}
+            {Platform.OS !== 'web' && WebView && clientScrapeUrl && (
+              <View style={styles.liveBrowserBox}>
+                <View style={styles.liveBrowserHeader}>
+                  <Ionicons name="globe-outline" size={14} color={COLORS.accent} style={{ marginRight: 6 }} />
+                  <Text style={styles.liveBrowserTitle} numberOfLines={1}>
+                    Canlı Tarayıcı: {clientScrapeUrl}
+                  </Text>
+                </View>
+                <View style={styles.liveBrowserWebViewContainer}>
+                  <WebView
+                    ref={clientWebViewRef}
+                    source={{ uri: clientScrapeUrl }}
+                    injectedJavaScriptBeforeContentLoaded={animePageScraperInjectedJs}
+                    injectedJavaScript={animePageScraperInjectedJs}
+                    onMessage={handleClientScraperMessage}
+                    javaScriptEnabled={true}
+                    domStorageEnabled={true}
+                    mixedContentMode="always"
+                    mediaPlaybackRequiresUserAction={false}
+                    setSupportMultipleWindows={false}
+                    onError={(e) => {
+                      const err = `WebView Error: ${e.nativeEvent.description || 'Yükleme hatası'}`;
+                      console.warn('[Client Anime Scraper] WebView load error:', err);
+                      setScrapeStatusText(err);
+                      setLastErrorMessage(err);
+                      setIsAddingAnime(false);
+                    }}
+                  />
+                </View>
+              </View>
+            )}
+
+            {/* Error Display with Copy Button */}
+            {lastErrorMessage && (
+              <View style={styles.errorBox}>
+                <View style={styles.errorHeader}>
+                  <Ionicons name="alert-circle" size={18} color={COLORS.error} style={{ marginRight: 6 }} />
+                  <Text style={styles.errorTitle}>Hata Meydana Geldi</Text>
+                </View>
+                <Text style={styles.errorContent} selectable={true}>
+                  {lastErrorMessage}
+                </Text>
+                <TouchableOpacity style={styles.copyErrorBtn} onPress={handleCopyError} activeOpacity={0.8}>
+                  <Ionicons name="copy-outline" size={15} color="#FFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.copyErrorBtnText}>Hata Kodunu Kopyala</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             <View style={styles.addAnimeModalActions}>
               <TouchableOpacity
                 style={styles.addAnimeCancelBtn}
-                onPress={() => { setAddAnimeModalVisible(false); setClientScrapeUrl(null); }}
+                onPress={() => {
+                  setAddAnimeModalVisible(false);
+                  setClientScrapeUrl(null);
+                  setLastErrorMessage(null);
+                }}
                 disabled={isAddingAnime}
               >
-                <Text style={styles.addAnimeCancelBtnText}>İptal</Text>
+                <Text style={styles.addAnimeCancelBtnText}>Kapat</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -550,29 +635,6 @@ export default function ProfileScreen({ navigation }) {
           </View>
         </View>
       </Modal>
-
-      {/* Hidden Client-Side Scraper WebView */}
-      {Platform.OS !== 'web' && WebView && clientScrapeUrl && (
-        <View style={{ width: 1, height: 1, position: 'absolute', opacity: 0.01, pointerEvents: 'none' }}>
-          <WebView
-            ref={clientWebViewRef}
-            source={{ uri: clientScrapeUrl }}
-            injectedJavaScriptBeforeContentLoaded={animePageScraperInjectedJs}
-            injectedJavaScript={animePageScraperInjectedJs}
-            onMessage={handleClientScraperMessage}
-            javaScriptEnabled={true}
-            domStorageEnabled={true}
-            mixedContentMode="always"
-            mediaPlaybackRequiresUserAction={false}
-            setSupportMultipleWindows={false}
-            onError={(e) => {
-              console.warn('[Client Anime Scraper] WebView load error:', e.nativeEvent.description);
-              setScrapeStatusText('Sayfa yüklenirken hata oluştu.');
-              setIsAddingAnime(false);
-            }}
-          />
-        </View>
-      )}
     </SafeAreaView>
   );
 }
@@ -1012,5 +1074,74 @@ const styles = StyleSheet.create({
     color: '#000',
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.bold,
+  },
+
+  // ── Live Browser Preview & Error Styles ─────────
+  liveBrowserBox: {
+    width: '100%',
+    height: 180,
+    backgroundColor: '#000',
+    borderRadius: BORDER_RADIUS.md,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 0, 0.4)',
+    marginVertical: SPACING.sm,
+  },
+  liveBrowserHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.bgElevated,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  liveBrowserTitle: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    flex: 1,
+  },
+  liveBrowserWebViewContainer: {
+    flex: 1,
+    backgroundColor: '#0D0D12',
+  },
+  errorBox: {
+    backgroundColor: 'rgba(255, 59, 48, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 59, 48, 0.4)',
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    marginVertical: SPACING.sm,
+  },
+  errorHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  errorTitle: {
+    color: COLORS.error,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  errorContent: {
+    color: '#FFF',
+    fontSize: 12,
+    lineHeight: 16,
+    marginBottom: SPACING.sm,
+  },
+  copyErrorBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 59, 48, 0.3)',
+    borderWidth: 1,
+    borderColor: COLORS.error,
+    paddingVertical: 8,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  copyErrorBtnText: {
+    color: '#FFF',
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.semibold,
   },
 });

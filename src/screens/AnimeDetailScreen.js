@@ -35,6 +35,7 @@ import { useAlert } from '../context/AlertContext';
 import { AuthContext } from '../context/AuthContext';
 import { animePageScraperInjectedJs } from '../modules/AnimePageScraperScript';
 import { resolveTargetTranimeizleUrl, verifyTitleMatchClient } from '../utils/clientAnimeHealer';
+import * as Clipboard from 'expo-clipboard';
 
 let WebView = null;
 if (Platform.OS !== 'web') {
@@ -111,6 +112,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const [isFixing, setIsFixing] = useState(false);
   const [fixStatusText, setFixStatusText] = useState('');
   const [clientScrapeUrl, setClientScrapeUrl] = useState(null);
+  const [lastErrorMessage, setLastErrorMessage] = useState(null);
+  const [posterTapCount, setPosterTapCount] = useState(0);
+  const posterTapTimerRef = useRef(null);
   const clientWebViewRef = useRef(null);
 
   // Animation
@@ -242,12 +246,39 @@ export default function AnimeDetailScreen({ route, navigation }) {
     }
   };
 
+  const handlePosterTap = () => {
+    const nextCount = posterTapCount + 1;
+    setPosterTapCount(nextCount);
+    if (posterTapTimerRef.current) clearTimeout(posterTapTimerRef.current);
+    posterTapTimerRef.current = setTimeout(() => {
+      setPosterTapCount(0);
+    }, 2500);
+
+    if (nextCount >= 5) {
+      setPosterTapCount(0);
+      setLastErrorMessage(null);
+      setIsFixModalVisible(true);
+    }
+  };
+
+  const handleCopyError = async () => {
+    if (lastErrorMessage) {
+      try {
+        await Clipboard.setStringAsync(String(lastErrorMessage));
+        showAlert('Kopyalandı 📋', 'Hata kodu panoya kopyalandı.');
+      } catch (err) {
+        console.warn('Clipboard copy error:', err);
+      }
+    }
+  };
+
   const handleFixOrAddSeason = async () => {
     if (fixMode === 'add_season' && !targetSeasonNum.trim()) {
       showAlert('Uyarı', 'Lütfen eklemek istediğiniz sezon numarasını girin (Örn: 2).');
       return;
     }
 
+    setLastErrorMessage(null);
     setIsFixing(true);
     setFixStatusText(fixMode === 'add_season' ? 'Yeni sezon istemci tarayıcısında açılıyor...' : 'Mevcut sezon istemci tarayıcısında açılıyor...');
 
@@ -257,7 +288,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
     );
 
     if (!resolvedUrl) {
-      showAlert('Hata', 'Geçerli bir link veya arama sorgusu oluşturulamadı.');
+      const err = 'Geçerli bir link veya arama sorgusu oluşturulamadı.';
+      showAlert('Hata', err);
+      setLastErrorMessage(err);
       setIsFixing(false);
       return;
     }
@@ -277,7 +310,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
       } else if (data.type === 'anime_overview_scraped') {
         const scraped = data.data;
         if (!scraped || Object.keys(scraped.episodes || {}).length === 0) {
-          showAlert('Hata', 'Sayfadan bölüm bilgisi ayıklanamadı.');
+          const err = 'Sayfadan bölüm bilgisi ayıklanamadı. (Sayfa yapısı veya Cloudflare engeli)';
+          showAlert('Hata', err);
+          setLastErrorMessage(err);
           setIsFixing(false);
           setClientScrapeUrl(null);
           return;
@@ -295,7 +330,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
         const isMatched = verifyTitleMatchClient(expectedTitles, scrapedTitles);
 
         if (!isMatched) {
-          showAlert('İsim Uyuşmazlığı', `Sayfadaki anime ("${scraped.title}") ile geçerli anime uyuşmuyor.`);
+          const err = `İsim Uyuşmazlığı: Sayfadaki anime ("${scraped.title}") ile geçerli anime ("${mainTitleEn}") uyuşmuyor.`;
+          showAlert('İsim Uyuşmazlığı', err);
+          setLastErrorMessage(err);
           setIsFixing(false);
           setClientScrapeUrl(null);
           return;
@@ -318,6 +355,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
           setTargetSeasonNum('');
           setTotalEpisodesInput('');
           setClientScrapeUrl(null);
+          setLastErrorMessage(null);
           setIsFixing(false);
 
           // Re-fetch detail to reload seasons & episodes immediately
@@ -336,17 +374,22 @@ export default function AnimeDetailScreen({ route, navigation }) {
             }
           }
         } else {
-          showAlert('Hata', saveRes?.error || 'İşlem tamamlanamadı.');
+          const err = saveRes?.error || 'Sunucu kaydetme hatası.';
+          showAlert('Hata', err);
+          setLastErrorMessage(`[POST /client-add-anime error]: ${err}`);
           setIsFixing(false);
           setClientScrapeUrl(null);
         }
       } else if (data.type === 'scraper_error') {
-        showAlert('Hata', data.error || 'Tarayıcı hatası.');
+        const err = data.error || 'Tarayıcı hatası oluştu.';
+        showAlert('Hata', err);
+        setLastErrorMessage(`[WebView Scraper error]: ${err}`);
         setIsFixing(false);
         setClientScrapeUrl(null);
       }
     } catch (err) {
       console.warn('[AnimeDetailScreen client scraper] Parse error:', err);
+      setLastErrorMessage(`[JSON Parse error]: ${err.message}`);
     }
   };
 
@@ -460,13 +503,15 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
           {/* Poster + Title overlay */}
           <View style={styles.headerOverlay}>
-            {coverImage ? (
-              <Image source={{ uri: coverImage }} style={styles.posterImage} contentFit="cover" />
-            ) : (
-              <View style={[styles.posterImage, styles.posterPlaceholder]}>
-                <Ionicons name="image-outline" size={40} color={COLORS.textMuted} />
-              </View>
-            )}
+            <TouchableOpacity activeOpacity={0.85} onPress={handlePosterTap}>
+              {coverImage ? (
+                <Image source={{ uri: coverImage }} style={styles.posterImage} contentFit="cover" />
+              ) : (
+                <View style={[styles.posterImage, styles.posterPlaceholder]}>
+                  <Ionicons name="image-outline" size={40} color={COLORS.textMuted} />
+                </View>
+              )}
+            </TouchableOpacity>
 
             <View style={styles.titleContainer}>
               <Text style={styles.mainTitle} numberOfLines={3}>{mainTitleEn}</Text>
@@ -498,11 +543,6 @@ export default function AnimeDetailScreen({ route, navigation }) {
           <TouchableOpacity style={styles.actionButton} onPress={() => setIsListModalVisible(true)} activeOpacity={0.7}>
             <Ionicons name="list-outline" size={22} color={COLORS.textPrimary} />
             <Text style={styles.actionText}>Listeye Ekle</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={[styles.actionButton, styles.fixActionButton]} onPress={() => setIsFixModalVisible(true)} activeOpacity={0.7}>
-            <Ionicons name="build-outline" size={20} color={COLORS.accent} />
-            <Text style={[styles.actionText, { color: COLORS.accent }]}>Animeyi Düzelt</Text>
           </TouchableOpacity>
         </View>
 
@@ -774,14 +814,68 @@ export default function AnimeDetailScreen({ route, navigation }) {
               </View>
             )}
 
+            {/* Live WebView Browser Preview */}
+            {Platform.OS !== 'web' && WebView && clientScrapeUrl && (
+              <View style={styles.liveBrowserBox}>
+                <View style={styles.liveBrowserHeader}>
+                  <Ionicons name="globe-outline" size={14} color={COLORS.accent} style={{ marginRight: 6 }} />
+                  <Text style={styles.liveBrowserTitle} numberOfLines={1}>
+                    Canlı Tarayıcı: {clientScrapeUrl}
+                  </Text>
+                </View>
+                <View style={styles.liveBrowserWebViewContainer}>
+                  <WebView
+                    ref={clientWebViewRef}
+                    source={{ uri: clientScrapeUrl }}
+                    injectedJavaScriptBeforeContentLoaded={animePageScraperInjectedJs}
+                    injectedJavaScript={animePageScraperInjectedJs}
+                    onMessage={handleClientScraperMessage}
+                    javaScriptEnabled={true}
+                    domStorageEnabled={true}
+                    mixedContentMode="always"
+                    mediaPlaybackRequiresUserAction={false}
+                    setSupportMultipleWindows={false}
+                    onError={(e) => {
+                      const err = `WebView Error: ${e.nativeEvent.description || 'Yükleme hatası'}`;
+                      console.warn('[AnimeDetailScreen client scraper] WebView error:', err);
+                      setFixStatusText(err);
+                      setLastErrorMessage(err);
+                      setIsFixing(false);
+                    }}
+                  />
+                </View>
+              </View>
+            )}
+
+            {/* Error Display with Copy Button */}
+            {lastErrorMessage && (
+              <View style={styles.errorBox}>
+                <View style={styles.errorHeader}>
+                  <Ionicons name="alert-circle" size={18} color={COLORS.error} style={{ marginRight: 6 }} />
+                  <Text style={styles.errorTitle}>Hata Meydana Geldi</Text>
+                </View>
+                <Text style={styles.errorContent} selectable={true}>
+                  {lastErrorMessage}
+                </Text>
+                <TouchableOpacity style={styles.copyErrorBtn} onPress={handleCopyError} activeOpacity={0.8}>
+                  <Ionicons name="copy-outline" size={15} color="#FFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.copyErrorBtnText}>Hata Kodunu Kopyala</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             {/* Modal Action Buttons */}
             <View style={styles.fixModalActions}>
               <TouchableOpacity
                 style={styles.fixCancelBtn}
-                onPress={() => setIsFixModalVisible(false)}
+                onPress={() => {
+                  setIsFixModalVisible(false);
+                  setClientScrapeUrl(null);
+                  setLastErrorMessage(null);
+                }}
                 disabled={isFixing}
               >
-                <Text style={styles.fixCancelBtnText}>İptal</Text>
+                <Text style={styles.fixCancelBtnText}>Kapat</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -790,36 +884,13 @@ export default function AnimeDetailScreen({ route, navigation }) {
                 disabled={isFixing}
               >
                 <Text style={styles.fixSubmitBtnText}>
-                  {fixMode === 'add_season' ? 'Sezonu Ekle & Başlat' : 'Sezonu Düzelt'}
+                  {fixMode === 'add_season' ? 'Sezonu Ekle & Tara' : 'Sezonu Tara & Düzelt'}
                 </Text>
               </TouchableOpacity>
             </View>
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
-
-      {/* Hidden Client-Side Scraper WebView */}
-      {Platform.OS !== 'web' && WebView && clientScrapeUrl && (
-        <View style={{ width: 1, height: 1, position: 'absolute', opacity: 0.01, pointerEvents: 'none' }}>
-          <WebView
-            ref={clientWebViewRef}
-            source={{ uri: clientScrapeUrl }}
-            injectedJavaScriptBeforeContentLoaded={animePageScraperInjectedJs}
-            injectedJavaScript={animePageScraperInjectedJs}
-            onMessage={handleClientScraperMessage}
-            javaScriptEnabled={true}
-            domStorageEnabled={true}
-            mixedContentMode="always"
-            mediaPlaybackRequiresUserAction={false}
-            setSupportMultipleWindows={false}
-            onError={(e) => {
-              console.warn('[AnimeDetailScreen client scraper] WebView error:', e.nativeEvent.description);
-              setFixStatusText('Sayfa yüklenirken hata oluştu.');
-              setIsFixing(false);
-            }}
-          />
-        </View>
-      )}
     </SafeAreaView>
   );
 }
@@ -1343,5 +1414,74 @@ const styles = StyleSheet.create({
     color: '#000',
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.bold,
+  },
+
+  // ── Live Browser Preview & Error Styles ─────────
+  liveBrowserBox: {
+    width: '100%',
+    height: 180,
+    backgroundColor: '#000',
+    borderRadius: BORDER_RADIUS.md,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 0, 0.4)',
+    marginVertical: SPACING.sm,
+  },
+  liveBrowserHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.bgElevated,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  liveBrowserTitle: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    flex: 1,
+  },
+  liveBrowserWebViewContainer: {
+    flex: 1,
+    backgroundColor: '#0D0D12',
+  },
+  errorBox: {
+    backgroundColor: 'rgba(255, 59, 48, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 59, 48, 0.4)',
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    marginVertical: SPACING.sm,
+  },
+  errorHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  errorTitle: {
+    color: COLORS.error,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  errorContent: {
+    color: '#FFF',
+    fontSize: 12,
+    lineHeight: 16,
+    marginBottom: SPACING.sm,
+  },
+  copyErrorBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 59, 48, 0.3)',
+    borderWidth: 1,
+    borderColor: COLORS.error,
+    paddingVertical: 8,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  copyErrorBtnText: {
+    color: '#FFF',
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.semibold,
   },
 });
