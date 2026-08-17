@@ -2281,6 +2281,96 @@ router.post('/:id/fix-season', async (req, res) => {
 });
 
 /**
+ * GET /api/animes/check-exists
+ * Checks if an anime exists in database by slug, URL, or title
+ */
+router.get('/check-exists', async (req, res) => {
+  try {
+    const { slug, title, url } = req.query;
+    let cleanSlug = '';
+
+    if (url) {
+      cleanSlug = url.replace(/^https?:\/\/[^\/]+\/(?:anime\/)?/i, '').replace(/-izle$/i, '').trim();
+    } else if (slug) {
+      cleanSlug = slug.replace(/^anime\//i, '').replace(/-izle$/i, '').trim();
+    }
+
+    const queryConditions = [];
+    if (cleanSlug) {
+      queryConditions.push({ tranimeizle_slug: cleanSlug });
+      queryConditions.push({ tranimeizle_slug: `${cleanSlug}-izle` });
+    }
+    if (title) {
+      queryConditions.push({ orijinal_ad: new RegExp(`^${title.trim()}$`, 'i') });
+      queryConditions.push({ anime_title: new RegExp(`^${title.trim()}$`, 'i') });
+    }
+
+    if (queryConditions.length === 0) {
+      return res.json({ exists: false });
+    }
+
+    const found = await Anime.findOne({ $or: queryConditions }).lean();
+    if (found) {
+      return res.json({
+        exists: true,
+        anime: {
+          _id: found._id,
+          title: found.orijinal_ad || found.anime_title || formatSlugToTitle(found.tranimeizle_slug),
+          total_episodes: found.total_episodes || (found.episodes ? Object.keys(found.episodes).length : 0),
+          format: found.format,
+          tranimeizle_slug: found.tranimeizle_slug,
+          cover_image: found.cover_image
+        }
+      });
+    }
+
+    res.json({ exists: false });
+  } catch (err) {
+    console.error('[GET /api/animes/check-exists] Error:', err.message);
+    res.status(500).json({ exists: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/animes/client-add-anime
+ * Receives completely client-scraped structured anime data and persists to MongoDB Atlas & Orchestrator
+ */
+router.post('/client-add-anime', async (req, res) => {
+  try {
+    const { parsedData, mode, targetAnimeId, targetSeasonNumber, totalEpisodesOverride } = req.body;
+    if (!parsedData || !parsedData.episodes || Object.keys(parsedData.episodes).length === 0) {
+      return res.status(400).json({ success: false, error: 'Geçerli bölüm verisi bulunamadı.' });
+    }
+
+    console.log(`[POST /api/animes/client-add-anime] Saving client-scraped anime "${parsedData.title}" (Mode: ${mode || 'new_anime'}, Season: ${targetSeasonNumber || '1'})`);
+
+    if (totalEpisodesOverride && parseInt(totalEpisodesOverride, 10) > 0) {
+      parsedData.totalEpisodes = parseInt(totalEpisodesOverride, 10);
+    }
+
+    const savedDoc = await saveScrapedAnimeData(
+      parsedData,
+      mode === 'fix_season' ? targetAnimeId : null,
+      targetSeasonNumber
+    );
+
+    await loadOrchestratorMap();
+
+    res.json({
+      success: true,
+      message: mode === 'add_season'
+        ? `Sezon ${targetSeasonNumber || 'yeni'} başarıyla kaydedildi!`
+        : (mode === 'fix_season' ? 'Anime sezonu başarıyla güncellendi!' : 'Yeni anime başarıyla veritabanına eklendi!'),
+      totalEpisodes: Object.keys(parsedData.episodes).length,
+      data: savedDoc
+    });
+  } catch (err) {
+    console.error('[POST /api/animes/client-add-anime] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
  * POST /api/animes/sync-scraped-page
  * Receives raw HTML of anime overview page from client-side WebView scraper and saves to DB & Orchestrator
  */

@@ -1,4 +1,4 @@
-import React, { useContext } from 'react';
+import React, { useContext, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,16 +6,29 @@ import {
   TouchableOpacity,
   ScrollView,
   Image,
-  ActivityIndicator
+  ActivityIndicator,
+  Platform,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { AuthContext } from '../context/AuthContext';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
-import { getProfileData, createCustomList, deleteCustomList, updateAvatar, toggleFavoritesNotificationsApi, toggleListNotificationsApi } from '../services/api';
+import { getProfileData, createCustomList, deleteCustomList, updateAvatar, toggleFavoritesNotificationsApi, toggleListNotificationsApi, checkAnimeExistsApi, clientAddAnimeApi } from '../services/api';
 import { AVATAR_LIST } from '../constants/avatars';
 import { APP_VERSION } from '../constants/config';
 import { Modal, TextInput, Switch } from 'react-native';
+import { animePageScraperInjectedJs } from '../modules/AnimePageScraperScript';
+import { resolveTargetTranimeizleUrl } from '../utils/clientAnimeHealer';
+
+let WebView = null;
+if (Platform.OS !== 'web') {
+  try {
+    WebView = require('react-native-webview').WebView;
+  } catch (e) {
+    console.warn('[ProfileScreen] react-native-webview not available:', e.message);
+  }
+}
 
 export default function ProfileScreen({ navigation }) {
   const { user, logout, updateUserAvatar } = useContext(AuthContext);
@@ -26,6 +39,15 @@ export default function ProfileScreen({ navigation }) {
   const [newListName, setNewListName] = React.useState('');
 
   const [isAvatarModalVisible, setAvatarModalVisible] = React.useState(false);
+
+  // Client-Side Add Anime Modal State
+  const [isAddAnimeModalVisible, setAddAnimeModalVisible] = useState(false);
+  const [animeInputUrl, setAnimeInputUrl] = useState('');
+  const [totalEpisodesInput, setTotalEpisodesInput] = useState('');
+  const [isAddingAnime, setIsAddingAnime] = useState(false);
+  const [scrapeStatusText, setScrapeStatusText] = useState('');
+  const [clientScrapeUrl, setClientScrapeUrl] = useState(null);
+  const clientWebViewRef = useRef(null);
 
   const fetchProfile = async () => {
     if (user) {
@@ -63,6 +85,100 @@ export default function ProfileScreen({ navigation }) {
       setAvatarModalVisible(false);
       updateUserAvatar(imageUrl);
       fetchProfile();
+    }
+  };
+
+  const startAddAnimeScrape = async () => {
+    if (!animeInputUrl.trim()) {
+      Alert.alert('Uyarı', 'Lütfen bir Tranimeizle linki veya anime adı girin.');
+      return;
+    }
+
+    const resolvedUrl = resolveTargetTranimeizleUrl(animeInputUrl.trim());
+    if (!resolvedUrl) {
+      Alert.alert('Hata', 'Geçerli bir link veya arama sorgusu oluşturulamadı.');
+      return;
+    }
+
+    setIsAddingAnime(true);
+    setScrapeStatusText('Veritabanı kontrol ediliyor (Zaten var mı?)...');
+
+    try {
+      const existsCheck = await checkAnimeExistsApi({
+        url: resolvedUrl,
+        slug: animeInputUrl.trim(),
+        title: animeInputUrl.trim()
+      });
+
+      if (existsCheck?.exists && existsCheck.anime) {
+        Alert.alert(
+          'Bilgi',
+          `Bu anime zaten veritabanında mevcut: "${existsCheck.anime.title}" (${existsCheck.anime.total_episodes} Bölüm). Yine de yeniden taransın mı?`,
+          [
+            { text: 'İptal', style: 'cancel', onPress: () => { setIsAddingAnime(false); setScrapeStatusText(''); } },
+            { text: 'Yeniden Tara', onPress: () => proceedWithClientScrape(resolvedUrl) }
+          ]
+        );
+        return;
+      }
+
+      proceedWithClientScrape(resolvedUrl);
+    } catch (err) {
+      proceedWithClientScrape(resolvedUrl);
+    }
+  };
+
+  const proceedWithClientScrape = (url) => {
+    setScrapeStatusText('İstemci tarayıcısı telefonda açılıyor...');
+    setClientScrapeUrl(url);
+  };
+
+  const handleClientScraperMessage = async (event) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+
+      if (data.type === 'page_navigated') {
+        setScrapeStatusText('Sayfa yüklendi, içerik taranıyor...');
+      } else if (data.type === 'search_result_found') {
+        setScrapeStatusText(`Anime bulundu: ${data.targetUrl}`);
+      } else if (data.type === 'anime_overview_scraped') {
+        const scraped = data.data;
+        if (!scraped || Object.keys(scraped.episodes || {}).length === 0) {
+          Alert.alert('Hata', 'Sayfadan bölüm bilgisi ayıklanamadı.');
+          setIsAddingAnime(false);
+          setClientScrapeUrl(null);
+          return;
+        }
+
+        setScrapeStatusText(`"${scraped.title}" için ${scraped.totalEpisodes} bölüm ayıklandı. Kaydediliyor...`);
+
+        const saveRes = await clientAddAnimeApi({
+          parsedData: scraped,
+          mode: 'new_anime',
+          totalEpisodesOverride: totalEpisodesInput.trim() ? parseInt(totalEpisodesInput, 10) : null
+        });
+
+        if (saveRes?.success) {
+          setScrapeStatusText('Başarıyla eklendi! 🎉');
+          Alert.alert('Başarılı 🚀', `"${scraped.title}" başarıyla veritabanına eklendi (${scraped.totalEpisodes} Bölüm)!`);
+          setAddAnimeModalVisible(false);
+          setAnimeInputUrl('');
+          setTotalEpisodesInput('');
+          setClientScrapeUrl(null);
+          setIsAddingAnime(false);
+          fetchProfile();
+        } else {
+          Alert.alert('Hata', saveRes?.error || 'Anime kaydedilemedi.');
+          setIsAddingAnime(false);
+          setClientScrapeUrl(null);
+        }
+      } else if (data.type === 'scraper_error') {
+        Alert.alert('Hata', data.error || 'Tarayıcı hatası.');
+        setIsAddingAnime(false);
+        setClientScrapeUrl(null);
+      }
+    } catch (err) {
+      console.warn('[handleClientScraperMessage] Parse error:', err);
     }
   };
 
@@ -263,6 +379,18 @@ export default function ProfileScreen({ navigation }) {
           )}
 
           <Text style={styles.sectionTitle}>Ayarlar</Text>
+
+          <TouchableOpacity style={[styles.menuItem, styles.addAnimeMenuItem]} onPress={() => setAddAnimeModalVisible(true)}>
+            <View style={[styles.menuIconWrapper, { backgroundColor: 'rgba(255, 107, 0, 0.15)' }]}>
+              <Ionicons name="add-circle" size={20} color={COLORS.accent} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.menuText, { color: COLORS.accent, fontWeight: FONT_WEIGHTS.bold }]}>Yeni Anime Ekle</Text>
+              <Text style={{ color: COLORS.textMuted, fontSize: 11 }}>Tranimeizle linki veya isimle cihazınızda arayıp ekleyin</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={COLORS.accent} />
+          </TouchableOpacity>
+
           <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('AccountSettings')}>
             <View style={styles.menuIconWrapper}>
               <Ionicons name="settings-outline" size={20} color={COLORS.textSecondary} />
@@ -314,6 +442,74 @@ export default function ProfileScreen({ navigation }) {
         </View>
       </Modal>
 
+      {/* Add Anime Modal */}
+      <Modal visible={isAddAnimeModalVisible} transparent animationType="slide" onRequestClose={() => !isAddingAnime && setAddAnimeModalVisible(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => !isAddingAnime && setAddAnimeModalVisible(false)}>
+          <TouchableOpacity activeOpacity={1} style={styles.addAnimeModalCard}>
+            <View style={styles.addAnimeHeader}>
+              <Ionicons name="cloud-download-outline" size={24} color={COLORS.accent} style={{ marginRight: 8 }} />
+              <Text style={styles.modalTitle}>Yeni Anime Ekle</Text>
+            </View>
+
+            <Text style={styles.addAnimeHelpText}>
+              Tranimeizle anime sayfa linkini (Örn: https://www.tranimeizle.io/anime/...) veya doğrudan anime adını girin. Tarama işlemi doğrudan cihazınızdaki tarayıcı motoru üzerinden gerçekleştirilir.
+            </Text>
+
+            <View style={styles.addAnimeInputGroup}>
+              <Text style={styles.addAnimeInputLabel}>Tranimeizle Linki veya Anime Adı</Text>
+              <TextInput
+                style={styles.addAnimeTextInput}
+                placeholder="https://www.tranimeizle.io/anime/... veya Anime Adı"
+                placeholderTextColor={COLORS.textMuted}
+                value={animeInputUrl}
+                onChangeText={setAnimeInputUrl}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!isAddingAnime}
+              />
+            </View>
+
+            <View style={styles.addAnimeInputGroup}>
+              <Text style={styles.addAnimeInputLabel}>Toplam Bölüm Sayısı (İsteğe Bağlı)</Text>
+              <TextInput
+                style={styles.addAnimeTextInput}
+                placeholder="Örn: 12 veya 24 (Zorlama için)"
+                placeholderTextColor={COLORS.textMuted}
+                value={totalEpisodesInput}
+                onChangeText={setTotalEpisodesInput}
+                keyboardType="numeric"
+                editable={!isAddingAnime}
+              />
+            </View>
+
+            {isAddingAnime && (
+              <View style={styles.addAnimeProgressBox}>
+                <ActivityIndicator size="small" color={COLORS.accent} style={{ marginRight: 10 }} />
+                <Text style={styles.addAnimeProgressText}>{scrapeStatusText}</Text>
+              </View>
+            )}
+
+            <View style={styles.addAnimeModalActions}>
+              <TouchableOpacity
+                style={styles.addAnimeCancelBtn}
+                onPress={() => { setAddAnimeModalVisible(false); setClientScrapeUrl(null); }}
+                disabled={isAddingAnime}
+              >
+                <Text style={styles.addAnimeCancelBtnText}>İptal</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.addAnimeSubmitBtn, isAddingAnime && styles.addAnimeSubmitBtnDisabled]}
+                onPress={startAddAnimeScrape}
+                disabled={isAddingAnime}
+              >
+                <Text style={styles.addAnimeSubmitBtnText}>Taramayı Başlat & Ekle</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
       {/* Avatar Selection Modal */}
       <Modal visible={isAvatarModalVisible} transparent animationType="slide">
         <View style={styles.avatarModalOverlay}>
@@ -355,6 +551,28 @@ export default function ProfileScreen({ navigation }) {
         </View>
       </Modal>
 
+      {/* Hidden Client-Side Scraper WebView */}
+      {Platform.OS !== 'web' && WebView && clientScrapeUrl && (
+        <View style={{ width: 1, height: 1, position: 'absolute', opacity: 0.01, pointerEvents: 'none' }}>
+          <WebView
+            ref={clientWebViewRef}
+            source={{ uri: clientScrapeUrl }}
+            injectedJavaScriptBeforeContentLoaded={animePageScraperInjectedJs}
+            injectedJavaScript={animePageScraperInjectedJs}
+            onMessage={handleClientScraperMessage}
+            javaScriptEnabled={true}
+            domStorageEnabled={true}
+            mixedContentMode="always"
+            mediaPlaybackRequiresUserAction={false}
+            setSupportMultipleWindows={false}
+            onError={(e) => {
+              console.warn('[Client Anime Scraper] WebView load error:', e.nativeEvent.description);
+              setScrapeStatusText('Sayfa yüklenirken hata oluştu.');
+              setIsAddingAnime(false);
+            }}
+          />
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -696,5 +914,103 @@ const styles = StyleSheet.create({
     color: COLORS.accent,
     fontSize: FONT_SIZES.caption - 2,
     fontWeight: FONT_WEIGHTS.bold,
-  }
+  },
+
+  // ── Add Anime Modal Styles ────────────────────────
+  addAnimeMenuItem: {
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 0, 0.3)',
+    backgroundColor: 'rgba(255, 107, 0, 0.05)',
+  },
+  addAnimeModalCard: {
+    width: '100%',
+    backgroundColor: COLORS.bgElevated,
+    borderRadius: BORDER_RADIUS.xl,
+    padding: SPACING.xl,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    ...SHADOWS.card,
+  },
+  addAnimeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+  },
+  addAnimeHelpText: {
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.small,
+    lineHeight: 18,
+    marginBottom: SPACING.lg,
+  },
+  addAnimeInputGroup: {
+    marginBottom: SPACING.md,
+  },
+  addAnimeInputLabel: {
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.medium,
+    marginBottom: 6,
+  },
+  addAnimeTextInput: {
+    backgroundColor: COLORS.bgSecondary,
+    color: '#FFF',
+    borderRadius: BORDER_RADIUS.md,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 12,
+    fontSize: FONT_SIZES.body,
+    borderWidth: 1,
+    borderColor: COLORS.divider,
+  },
+  addAnimeProgressBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 107, 0, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 0, 0.3)',
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    marginVertical: SPACING.sm,
+  },
+  addAnimeProgressText: {
+    color: COLORS.accent,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.medium,
+    flex: 1,
+  },
+  addAnimeModalActions: {
+    flexDirection: 'row',
+    gap: SPACING.md,
+    marginTop: SPACING.lg,
+  },
+  addAnimeCancelBtn: {
+    flex: 1,
+    backgroundColor: COLORS.bgSecondary,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingVertical: 14,
+    borderRadius: BORDER_RADIUS.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addAnimeCancelBtnText: {
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.body,
+    fontWeight: FONT_WEIGHTS.semibold,
+  },
+  addAnimeSubmitBtn: {
+    flex: 2,
+    backgroundColor: COLORS.accent,
+    paddingVertical: 14,
+    borderRadius: BORDER_RADIUS.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addAnimeSubmitBtnDisabled: {
+    opacity: 0.6,
+  },
+  addAnimeSubmitBtnText: {
+    color: '#000',
+    fontSize: FONT_SIZES.body,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
 });

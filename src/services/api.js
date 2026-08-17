@@ -1036,20 +1036,38 @@ export async function selfHealAnime(animeId, slug, title, url) {
 }
 
 /**
- * Fixes current season or Adds new season to an anime with verification and scraping
+ * Checks if anime exists in DB by slug, URL, or title
  */
-export async function fixOrAddAnimeSeasonApi({ animeId, url, mode, targetSeasonNumber, totalEpisodes, searchTitle }) {
+export async function checkAnimeExistsApi({ slug, title, url }) {
   try {
-    const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}/fix-season`, {
+    const params = new URLSearchParams();
+    if (slug) params.append('slug', slug);
+    if (title) params.append('title', title);
+    if (url) params.append('url', url);
+    const response = await apiFetch(`${API_BASE_URL}/animes/check-exists?${params.toString()}`);
+    return await response.json();
+  } catch (err) {
+    console.error('[checkAnimeExistsApi] Error:', err);
+    return { exists: false, error: err.message };
+  }
+}
+
+/**
+ * Saves client-scraped anime directly to MongoDB Atlas & Orchestrator
+ */
+export async function clientAddAnimeApi({ parsedData, mode, targetAnimeId, targetSeasonNumber, totalEpisodesOverride }) {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/animes/client-add-anime`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, mode, targetSeasonNumber, totalEpisodes, searchTitle })
+      body: JSON.stringify({ parsedData, mode, targetAnimeId, targetSeasonNumber, totalEpisodesOverride })
     });
     return await response.json();
   } catch (err) {
-    console.error('[fixOrAddAnimeSeasonApi] Error:', err);
+    console.error('[clientAddAnimeApi] Error:', err);
     return { success: false, error: err.message || 'Sunucu bağlantı hatası.' };
   }
 }
+
 
 

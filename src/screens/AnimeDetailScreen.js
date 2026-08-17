@@ -18,6 +18,7 @@ import {
   Animated,
   Modal,
   TextInput,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -29,9 +30,20 @@ import {
   FONT_WEIGHTS,
   BORDER_RADIUS,
 } from '../constants/theme';
-import { fetchAnimeDetail, fetchEpisodes, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList, selfHealAnime, fixOrAddAnimeSeasonApi } from '../services/api';
+import { fetchAnimeDetail, fetchEpisodes, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList, selfHealAnime, fixOrAddAnimeSeasonApi, clientAddAnimeApi } from '../services/api';
 import { useAlert } from '../context/AlertContext';
 import { AuthContext } from '../context/AuthContext';
+import { animePageScraperInjectedJs } from '../modules/AnimePageScraperScript';
+import { resolveTargetTranimeizleUrl, verifyTitleMatchClient } from '../utils/clientAnimeHealer';
+
+let WebView = null;
+if (Platform.OS !== 'web') {
+  try {
+    WebView = require('react-native-webview').WebView;
+  } catch (e) {
+    console.warn('[AnimeDetailScreen] react-native-webview not available:', e.message);
+  }
+}
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const BANNER_HEIGHT = 320;
@@ -98,6 +110,8 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const [totalEpisodesInput, setTotalEpisodesInput] = useState('');
   const [isFixing, setIsFixing] = useState(false);
   const [fixStatusText, setFixStatusText] = useState('');
+  const [clientScrapeUrl, setClientScrapeUrl] = useState(null);
+  const clientWebViewRef = useRef(null);
 
   // Animation
   const useRefValue = useRef(new Animated.Value(0));
@@ -235,48 +249,104 @@ export default function AnimeDetailScreen({ route, navigation }) {
     }
 
     setIsFixing(true);
-    setFixStatusText(fixMode === 'add_season' ? 'Yeni sezon taranıyor ve doğrulanıyor...' : 'Mevcut sezon taranıyor ve güncelleniyor...');
+    setFixStatusText(fixMode === 'add_season' ? 'Yeni sezon istemci tarayıcısında açılıyor...' : 'Mevcut sezon istemci tarayıcısında açılıyor...');
 
+    const resolvedUrl = resolveTargetTranimeizleUrl(
+      customUrl.trim() || mainTitleEn,
+      fixMode === 'add_season' ? parseInt(targetSeasonNum, 10) : null
+    );
+
+    if (!resolvedUrl) {
+      showAlert('Hata', 'Geçerli bir link veya arama sorgusu oluşturulamadı.');
+      setIsFixing(false);
+      return;
+    }
+
+    setFixStatusText('Sayfa cihazınızda taranıyor...');
+    setClientScrapeUrl(resolvedUrl);
+  };
+
+  const handleClientScraperMessage = async (event) => {
     try {
-      const res = await fixOrAddAnimeSeasonApi({
-        animeId: activeMongoId,
-        url: customUrl.trim() || null,
-        mode: fixMode,
-        targetSeasonNumber: fixMode === 'add_season' ? parseInt(targetSeasonNum, 10) : null,
-        totalEpisodes: totalEpisodesInput.trim() ? parseInt(totalEpisodesInput, 10) : null,
-        searchTitle: mainTitleEn
-      });
+      const data = JSON.parse(event.nativeEvent.data);
 
-      if (res.success) {
-        showAlert('Başarılı 🚀', res.message || 'İşlem başarıyla tamamlandı.');
-        setIsFixModalVisible(false);
-        setCustomUrl('');
-        setTargetSeasonNum('');
-        setTotalEpisodesInput('');
-        
-        // Re-fetch detail to reload seasons & episodes immediately
-        const updated = await fetchAnimeDetail(activeMongoId);
-        if (updated) {
-          setAnime(updated);
-          if (updated.seasons && updated.seasons.length > 0) setSeasons(updated.seasons);
-          if (updated.related_movies_or_ovas) setRelatedMoviesOvas(updated.related_movies_or_ovas);
-          if (updated.episodes) {
-            const epArray = Object.keys(updated.episodes).map(k => ({
-              episode_number: parseInt(k, 10),
-              episode_title: `${k}. Bölüm`,
-              source_url: updated.episodes[k]
-            })).sort((a, b) => a.episode_number - b.episode_number);
-            setEpisodes(epArray);
-          }
+      if (data.type === 'page_navigated') {
+        setFixStatusText('Sayfa yüklendi, bölümler ayıklanıyor...');
+      } else if (data.type === 'search_result_found') {
+        setFixStatusText(`Anime bulundu: ${data.targetUrl}`);
+      } else if (data.type === 'anime_overview_scraped') {
+        const scraped = data.data;
+        if (!scraped || Object.keys(scraped.episodes || {}).length === 0) {
+          showAlert('Hata', 'Sayfadan bölüm bilgisi ayıklanamadı.');
+          setIsFixing(false);
+          setClientScrapeUrl(null);
+          return;
         }
-      } else {
-        showAlert('Hata', res.error || 'İşlem tamamlanamadı.');
+
+        // Verify Title Match
+        const expectedTitles = [
+          mainTitleEn,
+          mainTitleJp,
+          anime?.orijinal_ad,
+          anime?.anime_title,
+          anime?.tranimeizle_slug?.replace(/-izle$/i, '').replace(/-/g, ' ')
+        ];
+        const scrapedTitles = [scraped.title, ...(scraped.otherNames || [])];
+        const isMatched = verifyTitleMatchClient(expectedTitles, scrapedTitles);
+
+        if (!isMatched) {
+          showAlert('İsim Uyuşmazlığı', `Sayfadaki anime ("${scraped.title}") ile geçerli anime uyuşmuyor.`);
+          setIsFixing(false);
+          setClientScrapeUrl(null);
+          return;
+        }
+
+        setFixStatusText(`"${scraped.title}" için ${scraped.totalEpisodes} bölüm ayıklandı. Kaydediliyor...`);
+
+        const saveRes = await clientAddAnimeApi({
+          parsedData: scraped,
+          mode: fixMode,
+          targetAnimeId: activeMongoId,
+          targetSeasonNumber: fixMode === 'add_season' ? parseInt(targetSeasonNum, 10) : null,
+          totalEpisodesOverride: totalEpisodesInput.trim() ? parseInt(totalEpisodesInput, 10) : null
+        });
+
+        if (saveRes?.success) {
+          showAlert('Başarılı 🚀', saveRes.message || 'İşlem başarıyla tamamlandı.');
+          setIsFixModalVisible(false);
+          setCustomUrl('');
+          setTargetSeasonNum('');
+          setTotalEpisodesInput('');
+          setClientScrapeUrl(null);
+          setIsFixing(false);
+
+          // Re-fetch detail to reload seasons & episodes immediately
+          const updated = await fetchAnimeDetail(activeMongoId);
+          if (updated) {
+            setAnime(updated);
+            if (updated.seasons && updated.seasons.length > 0) setSeasons(updated.seasons);
+            if (updated.related_movies_or_ovas) setRelatedMoviesOvas(updated.related_movies_or_ovas);
+            if (updated.episodes) {
+              const epArray = Object.keys(updated.episodes).map(k => ({
+                episode_number: parseInt(k, 10),
+                episode_title: `${k}. Bölüm`,
+                source_url: updated.episodes[k]
+              })).sort((a, b) => a.episode_number - b.episode_number);
+              setEpisodes(epArray);
+            }
+          }
+        } else {
+          showAlert('Hata', saveRes?.error || 'İşlem tamamlanamadı.');
+          setIsFixing(false);
+          setClientScrapeUrl(null);
+        }
+      } else if (data.type === 'scraper_error') {
+        showAlert('Hata', data.error || 'Tarayıcı hatası.');
+        setIsFixing(false);
+        setClientScrapeUrl(null);
       }
     } catch (err) {
-      showAlert('Hata', err.message || 'Sunucu ile bağlantı kurulamadı.');
-    } finally {
-      setIsFixing(false);
-      setFixStatusText('');
+      console.warn('[AnimeDetailScreen client scraper] Parse error:', err);
     }
   };
 
@@ -727,6 +797,29 @@ export default function AnimeDetailScreen({ route, navigation }) {
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+
+      {/* Hidden Client-Side Scraper WebView */}
+      {Platform.OS !== 'web' && WebView && clientScrapeUrl && (
+        <View style={{ width: 1, height: 1, position: 'absolute', opacity: 0.01, pointerEvents: 'none' }}>
+          <WebView
+            ref={clientWebViewRef}
+            source={{ uri: clientScrapeUrl }}
+            injectedJavaScriptBeforeContentLoaded={animePageScraperInjectedJs}
+            injectedJavaScript={animePageScraperInjectedJs}
+            onMessage={handleClientScraperMessage}
+            javaScriptEnabled={true}
+            domStorageEnabled={true}
+            mixedContentMode="always"
+            mediaPlaybackRequiresUserAction={false}
+            setSupportMultipleWindows={false}
+            onError={(e) => {
+              console.warn('[AnimeDetailScreen client scraper] WebView error:', e.nativeEvent.description);
+              setFixStatusText('Sayfa yüklenirken hata oluştu.');
+              setIsFixing(false);
+            }}
+          />
+        </View>
+      )}
     </SafeAreaView>
   );
 }
