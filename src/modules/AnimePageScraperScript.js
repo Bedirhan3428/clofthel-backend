@@ -17,10 +17,10 @@ export const animePageScraperInjectedJs = `
       // 1. If on Search Results Page (e.g. /arama?q=... or duckduckgo)
       if (currentUrl.includes('/arama') || currentUrl.includes('duckduckgo') || currentUrl.includes('google')) {
         var foundLink = null;
-        var links = document.querySelectorAll('a[href*="tranimeizle.io/anime/"], a[href^="/anime/"]');
+        var links = document.querySelectorAll('a[href*="tranimeizle.io/anime/"], a[href^="/anime/"], a[href*="-izle"]');
         for (var i = 0; i < links.length; i++) {
           var href = links[i].getAttribute('href');
-          if (href && (href.includes('/anime/') || href.includes('-izle'))) {
+          if (href && (href.includes('/anime/') || (href.includes('-izle') && !href.includes('/arama')))) {
             foundLink = href.startsWith('/') ? 'https://www.tranimeizle.io' + href : href;
             break;
           }
@@ -32,34 +32,23 @@ export const animePageScraperInjectedJs = `
         }
       }
 
-      // 2. Check if on Single Episode Page (for liveness check)
-      if (currentUrl.includes('-bolum-izle')) {
-        setTimeout(function() {
-          var hasPlayer = document.querySelector('.animeDetail-video, .player, #player, iframe, video, .sourceList') !== null;
-          var epMatch = currentUrl.match(/-(\\d+)-bolum/i);
-          var epNum = epMatch ? parseInt(epMatch[1], 10) : 1;
-          sendToApp({
-            type: 'episode_liveness_verified',
-            url: currentUrl,
-            episodeNumber: epNum,
-            isValid: hasPlayer || document.body.innerText.length > 200
-          });
-        }, 1500);
-        return;
-      }
+      // Universal Anime Scraper (Works on both Overview Pages and Watch/Episode Pages)
+      function scrapeAnyPage() {
+        var currentUrl = window.location.href;
 
-      // 3. Extract Full Anime Overview Page Metadata
-      function scrapeOverviewPage() {
-        var titleEl = document.querySelector('.playlist-title h1, .animeDetail-title, h1');
-        var title = titleEl ? titleEl.innerText.trim() : '';
+        // Title Extraction
+        var titleEl = document.querySelector('.playlist-title h1, .animeDetail-title, .anime-title, .detail-title, h1, h2, h3, h4');
+        var rawTitle = titleEl ? titleEl.innerText.trim() : document.title || '';
+        var title = rawTitle.replace(/\\s*\\d+\\.\\s*Bölüm\\s*İzle.*$/i, '').replace(/\\s*İzle.*$/i, '').trim();
 
-        var posterEl = document.querySelector('.poster img.img-responsive, .poster img, .animeDetail-video img');
+        // Poster Image
+        var posterEl = document.querySelector('.poster img.img-responsive, .poster img, .animeDetail-video img, img.img-responsive, .news-image img');
         var poster = posterEl ? (posterEl.getAttribute('src') || '') : '';
         if (poster.startsWith('//')) poster = 'https:' + poster;
 
         // Genres
         var genres = [];
-        var genreEls = document.querySelectorAll('.tags-inner .genre, .tags-inner a, a[href*="/animeizle/"]');
+        var genreEls = document.querySelectorAll('.tags-inner .genre, .tags-inner a, a[href*="/animeizle/"], .genres a');
         genreEls.forEach(function(el) {
           var gText = el.innerText.trim();
           if (gText && genres.indexOf(gText) === -1) genres.push(gText);
@@ -100,40 +89,55 @@ export const animePageScraperInjectedJs = `
         });
 
         // Description
-        var descEl = document.querySelector('.anime-description, .p-10 p, .animeDetail-desc, .p-10');
+        var descEl = document.querySelector('.animeDetail-text, .post-content, .description, p');
         var description = descEl ? descEl.innerText.trim() : '';
 
-        // Episodes Extraction
+        // Episodes Extraction: Search all possible containers (Links, Buttons, Select options, Dropdowns)
         var episodesMap = {};
-        var epEls = document.querySelectorAll('li.episodeBtn, .animeDetail-items ol li, .animeDetail-playlist ol li');
-        if (epEls.length === 0) {
-          epEls = document.querySelectorAll('a[href*="-bolum"]');
-        }
 
-        epEls.forEach(function(el, idx) {
-          var dataSlug = el.getAttribute('data-slug') || (el.querySelector('[data-slug]') && el.querySelector('[data-slug]').getAttribute('data-slug')) || el.getAttribute('href') || (el.querySelector('a') && el.querySelector('a').getAttribute('href'));
-          var titleText = (el.querySelector('.title, .etitle, span') ? el.querySelector('.title, .etitle, span').innerText.trim() : '') || el.innerText.trim();
+        // Pattern A: All <a href="..."> that contain episode links
+        var allLinks = document.querySelectorAll('a[href*="-bolum"], a[href*="/bolum/"], .btn-bolum, .flx-block, [data-href*="-bolum"]');
+        allLinks.forEach(function(el) {
+          var href = el.getAttribute('data-href') || el.getAttribute('href') || '';
+          if (!href || href === '#' || href.startsWith('javascript:')) return;
 
-          if (dataSlug) {
-            var cleanSlug = dataSlug.replace(/^\\//, '');
-            var epNum = null;
-            var match1 = cleanSlug.match(/-(\\d+)-bolum/i);
-            if (match1) {
-              epNum = parseInt(match1[1], 10);
-            } else {
-              var match2 = titleText.match(/(\\d+)\\.?\\s*(?:bölüm|bolum|ep|episode)/i) || titleText.match(/bölüm\\s*(\\d+)/i) || titleText.match(/^(\\d+)$/);
-              if (match2) {
-                epNum = parseInt(match2[1], 10);
-              } else {
-                epNum = idx + 1;
-              }
-            }
+          var cleanSlug = href.replace(/^https?:\\/\\/[^\\/]+/i, '').replace(/^\\/+/, '').replace(/[?#].*$/, '').trim();
+          var epMatch = cleanSlug.match(/-(?:sezon-)?(\\d+)-bolum/i) || cleanSlug.match(/bolum-(\\d+)/i) || cleanSlug.match(/(\\d+)\\.?-?bolum/i);
 
+          var epNum = null;
+          if (epMatch) {
+            epNum = parseInt(epMatch[1], 10);
+          } else {
+            var textMatch = (el.innerText || '').match(/(\\d+)\\s*\\.?\\s*Bölüm/i) || (el.innerText || '').match(/BÖL\\s*(\\d+)/i);
+            if (textMatch) epNum = parseInt(textMatch[1], 10);
+          }
+
+          if (epNum && !episodesMap[String(epNum)]) {
+            episodesMap[String(epNum)] = cleanSlug.startsWith('http') ? cleanSlug : 'https://www.tranimeizle.io/' + cleanSlug;
+          }
+        });
+
+        // Pattern B: <select> dropdowns (often used on watch pages)
+        var selectOptions = document.querySelectorAll('select option');
+        selectOptions.forEach(function(opt) {
+          var val = opt.getAttribute('value') || '';
+          var text = opt.innerText || '';
+          var epMatch = text.match(/(\\d+)\\s*\\.?\\s*Bölüm/i) || val.match(/-(?:sezon-)?(\\d+)-bolum/i);
+          if (epMatch && val) {
+            var epNum = parseInt(epMatch[1], 10);
             if (epNum && !episodesMap[String(epNum)]) {
-              episodesMap[String(epNum)] = cleanSlug.startsWith('http') ? cleanSlug : 'https://www.tranimeizle.io/' + cleanSlug;
+              var fullEpUrl = val.startsWith('http') ? val : (val.startsWith('/') ? 'https://www.tranimeizle.io' + val : 'https://www.tranimeizle.io/' + val);
+              episodesMap[String(epNum)] = fullEpUrl;
             }
           }
         });
+
+        // Pattern C: If currently on a watch page and only 1 episode is visible
+        if (Object.keys(episodesMap).length === 0 && currentUrl.includes('-bolum-izle')) {
+          var curMatch = currentUrl.match(/-(?:sezon-)?(\\d+)-bolum/i);
+          var curNum = curMatch ? parseInt(curMatch[1], 10) : 1;
+          episodesMap[String(curNum)] = currentUrl;
+        }
 
         var totalEpisodes = Object.keys(episodesMap).length;
 
@@ -141,7 +145,7 @@ export const animePageScraperInjectedJs = `
           type: 'anime_overview_scraped',
           url: currentUrl,
           data: {
-            title: title,
+            title: title || rawTitle,
             poster: poster,
             genres: genres,
             otherNames: otherNames,
@@ -154,12 +158,14 @@ export const animePageScraperInjectedJs = `
         });
       }
 
-      // Run scrape after DOM is ready
+      window.clofthelTriggerScrape = scrapeAnyPage;
+
+      // Auto-run scrape
       if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        setTimeout(scrapeOverviewPage, 800);
+        setTimeout(scrapeAnyPage, 800);
       } else {
         window.addEventListener('DOMContentLoaded', function() {
-          setTimeout(scrapeOverviewPage, 800);
+          setTimeout(scrapeAnyPage, 800);
         });
       }
     } catch (e) {
