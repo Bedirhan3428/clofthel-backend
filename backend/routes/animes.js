@@ -92,10 +92,14 @@ function getCanonicalInfoForDoc(doc) {
 }
 function parseIdParam(idParam) {
   if (!idParam) return null;
-  // Validates standard 24-character hexadecimal ObjectId or a comma-separated list of them
-  const isValid = /^[0-9a-fA-F]{24}(\s*,\s*[0-9a-fA-F]{24})*$/.test(idParam);
-  if (!isValid) return null;
-  return idParam.split(',').map(s => s.trim());
+  try {
+    const decoded = decodeURIComponent(String(idParam));
+    const ids = decoded.split(/[,\s]+/).map(s => s.trim()).filter(s => mongoose.Types.ObjectId.isValid(s));
+    return ids.length > 0 ? ids : null;
+  } catch (e) {
+    const ids = String(idParam).split(/[,\s]+/).map(s => s.trim()).filter(s => mongoose.Types.ObjectId.isValid(s));
+    return ids.length > 0 ? ids : null;
+  }
 }
 
 async function healMissingEpisodes(anime) {
@@ -1552,14 +1556,21 @@ router.get('/sibnet-proxy', async (req, res) => {
  * Tek anime detayı
  */
 router.get('/:id', async (req, res, next) => {
-  const { id } = req.params;
-  if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+  const ids = parseIdParam(req.params.id);
+  if (!ids) {
     return next();
   }
 
   try {
-    const anime = await Anime.findById(id).lean();
-    const activeId = id;
+    let anime = null;
+    let activeId = ids[0];
+    for (const id of ids) {
+      anime = await Anime.findById(id).lean();
+      if (anime) {
+        activeId = id;
+        break;
+      }
+    }
 
     if (!anime) {
       return res.status(404).json({ success: false, error: 'Anime bulunamadı.' });
@@ -1695,11 +1706,15 @@ router.get('/:id', async (req, res, next) => {
  * Anime'nin tüm bölümleri (episodes objesinden parse edilir, episode_number sıralı)
  */
 router.get('/:id/episodes', async (req, res, next) => {
-  const { id } = req.params;
-  if (!id || !mongoose.Types.ObjectId.isValid(id)) return next();
+  const ids = parseIdParam(req.params.id);
+  if (!ids) return next();
 
   try {
-    const anime = await Anime.findById(id).select('episodes tranimeizle_url format tranimeizle_slug').lean();
+    let anime = null;
+    for (const id of ids) {
+      anime = await Anime.findById(id).select('episodes tranimeizle_url format tranimeizle_slug').lean();
+      if (anime) break;
+    }
 
     if (!anime) {
       return res.status(404).json({ success: false, error: 'Anime bulunamadı.' });
@@ -2188,15 +2203,19 @@ router.get('/directory', async (req, res) => {
  * Optimized for the dual-core DetailScreen lazy loading.
  */
 router.get('/:id/stream-data', async (req, res, next) => {
-  const { id } = req.params;
-  if (!mongoose.Types.ObjectId.isValid(id)) {
+  const ids = parseIdParam(req.params.id);
+  if (!ids) {
     return next();
   }
 
   try {
-    const anime = await Anime.findById(id)
-      .select('episodes cover_image banner_image anilist_id description genres average_score total_episodes orijinal_ad format')
-      .lean();
+    let anime = null;
+    for (const id of ids) {
+      anime = await Anime.findById(id)
+        .select('episodes cover_image banner_image anilist_id description genres average_score total_episodes orijinal_ad format')
+        .lean();
+      if (anime) break;
+    }
 
     if (!anime) {
       return res.status(404).json({ success: false, error: 'Anime not found.' });
