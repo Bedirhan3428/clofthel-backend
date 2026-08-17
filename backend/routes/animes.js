@@ -1746,16 +1746,7 @@ router.get('/:id/episodes/:episode_number/video-url', async (req, res, next) => 
 
       if (type === 'aitrvip' || type === 'sibnet-direct') {
         const videoUrl = typeof cached === 'string' ? cached : cached.videoUrl;
-        const isAitrVip = type === 'aitrvip';
         
-        if (typeof cached !== 'string' && ageMs < maxAgeMs) {
-          console.log(`[SUCCESS] Doğrudan akış linki (${type}) DB'de bulundu. Dönülüyor.`);
-          
-          return res.json({
-            success: true,
-            videoUrl: videoUrl,
-            cached: true
-          });
         if (typeof cached !== 'string' && ageMs < maxAgeMs) {
           console.log(`[SUCCESS] Doğrudan akış linki (${type}) DB'de bulundu (Fansub: ${cached.fansub || 'N/A'}). Dönülüyor.`);
           
