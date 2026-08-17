@@ -466,54 +466,170 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null, targetSeas
     console.log(`✨ [SelfHealer] Created NEW Anime in DB: "${animeDoc.orijinal_ad}" (${animeDoc._id}) with ${parsedData.totalEpisodes} episodes (AniList: ${animeDoc.anilist_id || 'N/A'}, Fansubs: ${(animeDoc.fansubs || []).join(', ') || 'N/A'}).`);
   }
 
-  // 5. Update OrchestratorState if exists
+  // 5. Complete OrchestratorState Synchronization (Add Anime, Fix Anime, Add Season)
   try {
-    const stateDoc = await OrchestratorState.findOne({ state_key: 'orchestrator_state' });
-    if (stateDoc && stateDoc.global_titles_map) {
-      const titlesMap = stateDoc.global_titles_map;
-      const cleanKey = cleanSlug
-        .replace(/-izle$/i, '')
-        .replace(/-(?:\d+)-sezon.*/i, '')
-        .replace(/-/g, ' ')
-        .trim();
+    let stateDoc = await OrchestratorState.findOne({ state_key: 'orchestrator_state' });
+    if (!stateDoc) {
+      stateDoc = new OrchestratorState({
+        state_key: 'orchestrator_state',
+        global_titles_map: {},
+        processed_chunks: []
+      });
+    }
 
-      let group = titlesMap[cleanKey];
+    if (!stateDoc.global_titles_map) {
+      stateDoc.global_titles_map = {};
+    }
 
-      // If targetAnimeId provided, also check if target anime is already in a group
-      if (!group && targetAnimeId) {
+    const titlesMap = stateDoc.global_titles_map;
+    
+    // Canonical franchise key calculation
+    const baseCleanTitle = (exactAniList?.title_en || cleanTitle || '')
+      .replace(/[\s:]+(?:season|sezon|part|cour|the final|final|movie|film)\s*\d*/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const cleanKey = (baseCleanTitle || cleanSlug)
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, '')
+      .trim();
+
+    let group = null;
+    let groupKey = cleanKey;
+
+    // A. Search existing group by targetAnimeId
+    if (targetAnimeId) {
+      for (const [k, g] of Object.entries(titlesMap)) {
+        if ((g.seasons || []).some(s => String(s.mongo_db_id) === String(targetAnimeId)) ||
+            (g.related_movies_or_ovas || []).some(m => String(m.mongo_db_id) === String(targetAnimeId))) {
+          group = g;
+          groupKey = k;
+          break;
+        }
+      }
+    }
+
+    // B. Search existing group by animeDoc._id
+    if (!group && animeDoc._id) {
+      for (const [k, g] of Object.entries(titlesMap)) {
+        if ((g.seasons || []).some(s => String(s.mongo_db_id) === String(animeDoc._id)) ||
+            (g.related_movies_or_ovas || []).some(m => String(m.mongo_db_id) === String(animeDoc._id))) {
+          group = g;
+          groupKey = k;
+          break;
+        }
+      }
+    }
+
+    // C. Search existing group by cleanKey or direct key match
+    if (!group) {
+      if (titlesMap[cleanKey]) {
+        group = titlesMap[cleanKey];
+        groupKey = cleanKey;
+      } else {
+        // Partial key search
         for (const [k, g] of Object.entries(titlesMap)) {
-          if ((g.seasons || []).some(s => String(s.mongo_db_id) === String(targetAnimeId))) {
+          if (k === cleanKey || 
+              (g.main_title_en && g.main_title_en.toLowerCase() === baseCleanTitle.toLowerCase()) ||
+              (g.main_title_jp && g.main_title_jp.toLowerCase() === baseCleanTitle.toLowerCase())) {
             group = g;
+            groupKey = k;
             break;
           }
         }
       }
+    }
 
-      if (group) {
-        let matchedSeason = (group.seasons || []).find(s => String(s.mongo_db_id) === String(animeDoc._id));
+    const itemFormat = (exactAniList?.format || animeDoc.format || 'TV').toUpperCase();
+    const isMovieOrOva = ['MOVIE', 'OVA', 'SPECIAL', 'ONA'].includes(itemFormat);
+
+    if (group) {
+      // ── UPDATE EXISTING GROUP / SEASONS / MOVIES ──────────────────
+      if (isMovieOrOva) {
+        if (!group.related_movies_or_ovas) group.related_movies_or_ovas = [];
+        const existingMovie = group.related_movies_or_ovas.find(m => String(m.mongo_db_id) === String(animeDoc._id));
+        if (existingMovie) {
+          existingMovie.title = exactAniList?.title_en || cleanTitle || existingMovie.title;
+          existingMovie.format = itemFormat;
+        } else {
+          group.related_movies_or_ovas.push({
+            title: exactAniList?.title_en || cleanTitle,
+            format: itemFormat,
+            mongo_db_id: String(animeDoc._id)
+          });
+        }
+      } else {
+        if (!group.seasons) group.seasons = [];
+        let matchedSeason = group.seasons.find(s => String(s.mongo_db_id) === String(animeDoc._id));
+        
         if (matchedSeason) {
+          // Edit existing season
           if (exactAniList?.anilist_id) matchedSeason.anilist_id = exactAniList.anilist_id;
           if (exactAniList?.title_en) matchedSeason.season_title = exactAniList.title_en;
           if (targetSeasonNumber) matchedSeason.season_number = parseInt(targetSeasonNumber, 10);
         } else {
-          const nextSeasonNum = targetSeasonNumber ? parseInt(targetSeasonNumber, 10) : ((group.seasons || []).length + 1);
+          // Add new season to existing franchise group
+          const nextSeasonNum = targetSeasonNumber 
+            ? parseInt(targetSeasonNumber, 10) 
+            : (group.seasons.reduce((max, s) => Math.max(max, s.season_number || 0), 0) + 1);
+
           group.seasons.push({
             season_number: nextSeasonNum,
             season_title: exactAniList?.title_en || cleanTitle || `Season ${nextSeasonNum}`,
-            format: exactAniList?.format || 'TV',
+            format: itemFormat,
             mongo_db_id: String(animeDoc._id),
             anilist_id: exactAniList?.anilist_id || null
           });
-          // Sort seasons by season_number
-          group.seasons.sort((a, b) => (a.season_number || 1) - (b.season_number || 1));
         }
-        stateDoc.markModified('global_titles_map');
-        await stateDoc.save();
-        console.log(`🔗 [SelfHealer] Linked anime to Orchestrator group "${group.main_title_en || cleanKey}" as Season ${targetSeasonNumber || 'Next'}.`);
+        // Sort seasons ascending
+        group.seasons.sort((a, b) => (a.season_number || 1) - (b.season_number || 1));
       }
+
+      // Update group canonical titles if improved English title is available
+      if (exactAniList?.title_en && (!group.main_title_en || group.main_title_en.length < 3)) {
+        group.main_title_en = exactAniList.title_en;
+      }
+      if (exactAniList?.title_jp && !group.main_title_jp) {
+        group.main_title_jp = exactAniList.title_jp;
+      }
+
+      console.log(`🔗 [Orchestrator Sync] Successfully updated Orchestrator group "${group.main_title_en || groupKey}" (${group.seasons?.length || 0} seasons, ${group.related_movies_or_ovas?.length || 0} movies/OVAs).`);
+    } else {
+      // ── CREATE BRAND NEW ORCHESTRATOR GROUP ────────────────────────
+      const canonicalTitleEn = exactAniList?.title_en || cleanTitle;
+      const canonicalTitleJp = exactAniList?.title_jp || cleanTitle;
+      const initialSeasonNum = targetSeasonNumber ? parseInt(targetSeasonNumber, 10) : 1;
+
+      titlesMap[groupKey] = {
+        main_title_en: canonicalTitleEn,
+        main_title_jp: canonicalTitleJp,
+        type: itemFormat,
+        seasons: isMovieOrOva ? [] : [
+          {
+            season_number: initialSeasonNum,
+            season_title: canonicalTitleEn,
+            format: itemFormat,
+            mongo_db_id: String(animeDoc._id),
+            anilist_id: exactAniList?.anilist_id || null
+          }
+        ],
+        related_movies_or_ovas: isMovieOrOva ? [
+          {
+            title: canonicalTitleEn,
+            format: itemFormat,
+            mongo_db_id: String(animeDoc._id)
+          }
+        ] : []
+      };
+
+      console.log(`✨ [Orchestrator Sync] Created brand NEW Orchestrator group: "${canonicalTitleEn}" [Key: ${groupKey}] in orchestrator_state.`);
     }
+
+    stateDoc.updatedAt = new Date();
+    stateDoc.markModified('global_titles_map');
+    await stateDoc.save();
   } catch (orchErr) {
-    console.warn('[SelfHealer] Orchestrator sync warning:', orchErr.message);
+    console.error('[Orchestrator Sync] Error updating orchestrator_state:', orchErr.message);
   }
 
   return animeDoc;

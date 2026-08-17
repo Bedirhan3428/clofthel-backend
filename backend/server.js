@@ -163,8 +163,11 @@ mongoose
     // IPv4 zorla — Windows'ta Atlas SRV DNS çözümleme hatasını önler
     family: 4,
   })
-  .then(() => {
+  .then(async () => {
     console.log('✅ MongoDB bağlantısı başarılı');
+    if (animesRouter.loadOrchestratorMap) {
+      await animesRouter.loadOrchestratorMap();
+    }
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`🚀 Clofthel API çalışıyor: http://0.0.0.0:${PORT}`);
       console.log(`🔒 Güvenlik: Helmet, CORS, Rate Limiter aktif`);
