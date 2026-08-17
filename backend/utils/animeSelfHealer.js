@@ -581,6 +581,16 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null, targetSeas
             anilist_id: exactAniList?.anilist_id || null
           });
         }
+        // Deduplicate seasons by mongo_db_id
+        const seenMongoIds = new Set();
+        group.seasons = (group.seasons || []).filter(s => {
+          if (!s.mongo_db_id) return false;
+          const idStr = String(s.mongo_db_id);
+          if (seenMongoIds.has(idStr)) return false;
+          seenMongoIds.add(idStr);
+          return true;
+        });
+
         // Sort seasons ascending
         group.seasons.sort((a, b) => (a.season_number || 1) - (b.season_number || 1));
       }
