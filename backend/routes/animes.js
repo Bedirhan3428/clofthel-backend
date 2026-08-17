@@ -2223,7 +2223,7 @@ router.get('/:id/stream-data', async (req, res, next) => {
  * POST /api/animes/self-heal
  * Triggers on-demand background scrape and sync of main anime overview page
  */
-const { fetchAndHealAnime, saveScrapedAnimeData, parseAnimeMainPageHtml } = require('../utils/animeSelfHealer');
+const { fetchAndHealAnime, saveScrapedAnimeData, parseAnimeMainPageHtml, fixOrAddAnimeSeason } = require('../utils/animeSelfHealer');
 
 router.post('/self-heal', async (req, res) => {
   try {
@@ -2245,6 +2245,38 @@ router.post('/self-heal', async (req, res) => {
   } catch (err) {
     console.error('[POST /api/animes/self-heal] Error:', err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/animes/:id/fix-season
+ * Allows user to Fix Current Season or Add a New Season with title verification and last episode check
+ */
+router.post('/:id/fix-season', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { url, mode, targetSeasonNumber, totalEpisodes, searchTitle } = req.body;
+
+    console.log(`[POST /api/animes/:id/fix-season] Action on Anime ${id} | Mode: ${mode || 'fix_season'} | Target Season: ${targetSeasonNumber || 'N/A'}`);
+
+    const result = await fixOrAddAnimeSeason({
+      currentAnimeId: id,
+      url: url || null,
+      mode: mode || 'fix_season',
+      targetSeasonNumber: targetSeasonNumber ? parseInt(targetSeasonNumber, 10) : null,
+      totalEpisodesOverride: totalEpisodes ? parseInt(totalEpisodes, 10) : null,
+      searchTitle: searchTitle || ''
+    });
+
+    await loadOrchestratorMap();
+
+    res.json(result);
+  } catch (err) {
+    console.error(`[POST /api/animes/:id/fix-season] Error:`, err.message);
+    res.status(400).json({
+      success: false,
+      error: err.message || 'Anime sezon işlemi tamamlanamadı.'
+    });
   }
 });
 

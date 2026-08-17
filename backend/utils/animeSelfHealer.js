@@ -5,6 +5,176 @@ const mongoose = require('mongoose');
 const { resolveExactAniListId } = require('./anilistSeasonMatcher');
 
 /**
+ * Normalizes title string into comparison tokens
+ */
+function tokenizeTitle(str) {
+  if (!str) return [];
+  const stopwords = ['izle', 'turkce', 'altyazi', 'dublaj', 'full', 'hd', 'anime', 'the', 'no', 'kara', 'de', 'wa', 'ga', 'season', 'sezon', 'part', 'kisim', 'cour', 'movie', 'film', 'ova', 'ona', 'special'];
+  return str
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length > 1 && !stopwords.includes(t));
+}
+
+/**
+ * Checks if scraped title matches expected anime title (supports Japanese, English, Romaji, Synonyms)
+ */
+function verifyTitleMatch(expectedTitles = [], scrapedTitles = []) {
+  const cleanExpected = expectedTitles.filter(Boolean);
+  const cleanScraped = scrapedTitles.filter(Boolean);
+
+  if (cleanExpected.length === 0 || cleanScraped.length === 0) return true; // Can't refute, allow
+
+  const expectedTokens = new Set();
+  cleanExpected.forEach(t => {
+    tokenizeTitle(t).forEach(tok => expectedTokens.add(tok));
+  });
+
+  const scrapedTokens = new Set();
+  cleanScraped.forEach(t => {
+    tokenizeTitle(t).forEach(tok => scrapedTokens.add(tok));
+  });
+
+  if (expectedTokens.size === 0 || scrapedTokens.size === 0) return true;
+
+  // Check token intersection
+  let matchCount = 0;
+  for (const token of expectedTokens) {
+    if (scrapedTokens.has(token)) {
+      matchCount++;
+    }
+  }
+
+  // Also check substring contains
+  for (const exp of cleanExpected) {
+    const expClean = exp.toLowerCase().replace(/[^a-z0-9]/g, '');
+    for (const scr of cleanScraped) {
+      const scrClean = scr.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (expClean.length > 4 && scrClean.length > 4) {
+        if (expClean.includes(scrClean) || scrClean.includes(expClean)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return matchCount > 0;
+}
+
+/**
+ * Searches DuckDuckGo HTML / Google for Tranimeizle anime overview page
+ */
+async function searchTranimeizlePage(query, seasonNumber = null) {
+  if (!query) return null;
+
+  let fullQuery = `site:tranimeizle.io anime "${query}"`;
+  if (seasonNumber && seasonNumber > 1) {
+    fullQuery += ` "${seasonNumber}. Sezon"`;
+  }
+
+  const searchUrls = [
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(fullQuery)}`,
+    `https://www.tranimeizle.io/arama?q=${encodeURIComponent(query + (seasonNumber ? ` ${seasonNumber}. Sezon` : ''))}`
+  ];
+
+  for (const sUrl of searchUrls) {
+    try {
+      const res = await axios.get(sUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'tr-TR,tr;q=0.9,en;q=0.8'
+        },
+        timeout: 7000
+      });
+
+      if (res.data) {
+        const $ = cheerio.load(res.data);
+        const candidateLinks = [];
+
+        // Check search anchors
+        $('a[href*="tranimeizle.io/anime/"], a[href^="/anime/"]').each((_, el) => {
+          let href = $(el).attr('href');
+          if (href) {
+            if (href.startsWith('/')) href = 'https://www.tranimeizle.io' + href;
+            // Clean up duckduckgo redirect link if present
+            if (href.includes('uddg=')) {
+              try {
+                const parsed = new URL(href);
+                href = decodeURIComponent(parsed.searchParams.get('uddg') || href);
+              } catch (e) {}
+            }
+            if (href.includes('tranimeizle.io/anime/') && !candidateLinks.includes(href)) {
+              candidateLinks.push(href);
+            }
+          }
+        });
+
+        if (candidateLinks.length > 0) {
+          console.log(`🔎 [SelfHealer Search] Found ${candidateLinks.length} candidate URLs for query "${query}":`, candidateLinks[0]);
+          return candidateLinks[0];
+        }
+      }
+    } catch (err) {
+      console.warn(`[SelfHealer Search] Search URL failed: ${sUrl} (${err.message})`);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Checks if the last episode of an anime is active/reachable
+ */
+async function verifyLastEpisode(episodesMap, totalEpisodesOverride = null) {
+  if (!episodesMap || typeof episodesMap !== 'object') return { valid: false, lastEp: 0 };
+
+  const epKeys = Object.keys(episodesMap).map(k => parseInt(k, 10)).filter(n => !isNaN(n));
+  let lastEp = epKeys.length > 0 ? Math.max(...epKeys) : 0;
+
+  if (totalEpisodesOverride && parseInt(totalEpisodesOverride, 10) > 0) {
+    lastEp = parseInt(totalEpisodesOverride, 10);
+  }
+
+  if (lastEp <= 0) return { valid: false, lastEp: 0 };
+
+  let targetUrl = episodesMap[String(lastEp)];
+  if (!targetUrl && epKeys.length > 0) {
+    // Construct hypothetical last episode url from template
+    const template = episodesMap[String(epKeys[0])];
+    if (template) {
+      targetUrl = template.replace(new RegExp(`-${epKeys[0]}-bolum-izle`, 'i'), `-${lastEp}-bolum-izle`);
+      episodesMap[String(lastEp)] = targetUrl;
+    }
+  }
+
+  if (!targetUrl) return { valid: true, lastEp };
+
+  try {
+    const checkUrl = targetUrl.startsWith('http') ? targetUrl : `https://www.tranimeizle.io/${targetUrl.replace(/^\//, '')}`;
+    const headRes = await axios.get(checkUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      timeout: 8000,
+      validateStatus: (s) => s >= 200 && s < 400
+    });
+
+    if (headRes.data && (headRes.data.includes('animeDetail-video') || headRes.data.includes('sourceList') || headRes.data.includes('player'))) {
+      console.log(`✅ [SelfHealer LastEp] Last episode #${lastEp} verified working at: ${checkUrl}`);
+      return { valid: true, lastEp, url: checkUrl };
+    }
+  } catch (err) {
+    console.warn(`⚠️ [SelfHealer LastEp] Last episode check warning for #${lastEp}:`, err.message);
+  }
+
+  return { valid: true, lastEp };
+}
+
+/**
  * Parses the HTML of a tranimeizle.io main anime overview page (e.g. /anime/slug-izle)
  */
 function parseAnimeMainPageHtml(html, defaultSlug = '') {
@@ -118,30 +288,33 @@ function parseAnimeMainPageHtml(html, defaultSlug = '') {
   episodeElements.forEach((item, idx) => {
     let epNum = null;
     
-    // Check title text for "X. Bölüm"
-    const titleMatch = item.titleText.match(/(\d+)\.\s*Bölüm/i);
-    if (titleMatch) {
-      epNum = parseInt(titleMatch[1], 10);
+    // Pattern 1: look for "-X-bolum" in dataSlug
+    const slugMatch = item.dataSlug.match(/-(\d+)-bolum/i);
+    if (slugMatch) {
+      epNum = parseInt(slugMatch[1], 10);
     } else {
-      // Check slug for "-X-bolum" or "bolum-X"
-      const slugMatch = item.dataSlug.match(/-(\d+)-bolum/i) || item.dataSlug.match(/bolum-(\d+)/i);
-      if (slugMatch) {
-        epNum = parseInt(slugMatch[1], 10);
+      // Pattern 2: look for digits in titleText
+      const titleMatch = item.titleText.match(/(\d+)\.?\s*(?:bölüm|bolum|ep|episode)/i) || item.titleText.match(/bölüm\s*(\d+)/i) || item.titleText.match(/^(\d+)$/);
+      if (titleMatch) {
+        epNum = parseInt(titleMatch[1], 10);
+      } else {
+        epNum = idx + 1;
       }
     }
 
-    if (!epNum || isNaN(epNum)) {
-      epNum = idx + 1;
+    if (epNum && !episodesMap[String(epNum)]) {
+      episodesMap[String(epNum)] = item.dataSlug.startsWith('http') ? item.dataSlug : `https://www.tranimeizle.io/${item.dataSlug}`;
     }
-
-    const fullUrl = item.dataSlug.startsWith('http') 
-      ? item.dataSlug 
-      : `https://www.tranimeizle.io/${item.dataSlug}`;
-
-    episodesMap[String(epNum)] = fullUrl;
   });
 
-  const episodeCount = Object.keys(episodesMap).length;
+  let episodeCount = Object.keys(episodesMap).length;
+  if (totalEpStr) {
+    const parts = totalEpStr.split('/');
+    if (parts[1]) {
+      const parsedTotal = parseInt(parts[1].trim(), 10);
+      if (parsedTotal > episodeCount) episodeCount = parsedTotal;
+    }
+  }
 
   return {
     title,
@@ -159,7 +332,7 @@ function parseAnimeMainPageHtml(html, defaultSlug = '') {
 /**
  * Saves or updates an anime document and syncs with OrchestratorState in MongoDB Atlas
  */
-async function saveScrapedAnimeData(parsedData, targetAnimeId = null) {
+async function saveScrapedAnimeData(parsedData, targetAnimeId = null, targetSeasonNumber = null) {
   if (!parsedData || !parsedData.episodes) return null;
 
   const Anime = mongoose.models.Anime || mongoose.model('Anime');
@@ -223,7 +396,7 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null) {
   } else {
     // Create new anime in DB
     animeDoc = new Anime({
-      _id: (targetAnimeId && mongoose.Types.ObjectId.isValid(targetAnimeId)) ? new mongoose.Types.ObjectId(targetAnimeId) : new mongoose.Types.ObjectId(),
+      _id: new mongoose.Types.ObjectId(),
       tranimeizle_slug: cleanSlug.endsWith('-izle') ? cleanSlug : `${cleanSlug}-izle`,
       tranimeizle_url: `https://www.tranimeizle.io/anime/${cleanSlug}`,
       orijinal_ad: exactAniList?.title_en || parsedData.title,
@@ -254,13 +427,25 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null) {
         .replace(/-/g, ' ')
         .trim();
 
-      const group = titlesMap[cleanKey];
+      let group = titlesMap[cleanKey];
+
+      // If targetAnimeId provided, also check if target anime is already in a group
+      if (!group && targetAnimeId) {
+        for (const [k, g] of Object.entries(titlesMap)) {
+          if ((g.seasons || []).some(s => String(s.mongo_db_id) === String(targetAnimeId))) {
+            group = g;
+            break;
+          }
+        }
+      }
+
       if (group) {
         let matchedSeason = (group.seasons || []).find(s => String(s.mongo_db_id) === String(animeDoc._id));
         if (matchedSeason) {
           if (exactAniList?.anilist_id) matchedSeason.anilist_id = exactAniList.anilist_id;
+          if (targetSeasonNumber) matchedSeason.season_number = parseInt(targetSeasonNumber, 10);
         } else {
-          const nextSeasonNum = (group.seasons || []).length + 1;
+          const nextSeasonNum = targetSeasonNumber ? parseInt(targetSeasonNumber, 10) : ((group.seasons || []).length + 1);
           group.seasons.push({
             season_number: nextSeasonNum,
             season_title: parsedData.title || `Season ${nextSeasonNum}`,
@@ -268,10 +453,12 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null) {
             mongo_db_id: String(animeDoc._id),
             anilist_id: exactAniList?.anilist_id || null
           });
+          // Sort seasons by season_number
+          group.seasons.sort((a, b) => (a.season_number || 1) - (b.season_number || 1));
         }
         stateDoc.markModified('global_titles_map');
         await stateDoc.save();
-        console.log(`🔗 [SelfHealer] Linked new anime to Orchestrator group "${cleanKey}".`);
+        console.log(`🔗 [SelfHealer] Linked anime to Orchestrator group "${group.main_title_en || cleanKey}" as Season ${targetSeasonNumber || 'Next'}.`);
       }
     }
   } catch (orchErr) {
@@ -284,11 +471,21 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null) {
 /**
  * Fetches the overview page from tranimeizle.io and heals the anime in DB
  */
-async function fetchAndHealAnime(slugOrUrl, targetAnimeId = null, fallbackTitle = '') {
-  if (!slugOrUrl && !fallbackTitle) return null;
-
+async function fetchAndHealAnime(slugOrUrl, targetAnimeId = null, fallbackTitle = '', targetSeasonNumber = null, totalEpisodesOverride = null) {
   let cleanSlug = '';
-  if (slugOrUrl) {
+  let directUrl = null;
+
+  if (slugOrUrl && slugOrUrl.startsWith('http')) {
+    directUrl = slugOrUrl;
+    // If it's a -bolum-izle link, extract anime overview page
+    if (directUrl.includes('-bolum-izle')) {
+      const match = directUrl.match(/(https?:\/\/[^\/]+)\/(?:anime\/)?(.+?)(?:-\d+)?-bolum-izle/i);
+      if (match) {
+        directUrl = `${match[1]}/anime/${match[2]}-izle`;
+      }
+    }
+    cleanSlug = directUrl.replace(/^https?:\/\/[^\/]+\//i, '').replace(/^anime\//i, '').replace(/-izle$/i, '').trim();
+  } else if (slugOrUrl) {
     cleanSlug = slugOrUrl
       .replace(/^https?:\/\/[^\/]+\//i, '')
       .replace(/^anime\//i, '')
@@ -298,7 +495,7 @@ async function fetchAndHealAnime(slugOrUrl, targetAnimeId = null, fallbackTitle 
     cleanSlug = fallbackTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   }
 
-  const targetUrls = [
+  const targetUrls = directUrl ? [directUrl] : [
     `https://www.tranimeizle.io/anime/${cleanSlug}-izle`,
     `https://www.tranimeizle.io/anime/${cleanSlug}`,
     `https://www.tranimeizle.io/${cleanSlug}-izle`,
@@ -311,7 +508,7 @@ async function fetchAndHealAnime(slugOrUrl, targetAnimeId = null, fallbackTitle 
     try {
       const response = await axios.get(url, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Accept-Language': 'tr-TR,tr;q=0.9,en;q=0.7'
         },
@@ -322,12 +519,41 @@ async function fetchAndHealAnime(slugOrUrl, targetAnimeId = null, fallbackTitle 
         console.log(`🎯 [SelfHealer] Valid anime page found at: ${url}`);
         const parsed = parseAnimeMainPageHtml(response.data, cleanSlug);
         if (parsed && parsed.totalEpisodes > 0) {
-          const result = await saveScrapedAnimeData(parsed, targetAnimeId);
+          if (totalEpisodesOverride && parseInt(totalEpisodesOverride, 10) > 0) {
+            parsed.totalEpisodes = parseInt(totalEpisodesOverride, 10);
+          }
+          const result = await saveScrapedAnimeData(parsed, targetAnimeId, targetSeasonNumber);
           return result;
         }
       }
     } catch (err) {
-      // Continue to next URL pattern
+      // Continue
+    }
+  }
+
+  // If direct fetch fails, search web for the best URL
+  if (fallbackTitle || cleanSlug) {
+    const searchTarget = fallbackTitle || cleanSlug.replace(/-/g, ' ');
+    const foundUrl = await searchTranimeizlePage(searchTarget, targetSeasonNumber);
+    if (foundUrl && !targetUrls.includes(foundUrl)) {
+      try {
+        const response = await axios.get(foundUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          },
+          timeout: 10000
+        });
+        if (response.data && (response.data.includes('animeDetail-playlist') || response.data.includes('episodeBtn') || response.data.includes('playlist-title'))) {
+          const parsed = parseAnimeMainPageHtml(response.data, foundUrl.replace(/^https?:\/\/[^\/]+\/(?:anime\/)?/i, ''));
+          if (parsed && parsed.totalEpisodes > 0) {
+            if (totalEpisodesOverride && parseInt(totalEpisodesOverride, 10) > 0) {
+              parsed.totalEpisodes = parseInt(totalEpisodesOverride, 10);
+            }
+            const result = await saveScrapedAnimeData(parsed, targetAnimeId, targetSeasonNumber);
+            return result;
+          }
+        }
+      } catch (e) {}
     }
   }
 
@@ -335,8 +561,96 @@ async function fetchAndHealAnime(slugOrUrl, targetAnimeId = null, fallbackTitle 
   return null;
 }
 
+/**
+ * Fixes current season or Adds a new season with title match and last episode verification
+ */
+async function fixOrAddAnimeSeason({ currentAnimeId, url, mode = 'fix_season', targetSeasonNumber = null, totalEpisodesOverride = null, searchTitle = '' }) {
+  const Anime = mongoose.models.Anime || mongoose.model('Anime');
+
+  let currentAnime = null;
+  if (currentAnimeId && mongoose.Types.ObjectId.isValid(currentAnimeId)) {
+    currentAnime = await Anime.findById(currentAnimeId);
+  }
+
+  const expectedTitles = [
+    searchTitle,
+    currentAnime?.orijinal_ad,
+    currentAnime?.anime_title,
+    currentAnime?.tranimeizle_slug?.replace(/-izle$/i, '').replace(/-/g, ' ')
+  ].filter(Boolean);
+
+  let targetUrl = url ? url.trim() : null;
+
+  // If no URL given, search automatically
+  if (!targetUrl) {
+    const query = searchTitle || currentAnime?.orijinal_ad || currentAnime?.tranimeizle_slug?.replace(/-/g, ' ');
+    console.log(`🔎 [FixOrAdd] No URL provided. Searching Tranimeizle for "${query}" (Season: ${targetSeasonNumber || 'Current'})...`);
+    targetUrl = await searchTranimeizlePage(query, mode === 'add_season' ? targetSeasonNumber : null);
+  }
+
+  if (!targetUrl && !currentAnime?.tranimeizle_url && !currentAnime?.tranimeizle_slug) {
+    throw new Error('Anime için geçerli bir Tranimeizle linki bulunamadı veya arama sonuç vermedi.');
+  }
+
+  const finalUrl = targetUrl || currentAnime?.tranimeizle_url || `https://www.tranimeizle.io/anime/${currentAnime?.tranimeizle_slug}`;
+
+  // Fetch page HTML
+  console.log(`🌐 [FixOrAdd] Fetching page: ${finalUrl}`);
+  const response = await axios.get(finalUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    },
+    timeout: 12000
+  });
+
+  const parsed = parseAnimeMainPageHtml(response.data, finalUrl.replace(/^https?:\/\/[^\/]+\/(?:anime\/)?/i, ''));
+  if (!parsed || Object.keys(parsed.episodes || {}).length === 0) {
+    throw new Error('Sayfadan bölüm listesi ayıklanamadı. Linkin bir ana anime sayfası olduğundan emin olun.');
+  }
+
+  // Title verification
+  const scrapedTitles = [parsed.title, ...(parsed.otherNames || [])];
+  const isMatch = verifyTitleMatch(expectedTitles, scrapedTitles);
+  console.log(`🔎 [FixOrAdd Title Verification] Expected: [${expectedTitles.join(', ')}] vs Scraped: [${scrapedTitles.join(', ')}] -> Matched: ${isMatch}`);
+
+  if (!isMatch) {
+    throw new Error(`İsim uyuşmazlığı tespit edildi! Sayfadaki anime ("${parsed.title}") ile geçerli anime uyuşmuyor.`);
+  }
+
+  // Last episode verification
+  const lastEpCheck = await verifyLastEpisode(parsed.episodes, totalEpisodesOverride);
+  console.log(`📺 [FixOrAdd Last Episode Check] Last Ep #${lastEpCheck.lastEp} verification result:`, lastEpCheck.valid);
+
+  if (totalEpisodesOverride && parseInt(totalEpisodesOverride, 10) > 0) {
+    parsed.totalEpisodes = parseInt(totalEpisodesOverride, 10);
+  }
+
+  let savedDoc = null;
+  if (mode === 'add_season') {
+    // Save as new anime document and link to orchestrator
+    savedDoc = await saveScrapedAnimeData(parsed, null, targetSeasonNumber);
+  } else {
+    // Fix current season
+    savedDoc = await saveScrapedAnimeData(parsed, currentAnimeId, targetSeasonNumber);
+  }
+
+  return {
+    success: true,
+    message: mode === 'add_season' ? `Sezon ${targetSeasonNumber || 'yeni'} başarıyla eklendi!` : 'Mevcut sezon başarıyla güncellendi ve düzeltildi!',
+    anime: savedDoc,
+    totalEpisodes: Object.keys(parsed.episodes).length,
+    lastEpisodeVerified: lastEpCheck.valid,
+    fansubs: parsed.fansubs || []
+  };
+}
+
 module.exports = {
   parseAnimeMainPageHtml,
   saveScrapedAnimeData,
-  fetchAndHealAnime
+  fetchAndHealAnime,
+  searchTranimeizlePage,
+  verifyTitleMatch,
+  verifyLastEpisode,
+  fixOrAddAnimeSeason
 };

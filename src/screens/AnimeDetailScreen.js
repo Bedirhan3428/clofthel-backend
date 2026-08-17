@@ -17,6 +17,7 @@ import {
   FlatList,
   Animated,
   Modal,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -28,7 +29,7 @@ import {
   FONT_WEIGHTS,
   BORDER_RADIUS,
 } from '../constants/theme';
-import { fetchAnimeDetail, fetchEpisodes, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList, selfHealAnime } from '../services/api';
+import { fetchAnimeDetail, fetchEpisodes, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList, selfHealAnime, fixOrAddAnimeSeasonApi } from '../services/api';
 import { useAlert } from '../context/AlertContext';
 import { AuthContext } from '../context/AuthContext';
 
@@ -88,6 +89,15 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const [isFavorite, setIsFavorite] = useState(false);
   const [customLists, setCustomLists] = useState([]);
   const [isListModalVisible, setIsListModalVisible] = useState(false);
+
+  // Fix Season / Add Season Modal State
+  const [isFixModalVisible, setIsFixModalVisible] = useState(false);
+  const [fixMode, setFixMode] = useState('fix_season'); // 'fix_season' | 'add_season'
+  const [customUrl, setCustomUrl] = useState('');
+  const [targetSeasonNum, setTargetSeasonNum] = useState('');
+  const [totalEpisodesInput, setTotalEpisodesInput] = useState('');
+  const [isFixing, setIsFixing] = useState(false);
+  const [fixStatusText, setFixStatusText] = useState('');
 
   // Animation
   const useRefValue = useRef(new Animated.Value(0));
@@ -215,6 +225,58 @@ export default function AnimeDetailScreen({ route, navigation }) {
     const res = await toggleAnimeInList(listId, activeMongoId);
     if (res?.success) {
       setCustomLists(res.customLists);
+    }
+  };
+
+  const handleFixOrAddSeason = async () => {
+    if (fixMode === 'add_season' && !targetSeasonNum.trim()) {
+      showAlert('Uyarı', 'Lütfen eklemek istediğiniz sezon numarasını girin (Örn: 2).');
+      return;
+    }
+
+    setIsFixing(true);
+    setFixStatusText(fixMode === 'add_season' ? 'Yeni sezon taranıyor ve doğrulanıyor...' : 'Mevcut sezon taranıyor ve güncelleniyor...');
+
+    try {
+      const res = await fixOrAddAnimeSeasonApi({
+        animeId: activeMongoId,
+        url: customUrl.trim() || null,
+        mode: fixMode,
+        targetSeasonNumber: fixMode === 'add_season' ? parseInt(targetSeasonNum, 10) : null,
+        totalEpisodes: totalEpisodesInput.trim() ? parseInt(totalEpisodesInput, 10) : null,
+        searchTitle: mainTitleEn
+      });
+
+      if (res.success) {
+        showAlert('Başarılı 🚀', res.message || 'İşlem başarıyla tamamlandı.');
+        setIsFixModalVisible(false);
+        setCustomUrl('');
+        setTargetSeasonNum('');
+        setTotalEpisodesInput('');
+        
+        // Re-fetch detail to reload seasons & episodes immediately
+        const updated = await fetchAnimeDetail(activeMongoId);
+        if (updated) {
+          setAnime(updated);
+          if (updated.seasons && updated.seasons.length > 0) setSeasons(updated.seasons);
+          if (updated.related_movies_or_ovas) setRelatedMoviesOvas(updated.related_movies_or_ovas);
+          if (updated.episodes) {
+            const epArray = Object.keys(updated.episodes).map(k => ({
+              episode_number: parseInt(k, 10),
+              episode_title: `${k}. Bölüm`,
+              source_url: updated.episodes[k]
+            })).sort((a, b) => a.episode_number - b.episode_number);
+            setEpisodes(epArray);
+          }
+        }
+      } else {
+        showAlert('Hata', res.error || 'İşlem tamamlanamadı.');
+      }
+    } catch (err) {
+      showAlert('Hata', err.message || 'Sunucu ile bağlantı kurulamadı.');
+    } finally {
+      setIsFixing(false);
+      setFixStatusText('');
     }
   };
 
@@ -367,6 +429,11 @@ export default function AnimeDetailScreen({ route, navigation }) {
             <Ionicons name="list-outline" size={22} color={COLORS.textPrimary} />
             <Text style={styles.actionText}>Listeye Ekle</Text>
           </TouchableOpacity>
+
+          <TouchableOpacity style={[styles.actionButton, styles.fixActionButton]} onPress={() => setIsFixModalVisible(true)} activeOpacity={0.7}>
+            <Ionicons name="build-outline" size={20} color={COLORS.accent} />
+            <Text style={[styles.actionText, { color: COLORS.accent }]}>Animeyi Düzelt</Text>
+          </TouchableOpacity>
         </View>
 
         {/* ── Description ─────────────────────────────── */}
@@ -476,6 +543,14 @@ export default function AnimeDetailScreen({ route, navigation }) {
             <View style={styles.emptyContainer}>
               <Ionicons name="videocam-off-outline" size={40} color={COLORS.textMuted} />
               <Text style={styles.emptyText}>Bu seçim için bölüm bulunamadı.</Text>
+              <TouchableOpacity
+                style={styles.emptyHealButton}
+                onPress={() => setIsFixModalVisible(true)}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="sparkles-outline" size={18} color="#000" style={{ marginRight: 6 }} />
+                <Text style={styles.emptyHealButtonText}>Animeyi Otomatik Tara & Düzelt</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             <Animated.View style={{ opacity: fadeAnim }}>
@@ -528,6 +603,128 @@ export default function AnimeDetailScreen({ route, navigation }) {
               })
             )}
           </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── Fix & Add Season Modal ────────────────────── */}
+      <Modal
+        visible={isFixModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => !isFixing && setIsFixModalVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => !isFixing && setIsFixModalVisible(false)}
+        >
+          <TouchableOpacity activeOpacity={1} style={styles.fixModalCard}>
+            <View style={styles.fixModalHeader}>
+              <Ionicons name="construct-outline" size={24} color={COLORS.accent} style={{ marginRight: 8 }} />
+              <Text style={styles.modalTitle}>Anime & Sezon Yönetimi</Text>
+            </View>
+
+            {/* Mode Switcher Tabs */}
+            <View style={styles.fixTabRow}>
+              <TouchableOpacity
+                style={[styles.fixTabBtn, fixMode === 'fix_season' && styles.fixTabBtnActive]}
+                onPress={() => setFixMode('fix_season')}
+                disabled={isFixing}
+              >
+                <Ionicons name="sync-outline" size={16} color={fixMode === 'fix_season' ? '#000' : COLORS.textMuted} style={{ marginRight: 6 }} />
+                <Text style={[styles.fixTabText, fixMode === 'fix_season' && styles.fixTabTextActive]}>Sezonu Düzelt</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.fixTabBtn, fixMode === 'add_season' && styles.fixTabBtnActive]}
+                onPress={() => setFixMode('add_season')}
+                disabled={isFixing}
+              >
+                <Ionicons name="add-circle-outline" size={16} color={fixMode === 'add_season' ? '#000' : COLORS.textMuted} style={{ marginRight: 6 }} />
+                <Text style={[styles.fixTabText, fixMode === 'add_season' && styles.fixTabTextActive]}>Yeni Sezon Ekle</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.fixHelpText}>
+              {fixMode === 'add_season'
+                ? 'Bu animeye yeni bir sezon eklemek için linki veya sezon numarasını girin. Link girilmezse anime adı ve sezon numarası otomatik taranacaktır.'
+                : 'Mevcut sezonun linklerini ve bölümlerini yenilemek için linki yapıştırın veya boş bırakarak otomatik onarımı başlatın.'}
+            </Text>
+
+            {/* Season Number Input (Only for Add Season) */}
+            {fixMode === 'add_season' && (
+              <View style={styles.fixInputGroup}>
+                <Text style={styles.fixInputLabel}>Sezon Numarası (Örn: 2, 3)</Text>
+                <TextInput
+                  style={styles.fixTextInput}
+                  placeholder="Örn: 2"
+                  placeholderTextColor={COLORS.textMuted}
+                  value={targetSeasonNum}
+                  onChangeText={setTargetSeasonNum}
+                  keyboardType="numeric"
+                  editable={!isFixing}
+                />
+              </View>
+            )}
+
+            {/* Tranimeizle URL Input */}
+            <View style={styles.fixInputGroup}>
+              <Text style={styles.fixInputLabel}>Tranimeizle Linki (İsteğe Bağlı)</Text>
+              <TextInput
+                style={styles.fixTextInput}
+                placeholder="https://www.tranimeizle.io/anime/..."
+                placeholderTextColor={COLORS.textMuted}
+                value={customUrl}
+                onChangeText={setCustomUrl}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!isFixing}
+              />
+            </View>
+
+            {/* Total Episodes Override Input */}
+            <View style={styles.fixInputGroup}>
+              <Text style={styles.fixInputLabel}>Toplam Bölüm Sayısı (İsteğe Bağlı)</Text>
+              <TextInput
+                style={styles.fixTextInput}
+                placeholder="Örn: 12 veya 24 (Zorlama için)"
+                placeholderTextColor={COLORS.textMuted}
+                value={totalEpisodesInput}
+                onChangeText={setTotalEpisodesInput}
+                keyboardType="numeric"
+                editable={!isFixing}
+              />
+            </View>
+
+            {/* Status Progress */}
+            {isFixing && (
+              <View style={styles.fixProgressBox}>
+                <ActivityIndicator size="small" color={COLORS.accent} style={{ marginRight: 10 }} />
+                <Text style={styles.fixProgressText}>{fixStatusText}</Text>
+              </View>
+            )}
+
+            {/* Modal Action Buttons */}
+            <View style={styles.fixModalActions}>
+              <TouchableOpacity
+                style={styles.fixCancelBtn}
+                onPress={() => setIsFixModalVisible(false)}
+                disabled={isFixing}
+              >
+                <Text style={styles.fixCancelBtnText}>İptal</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.fixSubmitBtn, isFixing && styles.fixSubmitBtnDisabled]}
+                onPress={handleFixOrAddSeason}
+                disabled={isFixing}
+              >
+                <Text style={styles.fixSubmitBtnText}>
+                  {fixMode === 'add_season' ? 'Sezonu Ekle & Başlat' : 'Sezonu Düzelt'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
     </SafeAreaView>
@@ -913,5 +1110,145 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.medium,
+  },
+
+  // ── Fix & Season Management Modal ─────────────────
+  fixActionButton: {
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 0, 0.3)',
+    backgroundColor: 'rgba(255, 107, 0, 0.08)',
+  },
+  emptyHealButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.accent,
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    marginTop: SPACING.lg,
+  },
+  emptyHealButtonText: {
+    color: '#000',
+    fontSize: FONT_SIZES.body,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  fixModalCard: {
+    backgroundColor: COLORS.bgSecondary,
+    borderTopLeftRadius: BORDER_RADIUS.xl,
+    borderTopRightRadius: BORDER_RADIUS.xl,
+    padding: SPACING.xl,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  fixModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+  },
+  fixTabRow: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.bgPrimary,
+    borderRadius: BORDER_RADIUS.md,
+    padding: 4,
+    marginBottom: SPACING.md,
+    gap: 4,
+  },
+  fixTabBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  fixTabBtnActive: {
+    backgroundColor: COLORS.accent,
+  },
+  fixTabText: {
+    color: COLORS.textMuted,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.semibold,
+  },
+  fixTabTextActive: {
+    color: '#000',
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  fixHelpText: {
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.small,
+    lineHeight: 18,
+    marginBottom: SPACING.lg,
+  },
+  fixInputGroup: {
+    marginBottom: SPACING.md,
+  },
+  fixInputLabel: {
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.medium,
+    marginBottom: 6,
+  },
+  fixTextInput: {
+    backgroundColor: COLORS.bgPrimary,
+    color: COLORS.textPrimary,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: BORDER_RADIUS.md,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 12,
+    fontSize: FONT_SIZES.body,
+  },
+  fixProgressBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 107, 0, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 0, 0.3)',
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    marginVertical: SPACING.sm,
+  },
+  fixProgressText: {
+    color: COLORS.accent,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.medium,
+    flex: 1,
+  },
+  fixModalActions: {
+    flexDirection: 'row',
+    gap: SPACING.md,
+    marginTop: SPACING.lg,
+  },
+  fixCancelBtn: {
+    flex: 1,
+    backgroundColor: COLORS.bgPrimary,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingVertical: 14,
+    borderRadius: BORDER_RADIUS.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fixCancelBtnText: {
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.body,
+    fontWeight: FONT_WEIGHTS.semibold,
+  },
+  fixSubmitBtn: {
+    flex: 2,
+    backgroundColor: COLORS.accent,
+    paddingVertical: 14,
+    borderRadius: BORDER_RADIUS.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fixSubmitBtnDisabled: {
+    opacity: 0.6,
+  },
+  fixSubmitBtnText: {
+    color: '#000',
+    fontSize: FONT_SIZES.body,
+    fontWeight: FONT_WEIGHTS.bold,
   },
 });

@@ -1036,19 +1036,20 @@ export async function selfHealAnime(animeId, slug, title, url) {
 }
 
 /**
- * Syncs raw scraped HTML from client WebView to DB & Orchestrator
+ * Fixes current season or Adds new season to an anime with verification and scraping
  */
-export async function syncScrapedAnimeHtml(html, url, slug, animeId) {
+export async function fixOrAddAnimeSeasonApi({ animeId, url, mode, targetSeasonNumber, totalEpisodes, searchTitle }) {
   try {
-    const response = await apiFetch(`${API_BASE_URL}/animes/sync-scraped-page`, {
+    const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}/fix-season`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ html, url, slug, animeId })
+      body: JSON.stringify({ url, mode, targetSeasonNumber, totalEpisodes, searchTitle })
     });
     return await response.json();
   } catch (err) {
-    console.error('[syncScrapedAnimeHtml] Error:', err);
-    return { success: false, error: err.message };
+    console.error('[fixOrAddAnimeSeasonApi] Error:', err);
+    return { success: false, error: err.message || 'Sunucu bağlantı hatası.' };
   }
 }
+
 
