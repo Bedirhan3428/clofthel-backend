@@ -311,6 +311,25 @@ export default function ProfileScreen({ navigation }) {
     }
   };
 
+  const handleRefreshOrchestratorCache = async () => {
+    setIsRefreshingCache(true);
+    try {
+      const res = await forceRefresh();
+      if (res?.success) {
+        Alert.alert(
+          'Orkestra Önbelleği Yenilendi 🎭',
+          `Yerel orkestra ve anime dizini başarıyla güncellendi!\n\nToplam ${res.count} anime başlığı ve sezonu cihazınıza aktarıldı.`
+        );
+      } else {
+        Alert.alert('Bilgi', 'Önbellek güncellendi. (Mevcut dizin boyutu: ' + (directory?.length || 0) + ')');
+      }
+    } catch (err) {
+      Alert.alert('Hata', 'Önbellek güncellenirken bir sorun oluştu: ' + err.message);
+    } finally {
+      setIsRefreshingCache(false);
+    }
+  };
+
   const handleLogout = () => {
     logout();
     navigation.replace('Home');
