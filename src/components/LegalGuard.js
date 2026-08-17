@@ -41,11 +41,12 @@ export default function LegalGuard({ children }) {
   }, [user, user?.hasAcceptedLegal]);
 
   const handleAcceptLegal = async () => {
+    setHasAccepted(true);
     try {
-      const res = await acceptLegal();
-      if (res.success) {
-        setHasAccepted(true);
+      if (user?._id) {
+        await AsyncStorage.setItem(`hasAcceptedLegal_${user._id}`, 'true');
       }
+      await acceptLegal();
     } catch (e) {
       console.warn('Yasal metin kayıt hatası:', e);
     }
