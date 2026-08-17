@@ -1,23 +1,7 @@
-#!/bin/bash
-# ============================================
-# Clofthel Scraper - Termux Auto Setup
-# ============================================
-# Kullanım: Bu scripti Termux'ta çalıştır:
-#   curl -sL https://raw.githubusercontent.com/Bedirhan3428/clofthel-backend/main/scraper-service/termux_setup.sh | bash
-# ============================================
-
-echo "🚀 Clofthel Scraper Termux Kurulumu Başlıyor..."
-
-# 1. Gerekli paketleri kur
-pkg update -y
-pkg install -y nodejs cronie termux-services
-
-# 2. Scraper klasörü oluştur
-SCRAPER_DIR="$HOME/clofthel-scraper"
-mkdir -p "$SCRAPER_DIR"
-
-# 3. Scraper script'ini oluştur
-cat > "$SCRAPER_DIR/scrape.js" << 'SCRIPT_EOF'
+/**
+ * Clofthel Termux Scraper Service (Pure Node.js - Zero External Dependencies)
+ * Scrapes latest anime episodes from tranimeizle.io and syncs with Clofthel Backend Gateway.
+ */
 const https = require('https');
 const http = require('http');
 const zlib = require('zlib');
@@ -42,9 +26,14 @@ const BASE_URL = process.env.SCRAPER_BASE_URL || 'https://www.tranimeizle.io/lis
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://clofthel-backend.onrender.com').replace(/\/+$/, '');
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY || 'K7x!v9P2#L5q*zR9_tM1$wF8&jY3@cB6-sX4%dG8_uH2';
 
+/**
+ * Robust HTTP GET with decompression and redirect follow
+ */
 function fetchUrl(url, redirectCount = 0) {
   return new Promise((resolve, reject) => {
-    if (redirectCount > 5) return reject(new Error('Too many redirects'));
+    if (redirectCount > 5) {
+      return reject(new Error('Too many redirects'));
+    }
 
     const parsed = new URL(url);
     const mod = parsed.protocol === 'https:' ? https : http;
@@ -69,6 +58,7 @@ function fetchUrl(url, redirectCount = 0) {
     };
 
     const req = mod.request(options, (res) => {
+      // Handle HTTP redirects
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         let nextUrl = res.headers.location;
         if (nextUrl.startsWith('/')) {
@@ -77,6 +67,7 @@ function fetchUrl(url, redirectCount = 0) {
         return fetchUrl(nextUrl, redirectCount + 1).then(resolve).catch(reject);
       }
 
+      // Handle decompression
       let stream = res;
       const encoding = res.headers['content-encoding'];
       if (encoding === 'gzip') {
@@ -88,7 +79,9 @@ function fetchUrl(url, redirectCount = 0) {
       let data = '';
       stream.setEncoding('utf8');
       stream.on('data', chunk => { data += chunk; });
-      stream.on('end', () => resolve({ status: res.statusCode, data }));
+      stream.on('end', () => {
+        resolve({ status: res.statusCode, data });
+      });
       stream.on('error', err => reject(err));
     });
 
@@ -101,6 +94,9 @@ function fetchUrl(url, redirectCount = 0) {
   });
 }
 
+/**
+ * Posts JSON payload to backend gateway
+ */
 function postJSON(url, body, headers = {}) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
@@ -140,21 +136,27 @@ function postJSON(url, body, headers = {}) {
   });
 }
 
+/**
+ * Extracts all potential episode and anime links from raw HTML using multiple patterns
+ */
 function parseLinks(html) {
   if (!html) return [];
   const links = new Set();
 
+  // Pattern 1: data-href="..."
   const rDataHref = /data-href="([^"]+)"/gi;
   let m;
   while ((m = rDataHref.exec(html)) !== null) {
     if (m[1] && m[1].length > 3) links.add(m[1].trim());
   }
 
+  // Pattern 2: data-url="..." or data-slug="..."
   const rDataUrl = /data-(?:url|slug)="([^"]+)"/gi;
   while ((m = rDataUrl.exec(html)) !== null) {
     if (m[1] && m[1].length > 3) links.add(m[1].trim());
   }
 
+  // Pattern 3: standard <a href="..."> containing -bolum or -izle
   const rHref = /href="([^"]*(?:-bolum|-izle)[^"]*)"/gi;
   while ((m = rHref.exec(html)) !== null) {
     if (m[1]) {
@@ -168,9 +170,13 @@ function parseLinks(html) {
   return Array.from(links);
 }
 
+/**
+ * Universal episode parser for any Tranimeizle link structure
+ */
 function parseEpisode(rawHref) {
   if (!rawHref) return null;
 
+  // 1. Clean URL
   let clean = rawHref
     .replace(/^https?:\/\/[^\/]+/i, '')
     .replace(/^\/?anime\//i, '')
@@ -181,6 +187,8 @@ function parseEpisode(rawHref) {
 
   if (!clean || clean.length < 3) return null;
 
+  // Pattern 1: Standard "-X-bolum-izle" or "-X-bolum"
+  // e.g. "re-zero-kara-hajimeru-isekai-seikatsu-2-sezon-1-bolum-izle"
   const m1 = clean.match(/^(.*?)-(\d+)-bolum(?:-izle)?$/i);
   if (m1) {
     const baseSlug = m1[1].replace(/-izle$/i, '');
@@ -192,6 +200,7 @@ function parseEpisode(rawHref) {
     };
   }
 
+  // Pattern 2: "-bolum-X"
   const m2 = clean.match(/^(.*?)-bolum-(\d+)(?:-izle)?$/i);
   if (m2) {
     const baseSlug = m2[1].replace(/-izle$/i, '');
@@ -203,6 +212,8 @@ function parseEpisode(rawHref) {
     };
   }
 
+  // Pattern 3: Single Movies / OVAs / Specials
+  // e.g. "jujutsu-kaisen-0-movie-izle" or "kimetsu-no-yaiba-mugen-ressha-hen-film-izle"
   const m3 = clean.match(/^(.*?(?:movie|film|ova|ona|special|specials)(?:-\d+)?(?:-izle)?)$/i);
   if (m3) {
     const baseSlug = m3[1].replace(/-izle$/i, '');
@@ -213,6 +224,7 @@ function parseEpisode(rawHref) {
     };
   }
 
+  // Pattern 4: General "-izle" links that are not list pages
   if (clean.endsWith('-izle') && !clean.includes('sayfa-') && !clean.includes('listeler') && !clean.includes('kategori')) {
     return {
       slug: clean,
@@ -224,6 +236,9 @@ function parseEpisode(rawHref) {
   return null;
 }
 
+/**
+ * Main Scraper Execution Loop
+ */
 async function run() {
   console.log(`\n======================================================`);
   console.log(`🤖 [Clofthel Scraper] Başlatıldı: ${new Date().toLocaleString('tr-TR')}`);
@@ -242,7 +257,7 @@ async function run() {
       const res = await fetchUrl(pageUrl);
 
       if (res.status === 403 || res.status === 503) {
-        console.warn(`⚠️ [Sayfa ${page}] Cloudflare / 403 engeli. 4 saniye beklenip devam ediliyor...`);
+        console.warn(`⚠️ [Sayfa ${page}] Cloudflare / 403 engeli tespit edildi. 4 saniye beklenip devam ediliyor...`);
         await new Promise(r => setTimeout(r, 4000));
         continue;
       }
@@ -273,11 +288,13 @@ async function run() {
       console.error(`❌ [Sayfa ${page}] Hata: ${err.message}`);
     }
 
+    // Rate limiting delay between requests
     await new Promise(r => setTimeout(r, 1200));
   }
 
   console.log(`\n📊 Toplam ${allEpisodes.length} yeni/güncel anime bölümü ayıklandı.`);
 
+  // Post to Backend Bulk Sync Gateway
   if (allEpisodes.length > 0) {
     console.log(`🚀 Backend Gateway'e gönderiliyor (${BACKEND_URL}/api/internal/bulk-episode-sync)...`);
     try {
@@ -302,36 +319,3 @@ run().catch(err => {
   console.error('💥 FATAL ERROR:', err);
   process.exit(1);
 });
-SCRIPT_EOF
-
-# 4. .env dosyasını oluştur
-cat > "$SCRAPER_DIR/.env" << ENV_EOF
-BACKEND_URL=https://clofthel-backend.onrender.com
-INTERNAL_API_KEY=K7x!v9P2#L5q*zR9_tM1\$wF8&jY3@cB6-sX4%dG8_uH2
-MAX_PAGES=10
-ENV_EOF
-
-# 5. Runner script oluştur
-cat > "$SCRAPER_DIR/run.sh" << 'RUN_EOF'
-#!/bin/bash
-export $(grep -v '^#' ~/clofthel-scraper/.env | xargs)
-node ~/clofthel-scraper/scrape.js >> ~/clofthel-scraper/scraper.log 2>&1
-RUN_EOF
-chmod +x "$SCRAPER_DIR/run.sh"
-
-# 6. Cron job kur (her 4 saatte bir)
-sv-enable crond 2>/dev/null || true
-(crontab -l 2>/dev/null | grep -v clofthel-scraper; echo "0 */4 * * * $SCRAPER_DIR/run.sh") | crontab -
-
-echo ""
-echo "✅ Kurulum tamamlandı!"
-echo ""
-echo "📁 Scraper klasörü: $SCRAPER_DIR"
-echo "⏰ Cron: Her 4 saatte bir otomatik çalışacak"
-echo ""
-echo "📌 Manuel çalıştırmak için:"
-echo "   node ~/clofthel-scraper/scrape.js"
-echo ""
-echo "📋 Logları görmek için:"
-echo "   cat ~/clofthel-scraper/scraper.log"
-echo ""

@@ -30,7 +30,7 @@ router.post('/notify-new-episode', apiKeyAuth, async (req, res) => {
  * POST /api/internal/bulk-episode-sync
  * Termux scraper'dan çağrılır. Telefon tranimeizle.io'dan sayfaları çekip
  * parse edilen bölüm listesini bu endpoint'e gönderir.
- * Body: { episodes: [{ slug, episode, url }] }
+ * Body: { episodes: [{ slug, episode, url, title }] }
  */
 router.post('/bulk-episode-sync', apiKeyAuth, async (req, res) => {
   try {
@@ -40,8 +40,9 @@ router.post('/bulk-episode-sync', apiKeyAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing episodes array' });
     }
 
-    let newAnime = 0;
-    let newEpisodes = 0;
+    let newAnimeCount = 0;
+    let newEpisodesCount = 0;
+    let updatedEpisodesCount = 0;
     let skipped = 0;
 
     for (const ep of episodes) {
@@ -50,48 +51,86 @@ router.post('/bulk-episode-sync', apiKeyAuth, async (req, res) => {
         continue;
       }
 
-      let anime = await Anime.findOne({ tranimeizle_slug: ep.slug });
+      const cleanSlug = ep.slug.replace(/^https?:\/\/[^\/]+\/(?:anime\/)?/i, '').replace(/^anime\//i, '').replace(/-izle$/i, '').trim();
+      const slugWithIzle = `${cleanSlug}-izle`;
+      const slugWithoutIzle = cleanSlug;
+
+      let anime = await Anime.findOne({
+        $or: [
+          { tranimeizle_slug: cleanSlug },
+          { tranimeizle_slug: slugWithIzle },
+          { tranimeizle_slug: slugWithoutIzle }
+        ]
+      });
 
       if (anime) {
-        const episodes_map = anime.episodes || {};
-        if (!episodes_map[ep.episode]) {
-          episodes_map[ep.episode] = ep.url;
-          anime.episodes = episodes_map;
-          anime.total_episodes = Math.max(anime.total_episodes || 0, ep.episode);
+        const episodesMap = anime.episodes || {};
+        const epKey = String(ep.episode);
+
+        if (!episodesMap[epKey] || episodesMap[epKey] !== ep.url) {
+          const isNew = !episodesMap[epKey];
+          episodesMap[epKey] = ep.url;
+          anime.episodes = episodesMap;
+          anime.total_episodes = Math.max(anime.total_episodes || 0, ep.episode, Object.keys(episodesMap).length);
           anime.markModified('episodes');
           await anime.save();
-          newEpisodes++;
 
-          // Bildirim gönder
-          try {
-            await sendNewEpisodeNotifications(anime._id, {
-              bolum_no: ep.episode,
-              bolum_adi: `${ep.episode}. Bölüm`
-            });
-          } catch (notifErr) {
-            console.warn(`[BULK-SYNC] Notification failed for ${ep.slug} ep${ep.episode}:`, notifErr.message);
+          if (isNew) {
+            newEpisodesCount++;
+            // Send push notification to users favoriting/listing this anime
+            try {
+              sendNewEpisodeNotifications(anime._id, {
+                bolum_no: ep.episode,
+                bolum_adi: ep.title || `${ep.episode}. Bölüm`
+              }).catch(() => {});
+            } catch (notifErr) {
+              console.warn(`[BULK-SYNC] Notification warning for ${cleanSlug} ep${ep.episode}:`, notifErr.message);
+            }
+          } else {
+            updatedEpisodesCount++;
           }
         } else {
           skipped++;
         }
       } else {
-        const newEpisodes_map = {};
-        newEpisodes_map[ep.episode] = ep.url;
+        // Create new anime in DB
+        const newEpisodesMap = {};
+        newEpisodesMap[String(ep.episode)] = ep.url;
         
+        const formattedTitle = cleanSlug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
         anime = new Anime({
-          tranimeizle_slug: ep.slug,
-          tranimeizle_url: `https://www.tranimeizle.io/${ep.slug}`,
+          tranimeizle_slug: slugWithIzle,
+          tranimeizle_url: `https://www.tranimeizle.io/anime/${cleanSlug}-izle`,
+          orijinal_ad: formattedTitle,
           total_episodes: ep.episode,
-          episodes: newEpisodes_map
+          episodes: newEpisodesMap,
+          format: 'TV'
         });
+
         await anime.save();
-        newAnime++;
-        newEpisodes++;
+        newAnimeCount++;
+        newEpisodesCount++;
       }
     }
 
-    console.log(`[BULK-SYNC] Done: ${newAnime} new anime, ${newEpisodes} new episodes, ${skipped} skipped`);
-    res.json({ success: true, newAnime, newEpisodes, skipped, total: episodes.length });
+    // Refresh Orchestrator memory cache so updates are instantly live
+    try {
+      const animesRouter = require('./animes');
+      if (typeof animesRouter.loadOrchestratorMap === 'function') {
+        await animesRouter.loadOrchestratorMap();
+      }
+    } catch (e) {}
+
+    console.log(`[BULK-SYNC] Processed ${episodes.length} items: ${newAnimeCount} new anime, ${newEpisodesCount} new ep, ${updatedEpisodesCount} updated ep, ${skipped} skipped.`);
+    res.json({
+      success: true,
+      newAnime: newAnimeCount,
+      newEpisodes: newEpisodesCount,
+      updatedEpisodes: updatedEpisodesCount,
+      skipped,
+      total: episodes.length
+    });
   } catch (error) {
     console.error('[BULK-SYNC] Error:', error);
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
