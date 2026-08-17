@@ -40,7 +40,7 @@ if (fs.existsSync(envPath)) {
 const MAX_PAGES = parseInt(process.env.MAX_PAGES || '5', 10);
 const BASE_URL = (process.env.SCRAPER_BASE_URL || 'https://www.tranimeizle.io/listeler/yenibolum/sayfa-').replace(/\/+$/, '') + '/';
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://clofthel-backend.onrender.com').replace(/\/+$/, '');
-const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY || 'K7x!v9P2#L5q*zR9_tM1$wF8&jY3@cB6-sX4%dG8_uH2';
+const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY || '';
 
 function fetchUrl(url, redirectCount = 0) {
   return new Promise((resolve, reject) => {
@@ -304,7 +304,7 @@ SCRIPT_EOF
 # 4. .env dosyasını oluştur
 cat > "$SCRAPER_DIR/.env" << ENV_EOF
 BACKEND_URL=https://clofthel-backend.onrender.com
-INTERNAL_API_KEY=K7x!v9P2#L5q*zR9_tM1\$wF8&jY3@cB6-sX4%dG8_uH2
+INTERNAL_API_KEY=
 MAX_PAGES=5
 ENV_EOF
 

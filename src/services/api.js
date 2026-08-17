@@ -1078,5 +1078,22 @@ export async function clientAddAnimeApi({ parsedData, mode, targetAnimeId, targe
   }
 }
 
+/**
+ * Open batch episode ingestion from client-side Scraper Browser
+ */
+export async function clientIngestBatchApi(items) {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/animes/client-ingest-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items })
+    });
+    return await response.json();
+  } catch (err) {
+    console.error('[clientIngestBatchApi] Error:', err);
+    return { success: false, error: err.message || 'Toplu aktarım hatası.' };
+  }
+}
+
 
 

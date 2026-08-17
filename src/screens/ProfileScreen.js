@@ -17,7 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { AuthContext } from '../context/AuthContext';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
-import { getProfileData, createCustomList, deleteCustomList, updateAvatar, toggleFavoritesNotificationsApi, toggleListNotificationsApi, checkAnimeExistsApi, clientAddAnimeApi } from '../services/api';
+import { getProfileData, createCustomList, deleteCustomList, updateAvatar, toggleFavoritesNotificationsApi, toggleListNotificationsApi, checkAnimeExistsApi, clientAddAnimeApi, clientIngestBatchApi } from '../services/api';
 import { AVATAR_LIST } from '../constants/avatars';
 import { APP_VERSION } from '../constants/config';
 import { animePageScraperInjectedJs } from '../modules/AnimePageScraperScript';
@@ -57,6 +57,16 @@ export default function ProfileScreen({ navigation }) {
   const [clientScrapeUrl, setClientScrapeUrl] = useState(null);
   const [isFullScreenBrowser, setIsFullScreenBrowser] = useState(false);
   const clientWebViewRef = useRef(null);
+
+  // Secret Developer Scraper Browser State (10-tap gesture)
+  const [devTapCount, setDevTapCount] = useState(0);
+  const devTapTimerRef = useRef(null);
+  const [isScraperBrowserVisible, setIsScraperBrowserVisible] = useState(false);
+  const [scraperBrowserUrl, setScraperBrowserUrl] = useState('https://www.tranimeizle.io/listeler/yenibolum/sayfa-1');
+  const [scraperUrlInput, setScraperUrlInput] = useState('https://www.tranimeizle.io/listeler/yenibolum/sayfa-1');
+  const [isIngestingBatch, setIsIngestingBatch] = useState(false);
+  const [batchStatusText, setBatchStatusText] = useState('');
+  const scraperBrowserWebviewRef = useRef(null);
 
   // Helper to extract a clean title from a URL or raw scraped title
   const extractCleanTitleFromUrl = (urlOrSlug, rawTitle = '') => {
@@ -330,6 +340,67 @@ export default function ProfileScreen({ navigation }) {
     }
   };
 
+  const handleDevLogoTap = () => {
+    const nextCount = devTapCount + 1;
+    setDevTapCount(nextCount);
+    if (devTapTimerRef.current) clearTimeout(devTapTimerRef.current);
+    devTapTimerRef.current = setTimeout(() => setDevTapCount(0), 3000);
+
+    if (nextCount >= 10) {
+      setDevTapCount(0);
+      setIsScraperBrowserVisible(true);
+      Alert.alert(
+        '⚡ Scraper Tarayıcısı Açıldı! 🌐',
+        'Tranimeizle sayfalarında özgürce gezinebilir, Cloudflare doğrulamasını çözebilir ve "Bu Sayfadaki Bölümleri Çek" butonuna basarak tüm yeni bölümleri tek dokunuşla veritabanına ve orkestraya aktarabilirsiniz.'
+      );
+    }
+  };
+
+  const handleScraperBrowserMessage = async (event) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.type === 'page_navigated') {
+        setScraperUrlInput(data.url || '');
+      } else if (data.type === 'batch_list_scraped') {
+        const items = data.items || [];
+        if (items.length === 0) {
+          Alert.alert('Bilgi', 'Bu sayfada çekilecek bölüm linki bulunamadı.');
+          setIsIngestingBatch(false);
+          return;
+        }
+        setIsIngestingBatch(true);
+        setBatchStatusText(`${items.length} bölüm sunucuya aktarılıyor...`);
+
+        const res = await clientIngestBatchApi(items);
+        setIsIngestingBatch(false);
+        if (res?.success) {
+          Alert.alert('🎉 Başarılı!', `${res.message || 'Bölümler aktarıldı.'}`);
+          fetchProfile();
+        } else {
+          Alert.alert('Hata', res?.error || 'Aktarım başarısız.');
+        }
+      } else if (data.type === 'anime_overview_scraped' && data.data && Object.keys(data.data.episodes || {}).length > 0) {
+        // Also allow single overview ingestion from the browser
+        const scraped = data.data;
+        const candidateTitle = extractCleanTitleFromUrl(scraped.url, scraped.title);
+        Alert.alert(
+          'Sayfadaki Animeyi Ekle 🎬',
+          `"${candidateTitle}" (${scraped.totalEpisodes} Bölüm) veritabanına eklensin mi?`,
+          [
+            { text: 'İptal', style: 'cancel' },
+            { 
+              text: '⚡ Evet, Ekle', 
+              onPress: () => executeSaveNewAnime(scraped, candidateTitle) 
+            }
+          ]
+        );
+      }
+    } catch (e) {
+      console.warn('Scraper browser message parse error:', e);
+      setIsIngestingBatch(false);
+    }
+  };
+
   const handleLogout = () => {
     logout();
     navigation.replace('Home');
@@ -555,7 +626,9 @@ export default function ProfileScreen({ navigation }) {
           <Text style={styles.logoutText}>Çıkış Yap</Text>
         </TouchableOpacity>
 
-        <Text style={styles.versionText}>Clofthel v{APP_VERSION}</Text>
+        <TouchableOpacity activeOpacity={0.7} onPress={handleDevLogoTap}>
+          <Text style={styles.versionText}>Clofthel v{APP_VERSION} (Dokun: {devTapCount > 0 ? `${devTapCount}/10` : 'v' + APP_VERSION})</Text>
+        </TouchableOpacity>
       </ScrollView>
 
       {/* Create List Modal */}
@@ -810,6 +883,151 @@ export default function ProfileScreen({ navigation }) {
                 setIsAddingAnime(false);
               }}
             />
+          </View>
+        </SafeAreaView>
+      </Modal>
+
+      {/* ── Secret Developer Scraper Browser Modal (10-Tap Gesture) ─── */}
+      <Modal
+        visible={isScraperBrowserVisible}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setIsScraperBrowserVisible(false)}
+      >
+        <SafeAreaView style={styles.fullScreenBrowserContainer}>
+          {/* Address & Navigation Bar */}
+          <View style={styles.fullScreenBrowserHeader}>
+            <TouchableOpacity 
+              style={styles.browserHeaderBtn} 
+              onPress={() => setIsScraperBrowserVisible(false)}
+            >
+              <Ionicons name="close" size={20} color="#FFF" />
+              <Text style={styles.browserHeaderBtnText}>Kapat</Text>
+            </TouchableOpacity>
+
+            <TextInput
+              style={[styles.fullScreenBrowserUrl, { backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 6, paddingVertical: 4, paddingHorizontal: 8 }]}
+              value={scraperUrlInput}
+              onChangeText={setScraperUrlInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="https://www.tranimeizle.io/..."
+              placeholderTextColor={COLORS.textMuted}
+              onSubmitEditing={() => {
+                let target = scraperUrlInput.trim();
+                if (!target.startsWith('http')) target = `https://www.tranimeizle.io/arama?q=${encodeURIComponent(target)}`;
+                setScraperBrowserUrl(target);
+              }}
+            />
+
+            <TouchableOpacity 
+              style={[styles.browserHeaderBtn, { backgroundColor: COLORS.accent }]} 
+              onPress={() => {
+                let target = scraperUrlInput.trim();
+                if (!target.startsWith('http')) target = `https://www.tranimeizle.io/arama?q=${encodeURIComponent(target)}`;
+                setScraperBrowserUrl(target);
+              }}
+            >
+              <Ionicons name="arrow-forward" size={16} color="#000" />
+            </TouchableOpacity>
+          </View>
+
+          {/* Quick Links & Browser Nav Controls */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#13131C', paddingHorizontal: 12, paddingVertical: 6, gap: 6 }}>
+            <TouchableOpacity 
+              style={{ paddingHorizontal: 6, paddingVertical: 4 }} 
+              onPress={() => scraperBrowserWebviewRef.current?.goBack()}
+            >
+              <Ionicons name="arrow-back" size={18} color="#FFF" />
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={{ paddingHorizontal: 6, paddingVertical: 4 }} 
+              onPress={() => scraperBrowserWebviewRef.current?.goForward()}
+            >
+              <Ionicons name="arrow-forward" size={18} color="#FFF" />
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={{ paddingHorizontal: 6, paddingVertical: 4 }} 
+              onPress={() => scraperBrowserWebviewRef.current?.reload()}
+            >
+              <Ionicons name="reload" size={16} color="#FFF" />
+            </TouchableOpacity>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingLeft: 6 }}>
+              <TouchableOpacity 
+                style={{ backgroundColor: 'rgba(255, 107, 0, 0.15)', borderWidth: 1, borderColor: COLORS.accent, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 }}
+                onPress={() => {
+                  const url = 'https://www.tranimeizle.io/listeler/yenibolum/sayfa-1';
+                  setScraperUrlInput(url);
+                  setScraperBrowserUrl(url);
+                }}
+              >
+                <Text style={{ color: COLORS.accent, fontSize: 11, fontWeight: '700' }}>🔥 Yeni Bölümler</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={{ backgroundColor: 'rgba(0, 200, 255, 0.15)', borderWidth: 1, borderColor: '#00C8FF', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 }}
+                onPress={() => {
+                  const url = 'https://www.tranimeizle.io/listeler/populer';
+                  setScraperUrlInput(url);
+                  setScraperBrowserUrl(url);
+                }}
+              >
+                <Text style={{ color: '#00C8FF', fontSize: 11, fontWeight: '700' }}>⭐ Popüler</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={{ backgroundColor: 'rgba(255, 255, 255, 0.08)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 }}
+                onPress={() => {
+                  const url = 'https://www.tranimeizle.io/anime/';
+                  setScraperUrlInput(url);
+                  setScraperBrowserUrl(url);
+                }}
+              >
+                <Text style={{ color: '#FFF', fontSize: 11 }}>🎬 Tüm Animeler</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+
+          {/* Status Bar if ingesting */}
+          {isIngestingBatch && (
+            <View style={styles.browserTopStatusBar}>
+              <ActivityIndicator size="small" color={COLORS.accent} style={{ marginRight: 8 }} />
+              <Text style={styles.browserTopStatusText}>{batchStatusText || 'Bölümler işleniyor...'}</Text>
+            </View>
+          )}
+
+          {/* Interactive Browser WebView */}
+          <View style={{ flex: 1, backgroundColor: '#000' }}>
+            {Platform.OS !== 'web' && WebView && (
+              <WebView
+                ref={scraperBrowserWebviewRef}
+                source={{ uri: scraperBrowserUrl }}
+                injectedJavaScriptBeforeContentLoaded={animePageScraperInjectedJs}
+                injectedJavaScript={animePageScraperInjectedJs}
+                onMessage={handleScraperBrowserMessage}
+                javaScriptEnabled={true}
+                domStorageEnabled={true}
+                mixedContentMode="always"
+                mediaPlaybackRequiresUserAction={false}
+                setSupportMultipleWindows={false}
+                onError={(e) => console.warn('[Scraper Browser] error:', e.nativeEvent.description)}
+              />
+            )}
+          </View>
+
+          {/* Bottom Floating Trigger Bar */}
+          <View style={{ padding: 12, backgroundColor: '#16161F', borderTopWidth: 1, borderTopColor: COLORS.border, flexDirection: 'row', gap: 10 }}>
+            <TouchableOpacity
+              style={{ flex: 1, backgroundColor: COLORS.accent, paddingVertical: 12, borderRadius: 8, alignItems: 'center', justifyContent: 'center', flexDirection: 'row' }}
+              onPress={() => {
+                setIsIngestingBatch(true);
+                setBatchStatusText('Sayfadaki bölümler ayıklanıyor...');
+                scraperBrowserWebviewRef.current?.injectJavaScript('window.clofthelTriggerBatchScrape ? window.clofthelTriggerBatchScrape() : (window.clofthelTriggerScrape && window.clofthelTriggerScrape()); true;');
+              }}
+              disabled={isIngestingBatch}
+            >
+              <Ionicons name="flash" size={18} color="#000" style={{ marginRight: 6 }} />
+              <Text style={{ color: '#000', fontSize: 14, fontWeight: '800' }}>⚡ Bu Sayfadaki Bölümleri Çek & DB'ye Kaydet</Text>
+            </TouchableOpacity>
           </View>
         </SafeAreaView>
       </Modal>

@@ -2431,6 +2431,132 @@ router.post('/sync-scraped-page', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/animes/client-ingest-batch
+ * Open endpoint for client-side scraper browser to ingest an entire batch of episodes from list pages
+ */
+router.post('/client-ingest-batch', async (req, res) => {
+  try {
+    const { items } = req.body;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, error: 'En az bir bölüm öğesi gerekli.' });
+    }
+
+    console.log(`[POST /api/animes/client-ingest-batch] Ingesting ${items.length} items from client scraper...`);
+    let newEpisodesCount = 0;
+    let updatedAnimesCount = 0;
+    let newAnimesCount = 0;
+
+    for (const item of items) {
+      const { href, title: rawTitle } = item;
+      if (!href) continue;
+
+      const epMatch = href.match(/^\/(.*?)-(\d+)-bolum(?:-izle)?$/i);
+      let baseSlug = null;
+      let episodeNum = null;
+
+      if (epMatch) {
+        baseSlug = epMatch[1];
+        episodeNum = parseInt(epMatch[2], 10);
+      } else {
+        const movieMatch = href.match(/^\/(.*?-izle)$/i);
+        if (movieMatch) {
+          baseSlug = movieMatch[1].replace(/-izle$/, '');
+          episodeNum = 1;
+        } else {
+          continue;
+        }
+      }
+
+      const animeSlug = `${baseSlug}-izle`;
+      const fullEpisodeUrl = href.startsWith('http') ? href : `https://www.tranimeizle.io${href}`;
+      const animeTrUrl = `https://www.tranimeizle.io/${animeSlug}`;
+
+      let anime = await Anime.findOne({
+        $or: [
+          { tranimeizle_slug: animeSlug },
+          { tranimeizle_slug: baseSlug },
+          { tranimeizle_url: animeTrUrl }
+        ]
+      });
+
+      if (anime) {
+        const eps = anime.episodes || {};
+        if (!eps[String(episodeNum)]) {
+          eps[String(episodeNum)] = fullEpisodeUrl;
+          anime.episodes = eps;
+          anime.total_episodes = Math.max(anime.total_episodes || 0, episodeNum);
+          anime.markModified('episodes');
+          await anime.save();
+          newEpisodesCount++;
+          updatedAnimesCount++;
+        }
+      } else {
+        // Create new anime with AniList sync
+        const cleanGuess = baseSlug
+          .replace(/-/g, ' ')
+          .replace(/\b(izle|turkce|altyazi|dublaj|full|hd)\b/gi, '')
+          .replace(/\bsezon\b/gi, 'Season')
+          .replace(/\bbolum\b/gi, 'Episode')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        let exactAniList = null;
+        try {
+          exactAniList = await resolveExactAniListId(cleanGuess, animeSlug);
+        } catch (e) {}
+
+        const newEpisodes = {};
+        newEpisodes[String(episodeNum)] = fullEpisodeUrl;
+
+        anime = new Anime({
+          tranimeizle_slug: animeSlug,
+          tranimeizle_url: animeTrUrl,
+          orijinal_ad: exactAniList?.title_en || cleanGuess,
+          format: exactAniList?.format || 'TV',
+          anilist_id: exactAniList?.anilist_id || null,
+          season_year: exactAniList?.season_year || null,
+          total_episodes: episodeNum,
+          episodes: newEpisodes
+        });
+
+        await anime.save();
+        newAnimesCount++;
+        newEpisodesCount++;
+
+        // Sync to orchestrator
+        try {
+          await saveScrapedAnimeData({
+            title: exactAniList?.title_en || cleanGuess,
+            slug: animeSlug,
+            url: animeTrUrl,
+            totalEpisodes: episodeNum,
+            episodes: newEpisodes
+          }, anime._id);
+        } catch (syncErr) {
+          console.warn('[client-ingest-batch] Orchestrator sync warning:', syncErr.message);
+        }
+      }
+    }
+
+    await loadOrchestratorMap();
+
+    res.json({
+      success: true,
+      message: `${newEpisodesCount} yeni bölüm başarıyla işlendi! (${newAnimesCount} yeni anime, ${updatedAnimesCount} güncellenen)`,
+      stats: {
+        totalReceived: items.length,
+        newEpisodes: newEpisodesCount,
+        newAnimes: newAnimesCount,
+        updatedAnimes: updatedAnimesCount
+      }
+    });
+  } catch (err) {
+    console.error('[POST /api/animes/client-ingest-batch] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.loadOrchestratorMap = loadOrchestratorMap;
 module.exports = router;
 

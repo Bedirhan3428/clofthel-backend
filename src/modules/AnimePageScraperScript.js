@@ -139,7 +139,27 @@ export const animePageScraperInjectedJs = `
           episodesMap[String(curNum)] = currentUrl;
         }
 
-        var totalEpisodes = Object.keys(episodesMap).length;
+        // Pattern D: Check if on a List Page (e.g. /listeler/yenibolum, /listeler/populer, etc.)
+        var listItems = [];
+        var flxBlocks = document.querySelectorAll('.flx-block, [data-href*="-bolum"], a[href*="-bolum-izle"]');
+        flxBlocks.forEach(function(block) {
+          var href = block.getAttribute('data-href') || block.getAttribute('href') || '';
+          if (!href || href === '#' || href.startsWith('javascript:')) return;
+          var titleEl = block.querySelector('.f-name, .flx-title, .title, strong') || block;
+          var titleText = titleEl ? titleEl.innerText.trim() : '';
+          var imgEl = block.querySelector('img');
+          var imgSrc = imgEl ? (imgEl.getAttribute('src') || '') : '';
+          listItems.push({ href: href, title: titleText, poster: imgSrc });
+        });
+
+        if (listItems.length > 0 && (currentUrl.includes('/listeler/') || currentUrl.includes('/yenibolum') || listItems.length > 5)) {
+          sendToApp({
+            type: 'batch_list_scraped',
+            url: currentUrl,
+            items: listItems,
+            count: listItems.length
+          });
+        }
 
         sendToApp({
           type: 'anime_overview_scraped',
@@ -159,6 +179,25 @@ export const animePageScraperInjectedJs = `
       }
 
       window.clofthelTriggerScrape = scrapeAnyPage;
+      window.clofthelTriggerBatchScrape = function() {
+        var listItems = [];
+        var flxBlocks = document.querySelectorAll('.flx-block, [data-href], a[href*="-bolum-izle"], a[href*="-izle"]');
+        flxBlocks.forEach(function(block) {
+          var href = block.getAttribute('data-href') || block.getAttribute('href') || '';
+          if (!href || href === '#' || href.startsWith('javascript:')) return;
+          var titleEl = block.querySelector('.f-name, .flx-title, .title, strong') || block;
+          var titleText = titleEl ? titleEl.innerText.trim() : '';
+          var imgEl = block.querySelector('img');
+          var imgSrc = imgEl ? (imgEl.getAttribute('src') || '') : '';
+          listItems.push({ href: href, title: titleText, poster: imgSrc });
+        });
+        sendToApp({
+          type: 'batch_list_scraped',
+          url: window.location.href,
+          items: listItems,
+          count: listItems.length
+        });
+      };
 
       // Auto-run scrape
       if (document.readyState === 'complete' || document.readyState === 'interactive') {
