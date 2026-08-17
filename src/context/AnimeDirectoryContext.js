@@ -167,7 +167,7 @@ export function AnimeDirectoryProvider({ children }) {
       const response = await apiFetch(`${API_BASE_URL}/animes/directory`);
       const json = await response.json();
 
-      if (json.success && json.data) {
+      if (json.success && Array.isArray(json.data)) {
         setDirectory(json.data);
         buildFuseIndex(json.data);
 
@@ -176,9 +176,12 @@ export function AnimeDirectoryProvider({ children }) {
           AsyncStorage.setItem(CACHE_TS_KEY, Date.now().toString()),
         ]);
         console.log(`[AnimeDirectory] Force refreshed ${json.data.length} entries.`);
+        return { success: true, count: json.data.length };
       }
+      return { success: false, error: json.error || 'Dizin verisi alınamadı.' };
     } catch (error) {
       console.warn('[AnimeDirectory] Force refresh failed:', error.message);
+      return { success: false, error: error.message };
     } finally {
       setIsLoading(false);
     }

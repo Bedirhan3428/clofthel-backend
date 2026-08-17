@@ -22,6 +22,7 @@ import { AVATAR_LIST } from '../constants/avatars';
 import { APP_VERSION } from '../constants/config';
 import { animePageScraperInjectedJs } from '../modules/AnimePageScraperScript';
 import { resolveTargetTranimeizleUrl } from '../utils/clientAnimeHealer';
+import { useAnimeDirectory } from '../context/AnimeDirectoryContext';
 import * as Clipboard from 'expo-clipboard';
 
 let WebView = null;
@@ -35,8 +36,10 @@ if (Platform.OS !== 'web') {
 
 export default function ProfileScreen({ navigation }) {
   const { user, logout, updateUserAvatar } = useContext(AuthContext);
+  const { directory, forceRefresh } = useAnimeDirectory();
   const [profileData, setProfileData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
+  const [isRefreshingCache, setIsRefreshingCache] = useState(false);
 
   const [isModalVisible, setModalVisible] = React.useState(false);
   const [newListName, setNewListName] = React.useState('');
@@ -486,6 +489,28 @@ export default function ProfileScreen({ navigation }) {
               <Text style={{ color: COLORS.textMuted, fontSize: 11 }}>Tranimeizle linki veya isimle cihazınızda arayıp ekleyin</Text>
             </View>
             <Ionicons name="chevron-forward" size={20} color={COLORS.accent} />
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.menuItem} 
+            onPress={handleRefreshOrchestratorCache}
+            disabled={isRefreshingCache}
+            activeOpacity={0.8}
+          >
+            <View style={[styles.menuIconWrapper, { backgroundColor: 'rgba(0, 200, 255, 0.12)' }]}>
+              {isRefreshingCache ? (
+                <ActivityIndicator size="small" color="#00C8FF" />
+              ) : (
+                <Ionicons name="refresh-circle-outline" size={22} color="#00C8FF" />
+              )}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.menuText, { color: '#00C8FF', fontWeight: FONT_WEIGHTS.semibold }]}>Yerel Orkestra Önbelleğini Güncelle</Text>
+              <Text style={{ color: COLORS.textMuted, fontSize: 11 }}>
+                {directory.length > 0 ? `${directory.length} anime dizini yüklü (Dokunarak yenileyin)` : 'Dizini sunucudan yeniden çek'}
+              </Text>
+            </View>
+            <Ionicons name="cloud-download-outline" size={18} color="#00C8FF" />
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('AccountSettings')}>
