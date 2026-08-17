@@ -427,6 +427,9 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null, targetSeas
     // Update and fix AniList ID & Title
     if (exactAniList) {
       if (exactAniList.anilist_id) animeDoc.anilist_id = exactAniList.anilist_id;
+      if (exactAniList.genres && exactAniList.genres.length > 0) {
+        animeDoc.genres = exactAniList.genres;
+      }
       if (exactAniList.title_en) animeDoc.orijinal_ad = exactAniList.title_en;
       if (exactAniList.format) animeDoc.format = exactAniList.format;
       if (exactAniList.season_year) animeDoc.season_year = exactAniList.season_year;
@@ -436,13 +439,16 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null, targetSeas
       if (exactAniList.banner_image) {
         animeDoc.banner_image = exactAniList.banner_image;
       }
+      if (exactAniList.description) {
+        animeDoc.description = exactAniList.description;
+      }
     } else if (cleanTitle) {
       animeDoc.orijinal_ad = cleanTitle;
     }
 
     animeDoc.markModified('episodes');
     await animeDoc.save();
-    console.log(`✅ [SelfHealer] Updated Anime "${animeDoc.orijinal_ad || animeDoc.tranimeizle_slug}" (${animeDoc._id}) with ${Object.keys(mergedEpisodes).length} episodes (AniList: ${animeDoc.anilist_id || 'N/A'}, Fansubs: ${(animeDoc.fansubs || []).join(', ') || 'N/A'}).`);
+    console.log(`✅ [SelfHealer] Updated Anime "${animeDoc.orijinal_ad || animeDoc.tranimeizle_slug}" (${animeDoc._id}) with ${Object.keys(mergedEpisodes).length} episodes (AniList: ${animeDoc.anilist_id || 'N/A'}, Genres: ${(animeDoc.genres || []).join(', ') || 'N/A'}).`);
   } else {
     // Create new anime in DB
     animeDoc = new Anime({
@@ -452,8 +458,8 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null, targetSeas
       orijinal_ad: exactAniList?.title_en || cleanTitle,
       cover_image: exactAniList?.cover_image || parsedData.poster,
       banner_image: exactAniList?.banner_image || parsedData.poster,
-      description: parsedData.description,
-      genres: parsedData.genres || [],
+      description: exactAniList?.description || parsedData.description,
+      genres: exactAniList?.genres || [],
       fansubs: parsedData.fansubs || [],
       total_episodes: parsedData.totalEpisodes || Object.keys(parsedData.episodes).length,
       episodes: parsedData.episodes,

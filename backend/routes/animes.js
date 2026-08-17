@@ -2516,6 +2516,10 @@ router.post('/client-ingest-batch', async (req, res) => {
           format: exactAniList?.format || 'TV',
           anilist_id: exactAniList?.anilist_id || null,
           season_year: exactAniList?.season_year || null,
+          genres: exactAniList?.genres || [],
+          cover_image: exactAniList?.cover_image || null,
+          banner_image: exactAniList?.banner_image || null,
+          description: exactAniList?.description || null,
           total_episodes: episodeNum,
           episodes: newEpisodes
         });

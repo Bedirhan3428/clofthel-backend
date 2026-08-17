@@ -46,13 +46,8 @@ export const animePageScraperInjectedJs = `
         var poster = posterEl ? (posterEl.getAttribute('src') || '') : '';
         if (poster.startsWith('//')) poster = 'https:' + poster;
 
-        // Genres
+        // Genres (Do not scrape from webpage; strictly fetched from AniList)
         var genres = [];
-        var genreEls = document.querySelectorAll('.tags-inner .genre, .tags-inner a, a[href*="/animeizle/"], .genres a');
-        genreEls.forEach(function(el) {
-          var gText = el.innerText.trim();
-          if (gText && genres.indexOf(gText) === -1) genres.push(gText);
-        });
 
         // Other Names (Diğer İsimleri)
         var otherNames = [];

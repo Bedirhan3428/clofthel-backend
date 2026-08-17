@@ -20,6 +20,14 @@ async function queryAniList(searchQuery) {
           seasonYear
           episodes
           status
+          genres
+          averageScore
+          coverImage {
+            large
+            extraLarge
+          }
+          bannerImage
+          description
           synonyms
         }
       }
@@ -225,6 +233,11 @@ async function resolveExactAniListId(title, slug = '', otherNames = []) {
       title_en: bestCandidate.title?.english || bestCandidate.title?.romaji,
       title_romaji: bestCandidate.title?.romaji,
       format: bestCandidate.format,
+      genres: Array.isArray(bestCandidate.genres) ? bestCandidate.genres : [],
+      cover_image: bestCandidate.coverImage?.extraLarge || bestCandidate.coverImage?.large || null,
+      banner_image: bestCandidate.bannerImage || null,
+      description: bestCandidate.description || null,
+      average_score: bestCandidate.averageScore || null,
       season_year: bestCandidate.seasonYear,
       total_episodes: bestCandidate.episodes
     };
