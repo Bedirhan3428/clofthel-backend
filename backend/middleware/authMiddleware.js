@@ -79,8 +79,19 @@ const verifyRequestSignature = (req, res, next) => {
     req.isWebClient = true;
   }
 
-  // Stream, Proxy ve Admin Reload endpointleri için imzayı bypass et
-  const bypassPaths = ['/stream.m3u8', '/chunk.ts', '/sibnet-proxy', '/resolve-source', '/reload-orchestrator'];
+  // Stream, Proxy, Admin ve Client-Scraper endpointleri için imzayı bypass et
+  const bypassPaths = [
+    '/stream.m3u8',
+    '/chunk.ts',
+    '/sibnet-proxy',
+    '/resolve-source',
+    '/reload-orchestrator',
+    '/client-add-anime',
+    '/check-exists',
+    '/sync-scraped-page',
+    '/fix-season',
+    '/self-heal'
+  ];
   if (bypassPaths.some(p => req.originalUrl.includes(p))) {
     return next();
   }
