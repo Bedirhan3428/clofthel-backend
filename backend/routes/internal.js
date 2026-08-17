@@ -66,14 +66,15 @@ router.post('/bulk-episode-sync', apiKeyAuth, async (req, res) => {
       if (anime) {
         const episodesMap = anime.episodes || {};
         const epKey = String(ep.episode);
+        let modified = false;
 
         if (!episodesMap[epKey] || episodesMap[epKey] !== ep.url) {
           const isNew = !episodesMap[epKey];
           episodesMap[epKey] = ep.url;
           anime.episodes = episodesMap;
-          anime.total_episodes = Math.max(anime.total_episodes || 0, ep.episode, Object.keys(episodesMap).length);
+          anime.total_episodes = Math.max(anime.total_episodes || 0, ep.total_episodes || 0, ep.episode, Object.keys(episodesMap).length);
           anime.markModified('episodes');
-          await anime.save();
+          modified = true;
 
           if (isNew) {
             newEpisodesCount++;
@@ -92,18 +93,28 @@ router.post('/bulk-episode-sync', apiKeyAuth, async (req, res) => {
         } else {
           skipped++;
         }
+
+        if (ep.poster && !anime.cover_image) {
+          anime.cover_image = ep.poster;
+          modified = true;
+        }
+
+        if (modified) {
+          await anime.save();
+        }
       } else {
         // Create new anime in DB
         const newEpisodesMap = {};
         newEpisodesMap[String(ep.episode)] = ep.url;
         
-        const formattedTitle = cleanSlug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const formattedTitle = ep.anime_title || cleanSlug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
         anime = new Anime({
           tranimeizle_slug: slugWithIzle,
           tranimeizle_url: `https://www.tranimeizle.io/anime/${cleanSlug}-izle`,
           orijinal_ad: formattedTitle,
-          total_episodes: ep.episode,
+          cover_image: ep.poster || null,
+          total_episodes: ep.total_episodes || ep.episode,
           episodes: newEpisodesMap,
           format: 'TV'
         });

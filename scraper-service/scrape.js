@@ -1,6 +1,6 @@
 /**
  * Clofthel Termux Scraper Service (Pure Node.js - Zero External Dependencies)
- * Scrapes latest anime episodes from tranimeizle.io and syncs with Clofthel Backend Gateway.
+ * Specifically tuned for https://www.tranimeizle.io/listeler/yenibolum/sayfa-[PAGE]
  */
 const https = require('https');
 const http = require('http');
@@ -21,8 +21,8 @@ if (fs.existsSync(envPath)) {
   });
 }
 
-const MAX_PAGES = parseInt(process.env.MAX_PAGES || '10', 10);
-const BASE_URL = process.env.SCRAPER_BASE_URL || 'https://www.tranimeizle.io/listeler/yenibolum/sayfa-';
+const MAX_PAGES = parseInt(process.env.MAX_PAGES || '5', 10);
+const BASE_URL = (process.env.SCRAPER_BASE_URL || 'https://www.tranimeizle.io/listeler/yenibolum/sayfa-').replace(/\/+$/, '') + '/';
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://clofthel-backend.onrender.com').replace(/\/+$/, '');
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY || 'K7x!v9P2#L5q*zR9_tM1$wF8&jY3@cB6-sX4%dG8_uH2';
 
@@ -31,9 +31,7 @@ const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY || 'K7x!v9P2#L5q*zR9_tM1$w
  */
 function fetchUrl(url, redirectCount = 0) {
   return new Promise((resolve, reject) => {
-    if (redirectCount > 5) {
-      return reject(new Error('Too many redirects'));
-    }
+    if (redirectCount > 5) return reject(new Error('Too many redirects'));
 
     const parsed = new URL(url);
     const mod = parsed.protocol === 'https:' ? https : http;
@@ -58,7 +56,6 @@ function fetchUrl(url, redirectCount = 0) {
     };
 
     const req = mod.request(options, (res) => {
-      // Handle HTTP redirects
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         let nextUrl = res.headers.location;
         if (nextUrl.startsWith('/')) {
@@ -67,7 +64,6 @@ function fetchUrl(url, redirectCount = 0) {
         return fetchUrl(nextUrl, redirectCount + 1).then(resolve).catch(reject);
       }
 
-      // Handle decompression
       let stream = res;
       const encoding = res.headers['content-encoding'];
       if (encoding === 'gzip') {
@@ -79,9 +75,7 @@ function fetchUrl(url, redirectCount = 0) {
       let data = '';
       stream.setEncoding('utf8');
       stream.on('data', chunk => { data += chunk; });
-      stream.on('end', () => {
-        resolve({ status: res.statusCode, data });
-      });
+      stream.on('end', () => resolve({ status: res.statusCode, data }));
       stream.on('error', err => reject(err));
     });
 
@@ -137,103 +131,111 @@ function postJSON(url, body, headers = {}) {
 }
 
 /**
- * Extracts all potential episode and anime links from raw HTML using multiple patterns
+ * Parses exact Tranimeizle flx-block structure from https://www.tranimeizle.io/listeler/yenibolum/sayfa-X
+ * 
+ * HTML Structure:
+ * <div class="flx-block" data-href="/magilumiere-magical-girls-inc-2-sezon-7-bolum-izle">
+ *     <a class="news-image" href="/magilumiere-magical-girls-inc-2-sezon-7-bolum-izle">
+ *         <img alt="" class="img-responsive" src="https://static.tranimeizle.top/animes/5486/medium.jpeg">
+ *     </a>
+ *     <div class="bar">
+ *         <h4>Magilumiere Magical Girls Inc. 2. Sezon 7. Bölüm İzle</h4>
+ *         <span class="info-chip">BÖL 7 / 12</span>
+ *     </div>
+ * </div>
  */
-function parseLinks(html) {
+function parseYenibolumPage(html) {
   if (!html) return [];
-  const links = new Set();
+  const episodes = [];
+  const seenUrls = new Set();
 
-  // Pattern 1: data-href="..."
-  const rDataHref = /data-href="([^"]+)"/gi;
-  let m;
-  while ((m = rDataHref.exec(html)) !== null) {
-    if (m[1] && m[1].length > 3) links.add(m[1].trim());
-  }
+  // Regex to match each flx-block
+  const blockRegex = /<div[^>]*class="[^"]*flx-block[^"]*"[^>]*data-href="([^"]+)"([\s\S]*?)(?=<div[^>]*class="[^"]*flx-block[^"]*"|<\/div>\s*<\/div>\s*<\/div>)/gi;
+  let match;
 
-  // Pattern 2: data-url="..." or data-slug="..."
-  const rDataUrl = /data-(?:url|slug)="([^"]+)"/gi;
-  while ((m = rDataUrl.exec(html)) !== null) {
-    if (m[1] && m[1].length > 3) links.add(m[1].trim());
-  }
+  while ((match = blockRegex.exec(html)) !== null) {
+    const dataHref = match[1].trim();
+    const blockContent = match[2];
 
-  // Pattern 3: standard <a href="..."> containing -bolum or -izle
-  const rHref = /href="([^"]*(?:-bolum|-izle)[^"]*)"/gi;
-  while ((m = rHref.exec(html)) !== null) {
-    if (m[1]) {
-      const clean = m[1].trim();
-      if (!clean.startsWith('#') && !clean.startsWith('javascript:')) {
-        links.add(clean);
+    // 1. Poster Image
+    let poster = null;
+    const imgMatch = blockContent.match(/<img[^>]*src="([^"]+)"/i);
+    if (imgMatch) {
+      poster = imgMatch[1].trim();
+    }
+
+    // 2. Title from <h4>...</h4>
+    let fullTitle = '';
+    const h4Match = blockContent.match(/<h4>([^<]+)<\/h4>/i);
+    if (h4Match) {
+      fullTitle = h4Match[1].trim();
+    }
+
+    // 3. Chip info (e.g. "BÖL 7 / 12" or "BÖL 7 / 0")
+    let currentEpNum = null;
+    let totalEpNum = null;
+    const chipMatch = blockContent.match(/BÖL\s*(\d+)\s*\/\s*(\d+)/i);
+    if (chipMatch) {
+      currentEpNum = parseInt(chipMatch[1], 10);
+      const chipTotal = parseInt(chipMatch[2], 10);
+      if (chipTotal > 0) totalEpNum = chipTotal;
+    }
+
+    // 4. Derive Slug & Episode Number from href
+    let cleanHref = dataHref
+      .replace(/^https?:\/\/[^\/]+/i, '')
+      .replace(/^\/?anime\//i, '')
+      .replace(/^\/+/, '')
+      .replace(/[?#].*$/, '')
+      .trim();
+
+    // Episode regex patterns:
+    // e.g. "magilumiere-magical-girls-inc-2-sezon-7-bolum-izle"
+    // e.g. "bleach-sennen-kessen-hen-4-kisim-final-4-bolum-izle-1"
+    let baseSlug = null;
+    let episodeNumber = currentEpNum;
+
+    const epMatch = cleanHref.match(/^(.*?)-(\d+)-bolum(?:-izle(?:-\d+)?)?$/i);
+    if (epMatch) {
+      baseSlug = epMatch[1].replace(/-izle$/i, '');
+      if (!episodeNumber) episodeNumber = parseInt(epMatch[2], 10);
+    } else {
+      const epMatch2 = cleanHref.match(/^(.*?)-bolum-(\d+)(?:-izle(?:-\d+)?)?$/i);
+      if (epMatch2) {
+        baseSlug = epMatch2[1].replace(/-izle$/i, '');
+        if (!episodeNumber) episodeNumber = parseInt(epMatch2[2], 10);
       }
+    }
+
+    if (!baseSlug) {
+      baseSlug = cleanHref.replace(/-izle.*$/i, '').replace(/-\d+$/, '');
+      if (!episodeNumber) episodeNumber = 1;
+    }
+
+    const finalSlug = `${baseSlug}-izle`;
+    const finalUrl = `https://www.tranimeizle.io/${cleanHref}`;
+
+    if (!seenUrls.has(finalUrl) && episodeNumber) {
+      seenUrls.add(finalUrl);
+
+      // Clean Anime Title from full title (e.g. "Magilumiere... 7. Bölüm İzle" -> "Magilumiere...")
+      let animeTitle = fullTitle
+        ? fullTitle.replace(/\s*\d+\.\s*Bölüm\s*İzle.*$/i, '').replace(/\s*İzle$/i, '').trim()
+        : baseSlug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+      episodes.push({
+        slug: finalSlug,
+        episode: episodeNumber,
+        url: finalUrl,
+        title: fullTitle || `${episodeNumber}. Bölüm`,
+        anime_title: animeTitle,
+        poster: poster,
+        total_episodes: totalEpNum || (episodeNumber > 0 ? episodeNumber : null)
+      });
     }
   }
 
-  return Array.from(links);
-}
-
-/**
- * Universal episode parser for any Tranimeizle link structure
- */
-function parseEpisode(rawHref) {
-  if (!rawHref) return null;
-
-  // 1. Clean URL
-  let clean = rawHref
-    .replace(/^https?:\/\/[^\/]+/i, '')
-    .replace(/^\/?anime\//i, '')
-    .replace(/^\/+/, '')
-    .replace(/[?#].*$/, '')
-    .replace(/\.html$/i, '')
-    .trim();
-
-  if (!clean || clean.length < 3) return null;
-
-  // Pattern 1: Standard "-X-bolum-izle" or "-X-bolum"
-  // e.g. "re-zero-kara-hajimeru-isekai-seikatsu-2-sezon-1-bolum-izle"
-  const m1 = clean.match(/^(.*?)-(\d+)-bolum(?:-izle)?$/i);
-  if (m1) {
-    const baseSlug = m1[1].replace(/-izle$/i, '');
-    const epNum = parseInt(m1[2], 10);
-    return {
-      slug: `${baseSlug}-izle`,
-      episode: epNum,
-      url: `https://www.tranimeizle.io/${clean}`
-    };
-  }
-
-  // Pattern 2: "-bolum-X"
-  const m2 = clean.match(/^(.*?)-bolum-(\d+)(?:-izle)?$/i);
-  if (m2) {
-    const baseSlug = m2[1].replace(/-izle$/i, '');
-    const epNum = parseInt(m2[2], 10);
-    return {
-      slug: `${baseSlug}-izle`,
-      episode: epNum,
-      url: `https://www.tranimeizle.io/${clean}`
-    };
-  }
-
-  // Pattern 3: Single Movies / OVAs / Specials
-  // e.g. "jujutsu-kaisen-0-movie-izle" or "kimetsu-no-yaiba-mugen-ressha-hen-film-izle"
-  const m3 = clean.match(/^(.*?(?:movie|film|ova|ona|special|specials)(?:-\d+)?(?:-izle)?)$/i);
-  if (m3) {
-    const baseSlug = m3[1].replace(/-izle$/i, '');
-    return {
-      slug: `${baseSlug}-izle`,
-      episode: 1,
-      url: `https://www.tranimeizle.io/${clean}`
-    };
-  }
-
-  // Pattern 4: General "-izle" links that are not list pages
-  if (clean.endsWith('-izle') && !clean.includes('sayfa-') && !clean.includes('listeler') && !clean.includes('kategori')) {
-    return {
-      slug: clean,
-      episode: 1,
-      url: `https://www.tranimeizle.io/${clean}`
-    };
-  }
-
-  return null;
+  return episodes;
 }
 
 /**
@@ -241,23 +243,23 @@ function parseEpisode(rawHref) {
  */
 async function run() {
   console.log(`\n======================================================`);
-  console.log(`🤖 [Clofthel Scraper] Başlatıldı: ${new Date().toLocaleString('tr-TR')}`);
-  console.log(`🎯 Hedef: ${BASE_URL} (Maksimum ${MAX_PAGES} Sayfa)`);
-  console.log(`📡 Backend Gateway: ${BACKEND_URL}`);
+  console.log(`🤖 [Clofthel Termux Scraper] Başlatıldı: ${new Date().toLocaleString('tr-TR')}`);
+  console.log(`🎯 Hedef URL: https://www.tranimeizle.io/listeler/yenibolum/sayfa-[1..${MAX_PAGES}]`);
+  console.log(`📡 Backend Gateway: ${BACKEND_URL}/api/internal/bulk-episode-sync`);
   console.log(`======================================================\n`);
 
   const allEpisodes = [];
-  const seenUrls = new Set();
+  const seenEpisodeKeys = new Set();
 
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const pageUrl = `${BASE_URL}${page}`;
+    const pageUrl = `https://www.tranimeizle.io/listeler/yenibolum/sayfa-${page}`;
     console.log(`📄 [Sayfa ${page}/${MAX_PAGES}] Taranıyor: ${pageUrl}`);
 
     try {
       const res = await fetchUrl(pageUrl);
 
       if (res.status === 403 || res.status === 503) {
-        console.warn(`⚠️ [Sayfa ${page}] Cloudflare / 403 engeli tespit edildi. 4 saniye beklenip devam ediliyor...`);
+        console.warn(`⚠️ [Sayfa ${page}] Cloudflare engeli tespit edildi. 4 saniye bekleniyor...`);
         await new Promise(r => setTimeout(r, 4000));
         continue;
       }
@@ -267,36 +269,34 @@ async function run() {
         break;
       }
 
-      const extractedLinks = parseLinks(res.data);
-      if (extractedLinks.length === 0) {
-        console.log(`ℹ️ [Sayfa ${page}] Yeni link bulunamadı, tarama sonlandırılıyor.`);
+      const parsedItems = parseYenibolumPage(res.data);
+      if (parsedItems.length === 0) {
+        console.log(`ℹ️ [Sayfa ${page}] Blok bulunamadı, tarama sonlandırılıyor.`);
         break;
       }
 
-      let pageEpCount = 0;
-      for (const rawHref of extractedLinks) {
-        const parsedEp = parseEpisode(rawHref);
-        if (parsedEp && !seenUrls.has(parsedEp.url)) {
-          seenUrls.add(parsedEp.url);
-          allEpisodes.push(parsedEp);
-          pageEpCount++;
+      let newCount = 0;
+      for (const item of parsedItems) {
+        const key = `${item.slug}_ep${item.episode}`;
+        if (!seenEpisodeKeys.has(key)) {
+          seenEpisodeKeys.add(key);
+          allEpisodes.push(item);
+          newCount++;
         }
       }
 
-      console.log(`  ✅ ${extractedLinks.length} ham linkten ${pageEpCount} geçerli bölüm ayıklandı (Toplam: ${allEpisodes.length})`);
+      console.log(`  ✅ ${parsedItems.length} flx-block'tan ${newCount} yeni bölüm ayıklandı (Toplam: ${allEpisodes.length})`);
     } catch (err) {
       console.error(`❌ [Sayfa ${page}] Hata: ${err.message}`);
     }
 
-    // Rate limiting delay between requests
     await new Promise(r => setTimeout(r, 1200));
   }
 
-  console.log(`\n📊 Toplam ${allEpisodes.length} yeni/güncel anime bölümü ayıklandı.`);
+  console.log(`\n📊 Toplam ${allEpisodes.length} yeni anime bölümü toplandı.`);
 
-  // Post to Backend Bulk Sync Gateway
   if (allEpisodes.length > 0) {
-    console.log(`🚀 Backend Gateway'e gönderiliyor (${BACKEND_URL}/api/internal/bulk-episode-sync)...`);
+    console.log(`🚀 Backend Gateway'e gönderiliyor...`);
     try {
       const result = await postJSON(`${BACKEND_URL}/api/internal/bulk-episode-sync`, {
         episodes: allEpisodes
@@ -312,7 +312,7 @@ async function run() {
     console.log(`ℹ️ Gönderilecek yeni bölüm bulunamadı.`);
   }
 
-  console.log(`\n✨ Scraper işlemi başarıyla tamamlandı. [${new Date().toLocaleString('tr-TR')}]\n`);
+  console.log(`\n✨ Scraper tamamlandı. [${new Date().toLocaleString('tr-TR')}]\n`);
 }
 
 run().catch(err => {
