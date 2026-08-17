@@ -663,24 +663,30 @@ export async function fetchTrendingAnimes(limit = DEFAULT_PAGE_SIZE) {
  */
 export async function fetchAnimeDetail(animeId) {
   try {
-    const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}`);
+    const cleanId = String(animeId).split(/[,\s]+/)[0].trim();
+    const response = await apiFetch(`${API_BASE_URL}/animes/${cleanId}`);
     const json = await response.json();
 
-    if (!json.success) throw new Error('API error');
+    if (!json.success || !json.data) throw new Error(json.error || 'API error');
 
     const anime = json.data;
+    let anilistData = null;
     
-    // Eğer anilist_id varsa onunla, yoksa başlık (anime_title) ile AniList'te ara
-    let anilistData = anime.anilist_id
-      ? await fetchAniListSingle(anime.anilist_id)
-      : await fetchAniListSingle(null, anime.anime_title);
+    try {
+      // Eğer anilist_id varsa onunla, yoksa başlık (anime_title) ile AniList'te ara
+      anilistData = anime.anilist_id
+        ? await fetchAniListSingle(anime.anilist_id)
+        : await fetchAniListSingle(null, anime.anime_title || anime.orijinal_ad);
 
-    // AniList'te bulunamadıysa veya rate limit yendiyse alternatif API'leri dene
-    if (!anilistData) {
-      anilistData = await fetchKitsuSingle(anime.anime_title);
+      // AniList'te bulunamadıysa veya rate limit yendiyse alternatif API'leri dene
       if (!anilistData) {
-        anilistData = await fetchJikanSingle(anime.anime_title);
+        anilistData = await fetchKitsuSingle(anime.anime_title || anime.orijinal_ad);
+        if (!anilistData) {
+          anilistData = await fetchJikanSingle(anime.anime_title || anime.orijinal_ad);
+        }
       }
+    } catch (enrichErr) {
+      console.warn('[fetchAnimeDetail] Enrichment warning:', enrichErr.message);
     }
 
     return enrichAnime(anime, anilistData);
@@ -691,7 +697,8 @@ export async function fetchAnimeDetail(animeId) {
 }
 export async function resetAnimeAnilistId(animeId) {
   try {
-    const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}/reset-anilist`, { method: 'POST' });
+    const cleanId = String(animeId).split(/[,\s]+/)[0].trim();
+    const response = await apiFetch(`${API_BASE_URL}/animes/${cleanId}/reset-anilist`, { method: 'POST' });
     const json = await response.json();
     return json.success;
   } catch (error) {
@@ -702,7 +709,8 @@ export async function resetAnimeAnilistId(animeId) {
 
 export async function saveAnimeAnilistId(animeId, anilistId, coverImage, bannerImage, orijinalAd, format) {
   try {
-    const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}/anilist-id`, {
+    const cleanId = String(animeId).split(/[,\s]+/)[0].trim();
+    const response = await apiFetch(`${API_BASE_URL}/animes/${cleanId}/anilist-id`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
@@ -727,10 +735,11 @@ export async function saveAnimeAnilistId(animeId, anilistId, coverImage, bannerI
  */
 export async function fetchEpisodes(animeId) {
   try {
-    const response = await apiFetch(`${API_BASE_URL}/animes/${animeId}/episodes`);
+    const cleanId = String(animeId).split(/[,\s]+/)[0].trim();
+    const response = await apiFetch(`${API_BASE_URL}/animes/${cleanId}/episodes`);
     const json = await response.json();
 
-    if (!json.success) throw new Error('API error');
+    if (!json.success) throw new Error(json.error || 'API error');
 
     return json.data || [];
   } catch (error) {

@@ -150,9 +150,10 @@ export default function AnimeDetailScreen({ route, navigation }) {
     return title || rawTitle || '';
   };
 
-  // Animation
+  // Animation and Season Cache
   const useRefValue = useRef(new Animated.Value(0));
   const fadeAnim = useRefValue.current;
+  const seasonCacheRef = useRef({});
 
   // ── Load user status ─────────────────────────────────────────
   useEffect(() => {
@@ -173,13 +174,22 @@ export default function AnimeDetailScreen({ route, navigation }) {
     if (!activeMongoId) return;
 
     let cancelled = false;
-    setLoading(true);
-    setLoadingEpisodes(true);
-    fadeAnim.setValue(0);
+    const cached = seasonCacheRef.current[activeMongoId];
     
-    // Clear old details and episodes instantly to prevent mismatched data display
-    setAnime(null);
-    setEpisodes([]);
+    if (cached) {
+      // Instant switch from local cache — zero wait, zero flicker!
+      if (cached.anime) setAnime(cached.anime);
+      if (cached.episodes && cached.episodes.length > 0) {
+        setEpisodes(cached.episodes);
+        setLoadingEpisodes(false);
+      }
+      setLoading(false);
+      fadeAnim.setValue(1);
+    } else {
+      setLoading(true);
+      setLoadingEpisodes(true);
+      fadeAnim.setValue(0);
+    }
 
     // 1. Fetch detail (includes orchestrator seasons list from backend)
     fetchAnimeDetail(activeMongoId).then(data => {
@@ -192,11 +202,16 @@ export default function AnimeDetailScreen({ route, navigation }) {
         if (data.related_movies_or_ovas) {
           setRelatedMoviesOvas(data.related_movies_or_ovas);
         }
+        // Save to cache
+        seasonCacheRef.current[activeMongoId] = {
+          ...(seasonCacheRef.current[activeMongoId] || {}),
+          anime: data
+        };
       }
       setLoading(false);
     }).catch(err => {
       console.error('[Detail] Error loading detail:', err);
-      if (!cancelled) setLoading(false);
+      if (!cancelled && !cached) setLoading(false);
     });
 
     // 2. Fetch episodes with automated on-demand self-healing
@@ -205,9 +220,14 @@ export default function AnimeDetailScreen({ route, navigation }) {
       if (eps && eps.length > 0) {
         setEpisodes(eps);
         setLoadingEpisodes(false);
+        seasonCacheRef.current[activeMongoId] = {
+          ...(seasonCacheRef.current[activeMongoId] || {}),
+          episodes: eps
+        };
       } else {
-        console.log('[Detail] 0 episodes found. Triggering client-side self-heal for:', initialTitle);
-        const healResult = await selfHealAnime(activeMongoId, anime?.tranimeizle_slug, initialTitle);
+        const targetTitle = anime?.orijinal_ad || anime?.anime_title || initialTitle;
+        console.log('[Detail] 0 episodes found. Triggering client-side self-heal for:', targetTitle);
+        const healResult = await selfHealAnime(activeMongoId, anime?.tranimeizle_slug, targetTitle);
         if (!cancelled) {
           if (healResult?.success && healResult?.data?.episodes) {
             const healedEps = Object.keys(healResult.data.episodes).map(key => ({
@@ -217,7 +237,11 @@ export default function AnimeDetailScreen({ route, navigation }) {
               url: healResult.data.episodes[key]
             })).sort((a, b) => a.episode_number - b.episode_number);
             setEpisodes(healedEps);
-          } else {
+            seasonCacheRef.current[activeMongoId] = {
+              ...(seasonCacheRef.current[activeMongoId] || {}),
+              episodes: healedEps
+            };
+          } else if (!cached) {
             setEpisodes([]);
           }
         }
@@ -227,23 +251,30 @@ export default function AnimeDetailScreen({ route, navigation }) {
       // Animate fade-in
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 400,
+        duration: 300,
         useNativeDriver: true,
       }).start();
     }).catch(async (err) => {
       console.error('[Detail] Error loading episodes:', err);
-      const healResult = await selfHealAnime(activeMongoId, anime?.tranimeizle_slug, initialTitle);
-      if (!cancelled) {
-        if (healResult?.success && healResult?.data?.episodes) {
-          const healedEps = Object.keys(healResult.data.episodes).map(key => ({
-            _id: `${healResult.data._id}_${key}`,
-            episode_number: parseInt(key, 10),
-            episode_title: `${key}. Bölüm`,
-            url: healResult.data.episodes[key]
-          })).sort((a, b) => a.episode_number - b.episode_number);
-          setEpisodes(healedEps);
+      if (!cached) {
+        const targetTitle = anime?.orijinal_ad || anime?.anime_title || initialTitle;
+        const healResult = await selfHealAnime(activeMongoId, anime?.tranimeizle_slug, targetTitle);
+        if (!cancelled) {
+          if (healResult?.success && healResult?.data?.episodes) {
+            const healedEps = Object.keys(healResult.data.episodes).map(key => ({
+              _id: `${healResult.data._id}_${key}`,
+              episode_number: parseInt(key, 10),
+              episode_title: `${key}. Bölüm`,
+              url: healResult.data.episodes[key]
+            })).sort((a, b) => a.episode_number - b.episode_number);
+            setEpisodes(healedEps);
+            seasonCacheRef.current[activeMongoId] = {
+              ...(seasonCacheRef.current[activeMongoId] || {}),
+              episodes: healedEps
+            };
+          }
+          setLoadingEpisodes(false);
         }
-        setLoadingEpisodes(false);
       }
     });
 
