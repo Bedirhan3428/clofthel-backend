@@ -27,7 +27,7 @@ try {
 WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen({ navigation }) {
-  const { login, googleLogin } = useContext(AuthContext);
+  const { login, googleLogin, loginAsTestUser } = useContext(AuthContext);
   const { showAlert } = useAlert();
 
   React.useEffect(() => {
@@ -44,6 +44,13 @@ export default function LoginScreen({ navigation }) {
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+
+  const handleDevLogin = async () => {
+    setIsLoading(true);
+    await loginAsTestUser();
+    setIsLoading(false);
+    navigation.replace('Home');
+  };
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -78,16 +85,12 @@ export default function LoginScreen({ navigation }) {
       setIsLoading(true);
       await GoogleSignin.hasPlayServices();
       
-      // Her tıklamada hesap seçme ekranının gelmesi için önce mevcut Google oturumunu kapatıyoruz
       try {
         await GoogleSignin.signOut();
       } catch (e) {
-        // Zaten çıkış yapılmışsa hatayı yoksay
       }
 
       const userInfo = await GoogleSignin.signIn();
-      // GoogleSignin.signIn() returns an object which includes idToken in userInfo.data.idToken or userInfo.idToken depending on version.
-      // In newer versions (11+), it returns data inside `data` property.
       const idToken = userInfo.data?.idToken || userInfo.idToken;
       
       const result = await googleLogin(idToken, userInfo.data?.user?.email || userInfo.user?.email || 'dummy@google.com', userInfo.data?.user?.name || userInfo.user?.name || 'Google User', '');
@@ -108,21 +111,23 @@ export default function LoginScreen({ navigation }) {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header Bar */}
-      <View style={styles.headerBar}>
-        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-          <Ionicons name="arrow-back" size={24} color="#FFF" />
-        </TouchableOpacity>
-      </View>
-
       <KeyboardAvoidingView 
         style={styles.keyboardView} 
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
+        <View style={styles.headerBar}>
+          <TouchableOpacity 
+            style={styles.backButton} 
+            onPress={() => navigation.canGoBack() ? navigation.goBack() : navigation.replace('Home')}
+          >
+            <Ionicons name="arrow-back" size={24} color="#FFF" />
+          </TouchableOpacity>
+        </View>
+
         <View style={styles.content}>
           <View style={styles.headerContainer}>
-            <Text style={styles.title}>Tekrar Hoş Geldin!</Text>
-            <Text style={styles.subtitle}>Anime dünyasına kaldığın yerden devam et</Text>
+            <Text style={styles.title}>Hoş Geldiniz</Text>
+            <Text style={styles.subtitle}>En sevdiğin animeleri kesintisiz izlemeye devam et.</Text>
           </View>
 
           <View style={styles.formContainer}>
@@ -132,7 +137,7 @@ export default function LoginScreen({ navigation }) {
                 <Ionicons name="mail-outline" size={20} color={COLORS.textSecondary} style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
-                  placeholder="E-posta adresiniz"
+                  placeholder="ornek@email.com"
                   placeholderTextColor={COLORS.textSecondary}
                   value={email}
                   onChangeText={setEmail}
@@ -181,6 +186,16 @@ export default function LoginScreen({ navigation }) {
                   <Text style={styles.loginButtonText}>Giriş Yap</Text>
                 )}
               </LinearGradient>
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              style={styles.devTestButton}
+              onPress={handleDevLogin}
+              disabled={isLoading}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="flash" size={18} color={COLORS.accent} style={{ marginRight: 8 }} />
+              <Text style={styles.devTestButtonText}>Test / Geliştirici Hesabı ile Hızlı Giriş</Text>
             </TouchableOpacity>
 
             <View style={styles.dividerContainer}>
@@ -362,6 +377,22 @@ const styles = StyleSheet.create({
   googleButtonText: {
     color: '#000',
     fontSize: FONT_SIZES.subtitle,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  devTestButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 107, 0, 0.12)',
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+    height: 52,
+    borderRadius: BORDER_RADIUS.lg,
+    marginTop: SPACING.md,
+  },
+  devTestButtonText: {
+    color: COLORS.accent,
+    fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.bold,
   },
 });

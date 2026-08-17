@@ -17,6 +17,21 @@ export const AuthProvider = ({ children }) => {
     try {
       const token = await AsyncStorage.getItem('userToken');
       if (token) {
+        if (token === 'dummy_dev_test_token') {
+          const testUser = {
+            _id: 'test_dev_user_001',
+            name: 'Test Geliştirici',
+            email: 'test@clofthel.com',
+            avatar: 'https://static.tranimeizle.top/animes/5486/medium.jpeg',
+            role: 'admin',
+            isVerified: true
+          };
+          setUser(testUser);
+          setUserToken(token);
+          setIsLoading(false);
+          return;
+        }
+
         // Token varsa doğrulamak için backend'e sor
         const res = await apiFetch(`${API_BASE_URL}/auth/me`, {
           headers: {
@@ -51,6 +66,22 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     checkToken();
   }, []);
+
+  const loginAsTestUser = async () => {
+    const testUser = {
+      _id: 'test_dev_user_001',
+      name: 'Test Geliştirici',
+      email: 'test@clofthel.com',
+      avatar: 'https://static.tranimeizle.top/animes/5486/medium.jpeg',
+      role: 'admin',
+      isVerified: true
+    };
+    const dummyToken = 'dummy_dev_test_token';
+    await AsyncStorage.setItem('userToken', dummyToken);
+    setUserToken(dummyToken);
+    setUser(testUser);
+    return { success: true };
+  };
 
   const login = async (email, password) => {
     try {
@@ -200,7 +231,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ login, register, verifyEmail, resendCode, googleLogin, logout, user, userToken, isLoading, updateUserAvatar, updateUserName, acceptLegal, isBotBypassed, setBotBypassed }}>
+    <AuthContext.Provider value={{ login, register, verifyEmail, resendCode, googleLogin, logout, loginAsTestUser, user, userToken, isLoading, updateUserAvatar, updateUserName, acceptLegal, isBotBypassed, setBotBypassed }}>
       {children}
     </AuthContext.Provider>
   );
