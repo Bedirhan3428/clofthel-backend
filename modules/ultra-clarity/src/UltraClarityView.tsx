@@ -1,5 +1,6 @@
 import { requireNativeViewManager } from 'expo-modules-core';
 import * as React from 'react';
+import { View } from 'react-native';
 
 export type UltraClarityViewProps = {
   url?: string;
@@ -9,8 +10,12 @@ export type UltraClarityViewProps = {
   onStatusChange?: (event: { nativeEvent: { isPlaying?: boolean, isBuffering?: boolean, isEnded?: boolean } }) => void;
 };
 
-const NativeView: React.ComponentType<UltraClarityViewProps & { ref?: any }> =
-  requireNativeViewManager('UltraClarity');
+let NativeView: React.ComponentType<UltraClarityViewProps & { ref?: any }> | null = null;
+try {
+  NativeView = requireNativeViewManager('UltraClarity');
+} catch (e) {
+  console.warn('[UltraClarityView] Native view manager not available in current runtime (e.g. Expo Go). Using fallback.');
+}
 
 export default React.forwardRef((props: UltraClarityViewProps, ref) => {
   const nativeRef = React.useRef<any>(null);
@@ -32,6 +37,10 @@ export default React.forwardRef((props: UltraClarityViewProps, ref) => {
       }
     }
   }));
+
+  if (!NativeView) {
+    return <View style={props.style} />;
+  }
 
   return <NativeView ref={nativeRef} {...props} />;
 });
