@@ -330,6 +330,40 @@ function parseAnimeMainPageHtml(html, defaultSlug = '') {
 }
 
 /**
+ * Extracts a clean, formatted title from a URL or slug and cleans unwanted Turkish keywords.
+ */
+function extractCleanTitleFromSlugOrUrl(slugOrUrl, rawTitle = '') {
+  let slug = (slugOrUrl || '')
+    .replace(/^https?:\/\/[^\/]+\/(?:anime\/)?/i, '')
+    .replace(/-(?:\d+)-bolum.*$/i, '')
+    .replace(/-izle.*$/i, '')
+    .replace(/^\/+|\/+$/g, '')
+    .trim();
+
+  let title = '';
+  if (rawTitle && rawTitle.trim()) {
+    title = rawTitle
+      .replace(/\s*\d+\.\s*Bölüm\s*İzle.*$/i, '')
+      .replace(/\s*Türkçe\s*(?:Altyazılı|Dublaj)?\s*İzle.*$/i, '')
+      .replace(/\s*İzle.*$/i, '')
+      .trim();
+  }
+
+  if (!title && slug) {
+    title = slug
+      .replace(/-/g, ' ')
+      .replace(/\b(izle|turkce|altyazi|dublaj|full|hd)\b/gi, '')
+      .replace(/\bsezon\b/gi, 'Season')
+      .replace(/\bbolum\b/gi, 'Episode')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  return { cleanSlug: slug, cleanTitle: title || rawTitle || slug };
+}
+
+/**
  * Saves or updates an anime document and syncs with OrchestratorState in MongoDB Atlas
  */
 async function saveScrapedAnimeData(parsedData, targetAnimeId = null, targetSeasonNumber = null) {
@@ -345,23 +379,31 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null, targetSeas
     animeDoc = await Anime.findById(targetAnimeId);
   }
 
-  // 2. Try finding by slug
-  if (!animeDoc && parsedData.slug) {
+  // 2. Extract clean title and slug
+  const effectiveRawTitle = parsedData.customTitle || parsedData.title || '';
+  const { cleanSlug: extractedSlug, cleanTitle: extractedTitle } = extractCleanTitleFromSlugOrUrl(
+    parsedData.url || parsedData.slug || (animeDoc && animeDoc.tranimeizle_slug),
+    effectiveRawTitle
+  );
+
+  const cleanSlug = extractedSlug || (parsedData.slug ? parsedData.slug.replace(/-izle$/, '') : 'anime');
+  const cleanTitle = parsedData.customTitle || extractedTitle || parsedData.title || cleanSlug;
+
+  // 3. Try finding by slug if not found yet
+  if (!animeDoc && cleanSlug) {
     animeDoc = await Anime.findOne({
       $or: [
-        { tranimeizle_slug: parsedData.slug },
-        { tranimeizle_slug: `${parsedData.slug}-izle` },
-        { tranimeizle_slug: parsedData.slug.replace(/-izle$/, '') }
+        { tranimeizle_slug: cleanSlug },
+        { tranimeizle_slug: `${cleanSlug}-izle` },
+        { tranimeizle_slug: cleanSlug.replace(/-izle$/, '') }
       ]
     });
   }
 
-  const cleanSlug = (parsedData.slug || (animeDoc && animeDoc.tranimeizle_slug) || parsedData.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')).replace(/^-|-$/g, '');
-
-  // 0. Resolve Exact Season-Specific AniList ID
+  // 4. Resolve Exact Season-Specific AniList ID with clean Title
   let exactAniList = null;
   try {
-    exactAniList = await resolveExactAniListId(parsedData.title, cleanSlug, parsedData.otherNames || []);
+    exactAniList = await resolveExactAniListId(cleanTitle, cleanSlug, parsedData.otherNames || []);
     if (exactAniList) {
       console.log(`🎯 [SelfHealer] Exact Season AniList Matched: "${exactAniList.title_en}" -> AniList ID: ${exactAniList.anilist_id} (Format: ${exactAniList.format})`);
     }
@@ -377,17 +419,25 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null, targetSeas
 
     animeDoc.episodes = mergedEpisodes;
     animeDoc.total_episodes = maxEp;
-    if (parsedData.poster && !animeDoc.cover_image) animeDoc.cover_image = parsedData.poster;
-    if (parsedData.description && !animeDoc.description) animeDoc.description = parsedData.description;
-    if (parsedData.genres && (!animeDoc.genres || animeDoc.genres.length === 0)) animeDoc.genres = parsedData.genres;
+    if (parsedData.poster) animeDoc.cover_image = parsedData.poster;
+    if (parsedData.description) animeDoc.description = parsedData.description;
+    if (parsedData.genres && parsedData.genres.length > 0) animeDoc.genres = parsedData.genres;
     if (parsedData.fansubs && parsedData.fansubs.length > 0) animeDoc.fansubs = parsedData.fansubs;
+
+    // Update and fix AniList ID & Title
     if (exactAniList) {
       if (exactAniList.anilist_id) animeDoc.anilist_id = exactAniList.anilist_id;
       if (exactAniList.title_en) animeDoc.orijinal_ad = exactAniList.title_en;
       if (exactAniList.format) animeDoc.format = exactAniList.format;
       if (exactAniList.season_year) animeDoc.season_year = exactAniList.season_year;
-    } else if (parsedData.title && !animeDoc.orijinal_ad) {
-      animeDoc.orijinal_ad = parsedData.title;
+      if (exactAniList.cover_image && (!animeDoc.cover_image || animeDoc.cover_image.includes('default') || parsedData.poster)) {
+        animeDoc.cover_image = exactAniList.cover_image;
+      }
+      if (exactAniList.banner_image) {
+        animeDoc.banner_image = exactAniList.banner_image;
+      }
+    } else if (cleanTitle) {
+      animeDoc.orijinal_ad = cleanTitle;
     }
 
     animeDoc.markModified('episodes');
@@ -399,9 +449,9 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null, targetSeas
       _id: new mongoose.Types.ObjectId(),
       tranimeizle_slug: cleanSlug.endsWith('-izle') ? cleanSlug : `${cleanSlug}-izle`,
       tranimeizle_url: `https://www.tranimeizle.io/anime/${cleanSlug}`,
-      orijinal_ad: exactAniList?.title_en || parsedData.title,
-      cover_image: parsedData.poster,
-      banner_image: parsedData.poster,
+      orijinal_ad: exactAniList?.title_en || cleanTitle,
+      cover_image: exactAniList?.cover_image || parsedData.poster,
+      banner_image: exactAniList?.banner_image || parsedData.poster,
       description: parsedData.description,
       genres: parsedData.genres || [],
       fansubs: parsedData.fansubs || [],
@@ -416,7 +466,7 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null, targetSeas
     console.log(`✨ [SelfHealer] Created NEW Anime in DB: "${animeDoc.orijinal_ad}" (${animeDoc._id}) with ${parsedData.totalEpisodes} episodes (AniList: ${animeDoc.anilist_id || 'N/A'}, Fansubs: ${(animeDoc.fansubs || []).join(', ') || 'N/A'}).`);
   }
 
-  // 3. Update OrchestratorState if exists
+  // 5. Update OrchestratorState if exists
   try {
     const stateDoc = await OrchestratorState.findOne({ state_key: 'orchestrator_state' });
     if (stateDoc && stateDoc.global_titles_map) {
@@ -443,12 +493,13 @@ async function saveScrapedAnimeData(parsedData, targetAnimeId = null, targetSeas
         let matchedSeason = (group.seasons || []).find(s => String(s.mongo_db_id) === String(animeDoc._id));
         if (matchedSeason) {
           if (exactAniList?.anilist_id) matchedSeason.anilist_id = exactAniList.anilist_id;
+          if (exactAniList?.title_en) matchedSeason.season_title = exactAniList.title_en;
           if (targetSeasonNumber) matchedSeason.season_number = parseInt(targetSeasonNumber, 10);
         } else {
           const nextSeasonNum = targetSeasonNumber ? parseInt(targetSeasonNumber, 10) : ((group.seasons || []).length + 1);
           group.seasons.push({
             season_number: nextSeasonNum,
-            season_title: parsedData.title || `Season ${nextSeasonNum}`,
+            season_title: exactAniList?.title_en || cleanTitle || `Season ${nextSeasonNum}`,
             format: exactAniList?.format || 'TV',
             mongo_db_id: String(animeDoc._id),
             anilist_id: exactAniList?.anilist_id || null

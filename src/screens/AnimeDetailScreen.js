@@ -107,6 +107,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const [isFixModalVisible, setIsFixModalVisible] = useState(false);
   const [fixMode, setFixMode] = useState('fix_season'); // 'fix_season' | 'add_season'
   const [customUrl, setCustomUrl] = useState('');
+  const [animeTitleInput, setAnimeTitleInput] = useState('');
   const [targetSeasonNum, setTargetSeasonNum] = useState('');
   const [totalEpisodesInput, setTotalEpisodesInput] = useState('');
   const [isFixing, setIsFixing] = useState(false);
@@ -117,6 +118,37 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const [posterTapCount, setPosterTapCount] = useState(0);
   const posterTapTimerRef = useRef(null);
   const clientWebViewRef = useRef(null);
+
+  // Helper to extract a clean title from a URL or raw scraped title
+  const extractCleanTitleFromUrl = (urlOrSlug, rawTitle = '') => {
+    let title = (rawTitle || '')
+      .replace(/\s*\d+\.\s*Bölüm\s*İzle.*$/i, '')
+      .replace(/\s*Türkçe\s*(?:Altyazılı|Dublaj)?\s*İzle.*$/i, '')
+      .replace(/\s*İzle.*$/i, '')
+      .trim();
+
+    if (!title && urlOrSlug) {
+      const slug = String(urlOrSlug)
+        .replace(/^https?:\/\/[^\/]+\/(?:anime\/)?/i, '')
+        .replace(/-(?:\d+)-bolum.*$/i, '')
+        .replace(/-izle.*$/i, '')
+        .replace(/^\/+|\/+$/g, '')
+        .trim();
+
+      if (slug) {
+        title = slug
+          .replace(/-/g, ' ')
+          .replace(/\b(izle|turkce|altyazi|dublaj|full|hd)\b/gi, '')
+          .replace(/\bsezon\b/gi, 'Season')
+          .replace(/\bbolum\b/gi, 'Episode')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .replace(/\b\w/g, c => c.toUpperCase());
+      }
+    }
+
+    return title || rawTitle || '';
+  };
 
   // Animation
   const useRefValue = useRef(new Animated.Value(0));
@@ -304,12 +336,16 @@ export default function AnimeDetailScreen({ route, navigation }) {
     setClientScrapeUrl(resolvedUrl);
   };
 
-  const executeSaveScrapedData = async (scraped) => {
-    setFixStatusText(`"${scraped.title}" için ${scraped.totalEpisodes} bölüm kaydediliyor...`);
+  const executeSaveScrapedData = async (scraped, customTitleToUse = null) => {
+    const finalTitle = customTitleToUse || animeTitleInput.trim() || extractCleanTitleFromUrl(scraped?.url || clientScrapeUrl, scraped?.title);
+    setFixStatusText(`"${finalTitle}" için ${scraped.totalEpisodes} bölüm ve AniList verileri kaydediliyor...`);
     setIsFixing(true);
 
     const saveRes = await clientAddAnimeApi({
-      parsedData: scraped,
+      parsedData: {
+        ...scraped,
+        customTitle: finalTitle
+      },
       mode: fixMode,
       targetAnimeId: activeMongoId,
       targetSeasonNumber: fixMode === 'add_season' ? parseInt(targetSeasonNum, 10) : null,
@@ -317,10 +353,11 @@ export default function AnimeDetailScreen({ route, navigation }) {
     });
 
     if (saveRes?.success) {
-      showAlert('Başarılı 🚀', saveRes.message || 'İşlem başarıyla tamamlandı.');
+      showAlert('Başarılı 🚀', saveRes.message || `"${finalTitle}" başarıyla güncellendi ve AniList ile senkronize edildi!`);
       setIsFixModalVisible(false);
       setIsFullScreenBrowser(false);
       setCustomUrl('');
+      setAnimeTitleInput('');
       setTargetSeasonNum('');
       setTotalEpisodesInput('');
       setClientScrapeUrl(null);
@@ -356,6 +393,11 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
       if (data.type === 'page_navigated') {
         setFixStatusText(`Sayfa yüklendi: ${data.url || ''}`);
+        // Auto extract title from page URL if title input is empty
+        if (!animeTitleInput.trim()) {
+          const autoTitle = extractCleanTitleFromUrl(data.url);
+          if (autoTitle) setAnimeTitleInput(autoTitle);
+        }
       } else if (data.type === 'search_result_found') {
         setFixStatusText(`Anime sayfası bulundu, yönlendiriliyor...`);
       } else if (data.type === 'anime_overview_scraped') {
@@ -367,37 +409,26 @@ export default function AnimeDetailScreen({ route, navigation }) {
           return;
         }
 
-        // Verify Title Match
-        const expectedTitles = [
-          mainTitleEn,
-          mainTitleJp,
-          anime?.orijinal_ad,
-          anime?.anime_title,
-          anime?.tranimeizle_slug?.replace(/-izle$/i, '').replace(/-/g, ' ')
-        ];
-        const scrapedTitles = [scraped.title, ...(scraped.otherNames || [])];
-        const isMatched = verifyTitleMatchClient(expectedTitles, scrapedTitles);
-
-        if (!isMatched) {
-          const err = `İsim Farklı Olabilir: Sayfadaki anime ("${scraped.title}") ile geçerli anime ("${mainTitleEn}") tam uyuşmuyor.`;
-          setLastErrorMessage(err);
-          setIsFixing(false);
-          showAlert(
-            'İsim Uyuşmazlığı Olabilir',
-            `${err}\n\nYine de bu sayfadaki bölümleri bu animeye kaydetmek istiyor musunuz?`,
-            [
-              { text: 'İptal / Tarayıcıda Kal', style: 'cancel' },
-              { text: 'Yine de Zorla Kaydet', onPress: () => executeSaveScrapedData(scraped) }
-            ]
-          );
-          return;
+        const candidateTitle = animeTitleInput.trim() || extractCleanTitleFromUrl(scraped?.url || clientScrapeUrl, scraped?.title);
+        if (!animeTitleInput.trim() && candidateTitle) {
+          setAnimeTitleInput(candidateTitle);
         }
 
-        await executeSaveScrapedData(scraped);
+        // Confirm Anime Title & AniList Sync with user
+        showAlert(
+          'Anime İsmi & AniList Onayı 🏷️',
+          `Ayıklanan Anime Başlığı:\n"${candidateTitle}"\n\nBu isimle kaydedilip AniList ID ve bilgileri güncellensin mi?`,
+          [
+            { text: 'İptal / Değiştir', style: 'cancel' },
+            { 
+              text: '⚡ Evet, Kaydet', 
+              onPress: () => executeSaveScrapedData(scraped, candidateTitle) 
+            }
+          ]
+        );
       } else if (data.type === 'scraper_error') {
-        setLastErrorMessage(`[WebView Scraper error]: ${err}`);
+        setLastErrorMessage(`[WebView Scraper error]: ${data.error}`);
         setIsFixing(false);
-        setClientScrapeUrl(null);
       }
     } catch (err) {
       console.warn('[AnimeDetailScreen client scraper] Parse error:', err);
@@ -789,6 +820,20 @@ export default function AnimeDetailScreen({ route, navigation }) {
               </View>
             )}
 
+            {/* Anime Title / AniList Name Input */}
+            <View style={styles.fixInputGroup}>
+              <Text style={styles.fixInputLabel}>Anime Adı (AniList ve Veritabanı Başlığı)</Text>
+              <TextInput
+                style={styles.fixTextInput}
+                placeholder="Örn: Solo Leveling Season 2"
+                placeholderTextColor={COLORS.textMuted}
+                value={animeTitleInput}
+                onChangeText={setAnimeTitleInput}
+                autoCapitalize="words"
+                editable={!isFixing}
+              />
+            </View>
+
             {/* Tranimeizle URL Input */}
             <View style={styles.fixInputGroup}>
               <Text style={styles.fixInputLabel}>Tranimeizle Linki (İsteğe Bağlı)</Text>
@@ -797,7 +842,13 @@ export default function AnimeDetailScreen({ route, navigation }) {
                 placeholder="https://www.tranimeizle.io/anime/..."
                 placeholderTextColor={COLORS.textMuted}
                 value={customUrl}
-                onChangeText={setCustomUrl}
+                onChangeText={(text) => {
+                  setCustomUrl(text);
+                  const extracted = extractCleanTitleFromUrl(text);
+                  if (extracted && (!animeTitleInput || animeTitleInput.length < 3)) {
+                    setAnimeTitleInput(extracted);
+                  }
+                }}
                 autoCapitalize="none"
                 autoCorrect={false}
                 editable={!isFixing}
