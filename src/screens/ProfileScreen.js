@@ -1,4 +1,4 @@
-import React, { useContext, useState, useRef } from 'react';
+import React, { useContext, useState, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,9 @@ import {
   ActivityIndicator,
   Platform,
   Alert,
+  Modal,
+  TextInput,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -17,7 +20,6 @@ import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } fro
 import { getProfileData, createCustomList, deleteCustomList, updateAvatar, toggleFavoritesNotificationsApi, toggleListNotificationsApi, checkAnimeExistsApi, clientAddAnimeApi } from '../services/api';
 import { AVATAR_LIST } from '../constants/avatars';
 import { APP_VERSION } from '../constants/config';
-import { Modal, TextInput, Switch } from 'react-native';
 import { animePageScraperInjectedJs } from '../modules/AnimePageScraperScript';
 import { resolveTargetTranimeizleUrl } from '../utils/clientAnimeHealer';
 import * as Clipboard from 'expo-clipboard';
@@ -102,7 +104,6 @@ export default function ProfileScreen({ navigation }) {
   };
 
   const startAddAnimeScrape = async () => {
-    if (!animeInputUrl.trim()) {
     const rawInput = animeInputUrl.trim();
     if (!rawInput) {
       Alert.alert('Uyarı', 'Lütfen bir anime sayfası linki veya anime adı girin.');
