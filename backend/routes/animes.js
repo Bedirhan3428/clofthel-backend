@@ -1593,26 +1593,66 @@ router.get('/:id', async (req, res, next) => {
       }
     }
 
-    // 2. Use high-performance memory cache map to resolve orchestrator group
+    // 2. Resolve orchestrator group directly from MongoDB OrchestratorState (with memory cache fallback)
     const searchIdStr = String(activeId);
-    const orchestratorEntry = mongoIdToGroupMap[searchIdStr];
+    let orchestratorEntry = null;
+
+    try {
+      const stateDoc = await OrchestratorState.findOne({ state_key: 'orchestrator_state' }).lean();
+      if (stateDoc && stateDoc.global_titles_map) {
+        // A. Search by mongo_db_id in seasons or movies
+        for (const [key, item] of Object.entries(stateDoc.global_titles_map)) {
+          if ((item.seasons || []).some(s => String(s.mongo_db_id) === searchIdStr) ||
+              (item.related_movies_or_ovas || []).some(m => String(m.mongo_db_id) === searchIdStr)) {
+            orchestratorEntry = item;
+            break;
+          }
+        }
+
+        // B. Search by clean franchise title or slug if not found by ID
+        if (!orchestratorEntry) {
+          const rawCompare = (anime.orijinal_ad || anime.anime_title || formatSlugToTitle(anime.tranimeizle_slug))
+            .replace(/[\s:]+(?:season|sezon|part|cour|the final|final|movie|film)\s*\d*/gi, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+
+          for (const [key, item] of Object.entries(stateDoc.global_titles_map)) {
+            const groupTitle = (item.main_title_en || key).toLowerCase();
+            if (groupTitle === rawCompare || groupTitle.includes(rawCompare) || rawCompare.includes(groupTitle)) {
+              orchestratorEntry = item;
+              break;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Detail Route] Orchestrator DB query warning:', e.message);
+    }
+
+    // Fallback to RAM cache if DB query didn't find it
+    if (!orchestratorEntry) {
+      orchestratorEntry = mongoIdToGroupMap[searchIdStr];
+    }
 
     let seasons = [];
     let relatedMoviesOvas = [];
     let formattedTitle = getDisplayTitle(anime);
 
     if (orchestratorEntry) {
-      // We found the orchestrator entry! Use its title, seasons and movies
-      formattedTitle = orchestratorEntry.main_title_en;
+      formattedTitle = orchestratorEntry.main_title_en || formattedTitle;
       
-      seasons = (orchestratorEntry.seasons || []).map(s => ({
-        _id: s.mongo_db_id,
-        season_number: s.season_number,
-        label: s.season_title,
-        category: 'seasons',
-        cover_image: anime.cover_image, // Fallback to current cover
-        banner_image: anime.banner_image
-      }));
+      seasons = (orchestratorEntry.seasons || []).map(s => {
+        const seasonCovers = s.mongo_db_id ? animeCoversMap[String(s.mongo_db_id)] : null;
+        return {
+          _id: s.mongo_db_id,
+          season_number: s.season_number,
+          label: s.season_title,
+          category: 'seasons',
+          cover_image: seasonCovers?.cover || anime.cover_image,
+          banner_image: seasonCovers?.banner || anime.banner_image
+        };
+      });
 
       relatedMoviesOvas = (orchestratorEntry.related_movies_or_ovas || []).map(m => ({
         _id: m.mongo_db_id,
@@ -1622,7 +1662,7 @@ router.get('/:id', async (req, res, next) => {
       }));
     }
 
-    // Fallback if not found in orchestrator
+    // Fallback if no seasons found in orchestrator
     if (seasons.length === 0) {
       seasons = [{
         _id: anime._id,
@@ -1634,7 +1674,7 @@ router.get('/:id', async (req, res, next) => {
       }];
     }
 
-    res.set('Cache-Control', 'public, max-age=1800, s-maxage=3600');
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.json({
       success: true,
       data: {
@@ -1707,7 +1747,7 @@ router.get('/:id/episodes', async (req, res, next) => {
       }
     }
 
-    res.set('Cache-Control', 'public, max-age=600, s-maxage=1800');
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.json({
       success: true,
       data: formattedEpisodes,
