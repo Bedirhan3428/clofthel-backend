@@ -51,6 +51,7 @@ export default function ProfileScreen({ navigation }) {
   const [scrapeStatusText, setScrapeStatusText] = useState('');
   const [lastErrorMessage, setLastErrorMessage] = useState(null);
   const [clientScrapeUrl, setClientScrapeUrl] = useState(null);
+  const [isFullScreenBrowser, setIsFullScreenBrowser] = useState(false);
   const clientWebViewRef = useRef(null);
 
   const handleCopyError = async () => {
@@ -62,6 +63,13 @@ export default function ProfileScreen({ navigation }) {
         console.warn('Clipboard copy error:', err);
       }
     }
+  };
+
+  const handleManualScrape = () => {
+    setIsAddingAnime(true);
+    setScrapeStatusText('Sayfadaki anime ve bölümler ayıklanıyor...');
+    setLastErrorMessage(null);
+    clientWebViewRef.current?.injectJavaScript(animePageScraperInjectedJs);
   };
 
   const fetchProfile = async () => {
@@ -162,17 +170,15 @@ export default function ProfileScreen({ navigation }) {
       const data = JSON.parse(event.nativeEvent.data);
 
       if (data.type === 'page_navigated') {
-        setScrapeStatusText('Sayfa yüklendi, içerik taranıyor...');
+        setScrapeStatusText(`Sayfa yüklendi: ${data.url || ''}`);
       } else if (data.type === 'search_result_found') {
-        setScrapeStatusText(`Anime bulundu: ${data.targetUrl}`);
+        setScrapeStatusText(`Anime bulundu, sayfaya geçiliyor...`);
       } else if (data.type === 'anime_overview_scraped') {
         const scraped = data.data;
         if (!scraped || Object.keys(scraped.episodes || {}).length === 0) {
-          const err = 'Sayfadan bölüm bilgisi ayıklanamadı. (Sayfa yapısı veya Cloudflare engeli)';
-          Alert.alert('Hata', err);
+          const err = 'Sayfadan bölüm bilgisi otomatik bulunamadı. Lütfen tam ekranda sayfayı açıp kontrol edin veya "Ayıkla & Kaydet" butonuna basın.';
           setLastErrorMessage(err);
           setIsAddingAnime(false);
-          setClientScrapeUrl(null);
           return;
         }
 
@@ -188,6 +194,7 @@ export default function ProfileScreen({ navigation }) {
           setScrapeStatusText('Başarıyla eklendi! 🎉');
           Alert.alert('Başarılı 🚀', `"${scraped.title}" başarıyla veritabanına eklendi (${scraped.totalEpisodes} Bölüm)!`);
           setAddAnimeModalVisible(false);
+          setIsFullScreenBrowser(false);
           setAnimeInputUrl('');
           setTotalEpisodesInput('');
           setClientScrapeUrl(null);
@@ -199,14 +206,10 @@ export default function ProfileScreen({ navigation }) {
           Alert.alert('Hata', err);
           setLastErrorMessage(`[POST /client-add-anime error]: ${err}`);
           setIsAddingAnime(false);
-          setClientScrapeUrl(null);
         }
       } else if (data.type === 'scraper_error') {
-        const err = data.error || 'Tarayıcı hatası.';
-        Alert.alert('Hata', err);
-        setLastErrorMessage(`[WebView Scraper error]: ${err}`);
+        setLastErrorMessage(`[WebView Scraper error]: ${data.error}`);
         setIsAddingAnime(false);
-        setClientScrapeUrl(null);
       }
     } catch (err) {
       console.warn('[handleClientScraperMessage] Parse error:', err);
@@ -527,8 +530,28 @@ export default function ProfileScreen({ navigation }) {
                 <View style={styles.liveBrowserHeader}>
                   <Ionicons name="globe-outline" size={14} color={COLORS.accent} style={{ marginRight: 6 }} />
                   <Text style={styles.liveBrowserTitle} numberOfLines={1}>
-                    Canlı Tarayıcı: {clientScrapeUrl}
+                    {clientScrapeUrl}
                   </Text>
+                  <TouchableOpacity 
+                    style={styles.browserMiniActionBtn}
+                    onPress={() => clientWebViewRef.current?.reload()}
+                  >
+                    <Ionicons name="reload" size={13} color="#FFF" />
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={styles.browserMiniActionBtn}
+                    onPress={handleManualScrape}
+                  >
+                    <Ionicons name="flash" size={13} color={COLORS.accent} />
+                    <Text style={styles.browserMiniActionText}>Ayıkla</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={styles.browserMiniExpandBtn}
+                    onPress={() => setIsFullScreenBrowser(true)}
+                  >
+                    <Ionicons name="scan-outline" size={13} color="#FFF" />
+                    <Text style={styles.browserMiniExpandText}>Tam Ekran</Text>
+                  </TouchableOpacity>
                 </View>
                 <View style={styles.liveBrowserWebViewContainer}>
                   <WebView
@@ -559,7 +582,7 @@ export default function ProfileScreen({ navigation }) {
               <View style={styles.errorBox}>
                 <View style={styles.errorHeader}>
                   <Ionicons name="alert-circle" size={18} color={COLORS.error} style={{ marginRight: 6 }} />
-                  <Text style={styles.errorTitle}>Hata Meydana Geldi</Text>
+                  <Text style={styles.errorTitle}>Hata / Bildirim</Text>
                 </View>
                 <Text style={styles.errorContent} selectable={true}>
                   {lastErrorMessage}
@@ -578,6 +601,7 @@ export default function ProfileScreen({ navigation }) {
                   setAddAnimeModalVisible(false);
                   setClientScrapeUrl(null);
                   setLastErrorMessage(null);
+                  setIsFullScreenBrowser(false);
                 }}
                 disabled={isAddingAnime}
               >
@@ -594,6 +618,75 @@ export default function ProfileScreen({ navigation }) {
             </View>
           </TouchableOpacity>
         </TouchableOpacity>
+      </Modal>
+
+      {/* ── Full-Screen In-App Browser Modal (Add Anime) ──────────────── */}
+      <Modal 
+        visible={isFullScreenBrowser && !!clientScrapeUrl} 
+        animationType="slide" 
+        transparent={false}
+        onRequestClose={() => setIsFullScreenBrowser(false)}
+      >
+        <SafeAreaView style={styles.fullScreenBrowserContainer}>
+          <View style={styles.fullScreenBrowserHeader}>
+            <TouchableOpacity 
+              style={styles.browserHeaderBtn} 
+              onPress={() => setIsFullScreenBrowser(false)}
+            >
+              <Ionicons name="chevron-down" size={22} color="#FFF" />
+              <Text style={styles.browserHeaderBtnText}>Küçült</Text>
+            </TouchableOpacity>
+
+            <Text style={styles.fullScreenBrowserUrl} numberOfLines={1}>
+              {clientScrapeUrl}
+            </Text>
+
+            <TouchableOpacity 
+              style={styles.browserHeaderBtn} 
+              onPress={() => clientWebViewRef.current?.reload()}
+            >
+              <Ionicons name="reload" size={18} color="#FFF" />
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              style={styles.browserExtractBtn} 
+              onPress={handleManualScrape}
+              disabled={isAddingAnime}
+            >
+              <Ionicons name="flash" size={15} color="#000" style={{ marginRight: 4 }} />
+              <Text style={styles.browserExtractBtnText}>Ayıkla & Ekle</Text>
+            </TouchableOpacity>
+          </View>
+
+          {isAddingAnime && (
+            <View style={styles.browserTopStatusBar}>
+              <ActivityIndicator size="small" color={COLORS.accent} style={{ marginRight: 8 }} />
+              <Text style={styles.browserTopStatusText}>{scrapeStatusText}</Text>
+            </View>
+          )}
+
+          <View style={{ flex: 1, backgroundColor: '#000' }}>
+            <WebView
+              ref={clientWebViewRef}
+              source={{ uri: clientScrapeUrl }}
+              injectedJavaScriptBeforeContentLoaded={animePageScraperInjectedJs}
+              injectedJavaScript={animePageScraperInjectedJs}
+              onMessage={handleClientScraperMessage}
+              javaScriptEnabled={true}
+              domStorageEnabled={true}
+              mixedContentMode="always"
+              mediaPlaybackRequiresUserAction={false}
+              setSupportMultipleWindows={false}
+              onError={(e) => {
+                const err = `WebView Error: ${e.nativeEvent.description || 'Yükleme hatası'}`;
+                console.warn('[ProfileScreen full browser] WebView load error:', err);
+                setScrapeStatusText(err);
+                setLastErrorMessage(err);
+                setIsAddingAnime(false);
+              }}
+            />
+          </View>
+        </SafeAreaView>
       </Modal>
 
       {/* Avatar Selection Modal */}
@@ -1143,6 +1236,101 @@ const styles = StyleSheet.create({
   copyErrorBtnText: {
     color: '#FFF',
     fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.semibold,
+  },
+
+  // Mini browser header buttons
+  browserMiniActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: BORDER_RADIUS.sm,
+    marginLeft: 6,
+  },
+  browserMiniActionText: {
+    color: COLORS.accent,
+    fontSize: 11,
+    fontWeight: FONT_WEIGHTS.bold,
+    marginLeft: 3,
+  },
+  browserMiniExpandBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.accent,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: BORDER_RADIUS.sm,
+    marginLeft: 6,
+  },
+  browserMiniExpandText: {
+    color: '#000',
+    fontSize: 11,
+    fontWeight: FONT_WEIGHTS.bold,
+    marginLeft: 3,
+  },
+
+  // Full Screen Browser Styles
+  fullScreenBrowserContainer: {
+    flex: 1,
+    backgroundColor: '#0A0A0F',
+  },
+  fullScreenBrowserHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#16161F',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    gap: 8,
+  },
+  browserHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  browserHeaderBtnText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: FONT_WEIGHTS.semibold,
+    marginLeft: 4,
+  },
+  fullScreenBrowserUrl: {
+    flex: 1,
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    paddingHorizontal: 4,
+  },
+  browserExtractBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.accent,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  browserExtractBtnText: {
+    color: '#000',
+    fontSize: 12,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  browserTopStatusBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 107, 0, 0.15)',
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 107, 0, 0.3)',
+  },
+  browserTopStatusText: {
+    color: COLORS.accent,
+    fontSize: 12,
     fontWeight: FONT_WEIGHTS.semibold,
   },
 });

@@ -5,9 +5,6 @@
 export const animePageScraperInjectedJs = `
   (function() {
     try {
-      if (window.__anime_scraper_injected) return;
-      window.__anime_scraper_injected = true;
-
       function sendToApp(payload) {
         if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
           window.ReactNativeWebView.postMessage(JSON.stringify(payload));
