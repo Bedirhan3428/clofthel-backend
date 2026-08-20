@@ -57,6 +57,7 @@ export default function ProfileScreen({ navigation }) {
   const [clientScrapeUrl, setClientScrapeUrl] = useState(null);
   const [isFullScreenBrowser, setIsFullScreenBrowser] = useState(false);
   const clientWebViewRef = useRef(null);
+  const isAlertOpenRef = useRef(false);
 
   // Secret Developer Scraper Browser State (10-tap gesture)
   const [devTapCount, setDevTapCount] = useState(0);
@@ -282,15 +283,29 @@ export default function ProfileScreen({ navigation }) {
           setAnimeTitleInput(candidateTitle);
         }
 
+        // Prevent duplicate alert stacking
+        if (isAlertOpenRef.current) return;
+        isAlertOpenRef.current = true;
+
         // Confirm title & AniList sync with user
         Alert.alert(
           'Anime İsmi & AniList Onayı 🏷️',
           `Ayıklanan Anime Başlığı:\n"${candidateTitle}"\n\nBu isimle kaydedilip AniList ID ve bilgileri otomatik güncellensin mi?`,
           [
-            { text: 'İptal / Değiştir', style: 'cancel' },
+            { 
+              text: 'İptal / Değiştir', 
+              style: 'cancel',
+              onPress: () => {
+                isAlertOpenRef.current = false;
+                setIsAddingAnime(false);
+              }
+            },
             { 
               text: '⚡ Evet, Kaydet', 
-              onPress: () => executeSaveNewAnime(scraped, candidateTitle) 
+              onPress: () => {
+                isAlertOpenRef.current = false;
+                executeSaveNewAnime(scraped, candidateTitle);
+              }
             }
           ]
         );

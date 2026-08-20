@@ -44,6 +44,7 @@ export const animePageScraperInjectedJs = `
 
       var retryCount = 0;
       var maxRetries = 6;
+      var hasSentOverview = false;
 
       // Universal Anime Scraper (Works on both Overview Pages and Watch/Episode Pages)
       function scrapeAnyPage() {
@@ -166,48 +167,55 @@ export const animePageScraperInjectedJs = `
           }
         }
 
-        // If episodes were found, send anime overview to app
+        // If episodes were found, send anime overview to app once
         if (totalEpisodes > 0) {
-          sendToApp({
-            type: 'anime_overview_scraped',
-            url: currentUrl,
-            data: {
-              title: title || rawTitle,
-              poster: poster,
-              genres: genres,
-              otherNames: otherNames,
-              fansubs: fansubs,
-              description: description,
-              episodes: episodesMap,
-              totalEpisodes: totalEpisodes,
-              html: document.documentElement.outerHTML
-            }
-          });
+          if (!hasSentOverview) {
+            hasSentOverview = true;
+            sendToApp({
+              type: 'anime_overview_scraped',
+              url: currentUrl,
+              data: {
+                title: title || rawTitle,
+                poster: poster,
+                genres: genres,
+                otherNames: otherNames,
+                fansubs: fansubs,
+                description: description,
+                episodes: episodesMap,
+                totalEpisodes: totalEpisodes,
+                html: document.documentElement.outerHTML
+              }
+            });
+          }
         } else if (retryCount < maxRetries) {
           retryCount++;
           sendToApp({ type: 'scraper_waiting', retry: retryCount, url: currentUrl });
           setTimeout(scrapeAnyPage, 1000);
         } else {
           // Final attempt completed with 0 episodes
-          sendToApp({
-            type: 'anime_overview_scraped',
-            url: currentUrl,
-            data: {
-              title: title || rawTitle,
-              poster: poster,
-              genres: genres,
-              otherNames: otherNames,
-              fansubs: fansubs,
-              description: description,
-              episodes: episodesMap,
-              totalEpisodes: 0,
-              html: document.documentElement.outerHTML
-            }
-          });
+          if (!hasSentOverview) {
+            hasSentOverview = true;
+            sendToApp({
+              type: 'anime_overview_scraped',
+              url: currentUrl,
+              data: {
+                title: title || rawTitle,
+                poster: poster,
+                genres: genres,
+                otherNames: otherNames,
+                fansubs: fansubs,
+                description: description,
+                episodes: episodesMap,
+                totalEpisodes: 0,
+                html: document.documentElement.outerHTML
+              }
+            });
+          }
         }
       }
 
       window.clofthelTriggerScrape = function() {
+        hasSentOverview = false; // Allow manual user click to re-send
         retryCount = maxRetries; // Force immediate run
         scrapeAnyPage();
       };

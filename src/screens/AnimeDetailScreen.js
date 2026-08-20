@@ -161,6 +161,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const useRefValue = useRef(new Animated.Value(0));
   const fadeAnim = useRefValue.current;
   const seasonCacheRef = useRef({});
+  const isAlertOpenRef = useRef(false);
 
   // ── Load user status ─────────────────────────────────────────
   useEffect(() => {
@@ -457,15 +458,29 @@ export default function AnimeDetailScreen({ route, navigation }) {
           setAnimeTitleInput(candidateTitle);
         }
 
+        // Prevent duplicate alert stacking
+        if (isAlertOpenRef.current) return;
+        isAlertOpenRef.current = true;
+
         // Confirm Anime Title & AniList Sync with user
         showAlert(
           'Anime İsmi & AniList Onayı 🏷️',
           `Ayıklanan Anime Başlığı:\n"${candidateTitle}"\n\nBu isimle kaydedilip AniList ID ve bilgileri güncellensin mi?`,
           [
-            { text: 'İptal / Değiştir', style: 'cancel' },
+            { 
+              text: 'İptal / Değiştir', 
+              style: 'cancel',
+              onPress: () => {
+                isAlertOpenRef.current = false;
+                setIsFixing(false);
+              }
+            },
             { 
               text: '⚡ Evet, Kaydet', 
-              onPress: () => executeSaveScrapedData(scraped, candidateTitle) 
+              onPress: () => {
+                isAlertOpenRef.current = false;
+                executeSaveScrapedData(scraped, candidateTitle);
+              }
             }
           ]
         );
