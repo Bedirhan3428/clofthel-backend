@@ -14,56 +14,46 @@ export const animePageScraperInjectedJs = `
       var currentUrl = window.location.href;
       sendToApp({ type: 'page_navigated', url: currentUrl });
 
-      // 1. Check for 404 / Sayfa Bulunamadı -> Auto-Search Healing
-      var is404 = document.title.includes('404') || 
-                  document.title.includes('Sayfa Bulunamadı') || 
-                  (document.body && (document.body.innerText.includes('Sayfa bulunamadı') || document.body.innerText.includes('Aradığınız sayfa bulunamadı')));
+      // Check for Cloudflare Turnstile / Bot Verification
+      var isCloudflare = document.title.indexOf('Bağlantı') !== -1 ||
+                         document.title.indexOf('Cloudflare') !== -1 ||
+                         document.title.indexOf('Just a moment') !== -1 ||
+                         document.querySelector('#challenge-stage, .cf-turnstile, iframe[src*="cloudflare"], iframe[src*="turnstile"]') !== null;
 
-      if (is404 && !currentUrl.includes('/arama')) {
-        var cleanSlug = currentUrl.replace(/^https?:\/\/[^\/]+\/(?:anime\/)?/i, '').replace(/-izle.*$/i, '').replace(/-/g, ' ').trim();
-        if (cleanSlug) {
-          var searchTarget = 'https://www.tranimeizle.io/arama?q=' + encodeURIComponent(cleanSlug);
-          sendToApp({ type: 'page_404_redirecting', targetUrl: searchTarget });
-          window.location.href = searchTarget;
-          return;
-        }
+      if (isCloudflare) {
+        sendToApp({ type: 'cloudflare_detected', url: currentUrl });
       }
 
-      // 2. If on Search Results Page (e.g. /arama?q=... or duckduckgo)
+      // 1. If on Search Results Page (e.g. /arama?q=... or duckduckgo)
       if (currentUrl.includes('/arama') || currentUrl.includes('duckduckgo') || currentUrl.includes('google')) {
-        var links = document.querySelectorAll('a[href*="tranimeizle.io/anime/"], a[href^="/anime/"], a[href*="-izle"], .flx-block[data-href]');
-        var urlParams = new URLSearchParams(window.location.search);
-        var q = (urlParams.get('q') || '').toLowerCase();
-        
-        var candidateLinks = [];
+        var foundLink = null;
+        var links = document.querySelectorAll('a[href*="tranimeizle.io/anime/"], a[href^="/anime/"], a[href*="-izle"]');
         for (var i = 0; i < links.length; i++) {
-          var href = links[i].getAttribute('data-href') || links[i].getAttribute('href');
+          var href = links[i].getAttribute('href');
           if (href && (href.includes('/anime/') || (href.includes('-izle') && !href.includes('/arama')))) {
-            var full = href.startsWith('/') ? 'https://www.tranimeizle.io' + href : href;
-            if (candidateLinks.indexOf(full) === -1) candidateLinks.push(full);
+            foundLink = href.startsWith('/') ? 'https://www.tranimeizle.io' + href : href;
+            break;
           }
         }
-
-        if (candidateLinks.length > 0) {
-          var foundLink = candidateLinks[0];
-          // Smart season/part matching
-          if (q.includes('part 2') || q.includes('2. kisim') || q.includes('2-kisim') || q.includes('2 kısım')) {
-            var part2Link = candidateLinks.find(function(l) { return l.includes('part-2') || l.includes('2-kisim') || l.includes('2-sezon-2'); });
-            if (part2Link) foundLink = part2Link;
-          } else if (q.includes('sezon 2') || q.includes('season 2') || q.includes('2-sezon')) {
-            var s2Link = candidateLinks.find(function(l) { return l.includes('2-sezon') && !l.includes('kisim') && !l.includes('part'); });
-            if (s2Link) foundLink = s2Link;
-          }
-
+        if (foundLink) {
           sendToApp({ type: 'search_result_found', targetUrl: foundLink });
           window.location.href = foundLink;
           return;
         }
       }
 
+      var retryCount = 0;
+      var maxRetries = 6;
+
       // Universal Anime Scraper (Works on both Overview Pages and Watch/Episode Pages)
       function scrapeAnyPage() {
         var currentUrl = window.location.href;
+
+        // Check Cloudflare again in case it just appeared or disappeared
+        if (document.title.indexOf('Bağlantı') !== -1 || document.title.indexOf('Cloudflare') !== -1 || document.querySelector('#challenge-stage') !== null) {
+          sendToApp({ type: 'cloudflare_detected', url: currentUrl });
+          return;
+        }
 
         // Title Extraction
         var titleEl = document.querySelector('.playlist-title h1, .animeDetail-title, .anime-title, .detail-title, h1, h2, h3, h4');
@@ -116,16 +106,16 @@ export const animePageScraperInjectedJs = `
         var descEl = document.querySelector('.animeDetail-text, .post-content, .description, p');
         var description = descEl ? descEl.innerText.trim() : '';
 
-        // Episodes Extraction: Search all possible containers (Links, Buttons, Select options, Dropdowns)
+        // Episodes Extraction: Search all possible containers (Links, Buttons, Select options, Dropdowns, Cards)
         var episodesMap = {};
 
-        // Pattern A: All <a href="..."> that contain episode links
-        var allLinks = document.querySelectorAll('a[href*="-bolum"], a[href*="/bolum/"], .btn-bolum, .flx-block, [data-href*="-bolum"]');
-        allLinks.forEach(function(el) {
-          var href = el.getAttribute('data-href') || el.getAttribute('href') || '';
-          if (!href || href === '#' || href.startsWith('javascript:')) return;
+        // Comprehensive selector for episode elements
+        var allCandidates = document.querySelectorAll('a[href], div[data-href], button[data-href], .btn-bolum, .flx-block, select option');
+        allCandidates.forEach(function(el) {
+          var rawHref = el.getAttribute('data-href') || el.getAttribute('href') || el.getAttribute('value') || '';
+          if (!rawHref || rawHref === '#' || rawHref.startsWith('javascript:')) return;
 
-          var cleanSlug = href.replace(/^https?:\\/\\/[^\\/]+/i, '').replace(/^\\/+/, '').replace(/[?#].*$/, '').trim();
+          var cleanSlug = rawHref.replace(/^https?:\\/\\/[^\\/]+/i, '').replace(/^\\/+/, '').replace(/[?#].*$/, '').trim();
           var epMatch = cleanSlug.match(/-(?:sezon-)?(\\d+)-bolum/i) || cleanSlug.match(/bolum-(\\d+)/i) || cleanSlug.match(/(\\d+)\\.?-?bolum/i);
 
           var epNum = null;
@@ -137,72 +127,91 @@ export const animePageScraperInjectedJs = `
           }
 
           if (epNum && !episodesMap[String(epNum)]) {
-            episodesMap[String(epNum)] = cleanSlug.startsWith('http') ? cleanSlug : 'https://www.tranimeizle.io/' + cleanSlug;
+            episodesMap[String(epNum)] = rawHref.startsWith('http') ? rawHref : 'https://www.tranimeizle.io/' + cleanSlug;
           }
         });
 
-        // Pattern B: <select> dropdowns (often used on watch pages)
-        var selectOptions = document.querySelectorAll('select option');
-        selectOptions.forEach(function(opt) {
-          var val = opt.getAttribute('value') || '';
-          var text = opt.innerText || '';
-          var epMatch = text.match(/(\\d+)\\s*\\.?\\s*Bölüm/i) || val.match(/-(?:sezon-)?(\\d+)-bolum/i);
-          if (epMatch && val) {
-            var epNum = parseInt(epMatch[1], 10);
-            if (epNum && !episodesMap[String(epNum)]) {
-              var fullEpUrl = val.startsWith('http') ? val : (val.startsWith('/') ? 'https://www.tranimeizle.io' + val : 'https://www.tranimeizle.io/' + val);
-              episodesMap[String(epNum)] = fullEpUrl;
-            }
-          }
-        });
-
-        // Pattern C: If currently on a watch page and only 1 episode is visible
+        // If on a single episode watch page and only 1 episode is visible
         if (Object.keys(episodesMap).length === 0 && currentUrl.includes('-bolum-izle')) {
           var curMatch = currentUrl.match(/-(?:sezon-)?(\\d+)-bolum/i);
           var curNum = curMatch ? parseInt(curMatch[1], 10) : 1;
           episodesMap[String(curNum)] = currentUrl;
         }
 
-        // Pattern D: Check if on a List Page (e.g. /listeler/yenibolum, /listeler/populer, etc.)
-        var listItems = [];
-        var flxBlocks = document.querySelectorAll('.flx-block, [data-href*="-bolum"], a[href*="-bolum-izle"]');
-        flxBlocks.forEach(function(block) {
-          var href = block.getAttribute('data-href') || block.getAttribute('href') || '';
-          if (!href || href === '#' || href.startsWith('javascript:')) return;
-          var titleEl = block.querySelector('.f-name, .flx-title, .title, strong') || block;
-          var titleText = titleEl ? titleEl.innerText.trim() : '';
-          var imgEl = block.querySelector('img');
-          var imgSrc = imgEl ? (imgEl.getAttribute('src') || '') : '';
-          listItems.push({ href: href, title: titleText, poster: imgSrc });
-        });
+        var totalEpisodes = Object.keys(episodesMap).length;
 
-        if (listItems.length > 0 && (currentUrl.includes('/listeler/') || currentUrl.includes('/yenibolum') || listItems.length > 5)) {
-          sendToApp({
-            type: 'batch_list_scraped',
-            url: currentUrl,
-            items: listItems,
-            count: listItems.length
+        // If on a List Page (e.g. /listeler/yenibolum, /listeler/populer)
+        var isListPage = currentUrl.includes('/listeler/') || currentUrl.includes('/yenibolum');
+        if (isListPage) {
+          var listItems = [];
+          var flxBlocks = document.querySelectorAll('.flx-block, [data-href*="-bolum"], a[href*="-bolum-izle"]');
+          flxBlocks.forEach(function(block) {
+            var href = block.getAttribute('data-href') || block.getAttribute('href') || '';
+            if (!href || href === '#' || href.startsWith('javascript:')) return;
+            var titleEl = block.querySelector('.f-name, .flx-title, .title, strong') || block;
+            var titleText = titleEl ? titleEl.innerText.trim() : '';
+            var imgEl = block.querySelector('img');
+            var imgSrc = imgEl ? (imgEl.getAttribute('src') || '') : '';
+            listItems.push({ href: href, title: titleText, poster: imgSrc });
           });
+
+          if (listItems.length > 0) {
+            sendToApp({
+              type: 'batch_list_scraped',
+              url: currentUrl,
+              items: listItems,
+              count: listItems.length
+            });
+            return;
+          }
         }
 
-        sendToApp({
-          type: 'anime_overview_scraped',
-          url: currentUrl,
-          data: {
-            title: title || rawTitle,
-            poster: poster,
-            genres: genres,
-            otherNames: otherNames,
-            fansubs: fansubs,
-            description: description,
-            episodes: episodesMap,
-            totalEpisodes: totalEpisodes,
-            html: document.documentElement.outerHTML
-          }
-        });
+        // If episodes were found, send anime overview to app
+        if (totalEpisodes > 0) {
+          sendToApp({
+            type: 'anime_overview_scraped',
+            url: currentUrl,
+            data: {
+              title: title || rawTitle,
+              poster: poster,
+              genres: genres,
+              otherNames: otherNames,
+              fansubs: fansubs,
+              description: description,
+              episodes: episodesMap,
+              totalEpisodes: totalEpisodes,
+              html: document.documentElement.outerHTML
+            }
+          });
+        } else if (retryCount < maxRetries) {
+          retryCount++;
+          sendToApp({ type: 'scraper_waiting', retry: retryCount, url: currentUrl });
+          setTimeout(scrapeAnyPage, 1000);
+        } else {
+          // Final attempt completed with 0 episodes
+          sendToApp({
+            type: 'anime_overview_scraped',
+            url: currentUrl,
+            data: {
+              title: title || rawTitle,
+              poster: poster,
+              genres: genres,
+              otherNames: otherNames,
+              fansubs: fansubs,
+              description: description,
+              episodes: episodesMap,
+              totalEpisodes: 0,
+              html: document.documentElement.outerHTML
+            }
+          });
+        }
       }
 
-      window.clofthelTriggerScrape = scrapeAnyPage;
+      window.clofthelTriggerScrape = function() {
+        retryCount = maxRetries; // Force immediate run
+        scrapeAnyPage();
+      };
+
       window.clofthelTriggerBatchScrape = function() {
         var listItems = [];
         var flxBlocks = document.querySelectorAll('.flx-block, [data-href], a[href*="-bolum-izle"], a[href*="-izle"]');
@@ -223,14 +232,11 @@ export const animePageScraperInjectedJs = `
         });
       };
 
-      // Auto-run scrape
-      if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        setTimeout(scrapeAnyPage, 800);
-      } else {
-        window.addEventListener('DOMContentLoaded', function() {
-          setTimeout(scrapeAnyPage, 800);
-        });
-      }
+      // Auto-run scrape with progressive delays
+      setTimeout(scrapeAnyPage, 600);
+      setTimeout(scrapeAnyPage, 1800);
+      setTimeout(scrapeAnyPage, 3500);
+
     } catch (e) {
       if (window.ReactNativeWebView) {
         window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'scraper_error', error: e.message }));

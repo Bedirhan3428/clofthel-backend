@@ -119,9 +119,9 @@ export default function ProfileScreen({ navigation }) {
 
   const handleManualScrape = () => {
     setIsAddingAnime(true);
-    setScrapeStatusText('Sayfadaki anime ve bölümler ayıklanıyor...');
+    setScrapeStatusText('Sayfadaki bölümler taranıp ayıklanıyor...');
     setLastErrorMessage(null);
-    clientWebViewRef.current?.injectJavaScript(animePageScraperInjectedJs);
+    clientWebViewRef.current?.injectJavaScript('window.clofthelTriggerScrape ? window.clofthelTriggerScrape() : null; true;');
   };
 
   const fetchProfile = async () => {
@@ -261,6 +261,11 @@ export default function ProfileScreen({ navigation }) {
           const autoTitle = extractCleanTitleFromUrl(data.url);
           if (autoTitle) setAnimeTitleInput(autoTitle);
         }
+      } else if (data.type === 'cloudflare_detected') {
+        setScrapeStatusText('Cloudflare doğrulaması tespit edildi! Lütfen ekrandaki doğrulama kutusuna dokunun.');
+        setIsFullScreenBrowser(true);
+      } else if (data.type === 'scraper_waiting') {
+        setScrapeStatusText(`Bölümler aranıyor (Deneme ${data.retry || 1}/6)...`);
       } else if (data.type === 'search_result_found') {
         setScrapeStatusText(`Anime bulundu, sayfaya geçiliyor...`);
       } else if (data.type === 'anime_overview_scraped') {
@@ -764,6 +769,9 @@ export default function ProfileScreen({ navigation }) {
                     source={{ uri: clientScrapeUrl }}
                     injectedJavaScriptBeforeContentLoaded={animePageScraperInjectedJs}
                     injectedJavaScript={animePageScraperInjectedJs}
+                    onLoadEnd={() => {
+                      clientWebViewRef.current?.injectJavaScript('window.clofthelTriggerScrape ? window.clofthelTriggerScrape() : null; true;');
+                    }}
                     onMessage={handleClientScraperMessage}
                     javaScriptEnabled={true}
                     domStorageEnabled={true}

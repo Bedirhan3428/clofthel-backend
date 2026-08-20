@@ -344,7 +344,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
     setIsFixing(true);
     setFixStatusText('Sayfadaki bölümler taranıp ayıklanıyor...');
     setLastErrorMessage(null);
-    clientWebViewRef.current?.injectJavaScript(animePageScraperInjectedJs);
+    clientWebViewRef.current?.injectJavaScript('window.clofthelTriggerScrape ? window.clofthelTriggerScrape() : null; true;');
   };
 
   const handleFixOrAddSeason = async () => {
@@ -436,6 +436,11 @@ export default function AnimeDetailScreen({ route, navigation }) {
           const autoTitle = extractCleanTitleFromUrl(data.url);
           if (autoTitle) setAnimeTitleInput(autoTitle);
         }
+      } else if (data.type === 'cloudflare_detected') {
+        setFixStatusText('Cloudflare doğrulaması tespit edildi! Lütfen ekrandaki doğrulama kutusuna dokunun.');
+        setIsFullScreenBrowser(true);
+      } else if (data.type === 'scraper_waiting') {
+        setFixStatusText(`Bölümler aranıyor (Deneme ${data.retry || 1}/6)...`);
       } else if (data.type === 'search_result_found') {
         setFixStatusText(`Anime sayfası bulundu, yönlendiriliyor...`);
       } else if (data.type === 'anime_overview_scraped') {
@@ -950,6 +955,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
                     source={{ uri: clientScrapeUrl }}
                     injectedJavaScriptBeforeContentLoaded={animePageScraperInjectedJs}
                     injectedJavaScript={animePageScraperInjectedJs}
+                    onLoadEnd={() => {
+                      clientWebViewRef.current?.injectJavaScript('window.clofthelTriggerScrape ? window.clofthelTriggerScrape() : null; true;');
+                    }}
                     onMessage={handleClientScraperMessage}
                     javaScriptEnabled={true}
                     domStorageEnabled={true}
