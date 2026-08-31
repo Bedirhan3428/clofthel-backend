@@ -135,6 +135,11 @@ app.get('/api/version', (req, res) => {
   });
 });
 
+// Localapp Redirect
+app.get('/localapp', (req, res) => {
+  res.redirect('http://192.168.1.13:23504');
+});
+
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ success: false, error: 'Endpoint bulunamadı.' });

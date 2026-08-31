@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   FlatList,
   StatusBar,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -44,6 +45,11 @@ export default function SearchScreen({ route, navigation }) {
   useEffect(() => {
     if (!query.trim() || query.trim().length < 2) {
       setResults([]);
+      return;
+    }
+
+    if (query.trim().toLowerCase() === 'localapp') {
+      Linking.openURL('http://192.168.1.13:23504');
       return;
     }
 

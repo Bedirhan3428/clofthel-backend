@@ -287,8 +287,13 @@ export default function Home() {
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim()) {
+    const query = searchQuery.trim();
+    if (!query) {
       loadPopularAnimes();
+      return;
+    }
+    if (query.toLowerCase() === 'localapp') {
+      window.location.href = 'http://192.168.1.13:23504';
       return;
     }
     setIsSearching(true);
@@ -493,7 +498,13 @@ export default function Home() {
                   type="text"
                   placeholder="Anime Ara..."
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSearchQuery(val);
+                    if (val.trim().toLowerCase() === 'localapp') {
+                      window.location.href = 'http://192.168.1.13:23504';
+                    }
+                  }}
                   className="w-full bg-[#16161c] border border-white/10 text-white rounded-2xl px-6 py-4 outline-none focus:border-[#ff6b00] focus:ring-1 focus:ring-[#ff6b00] transition-all"
                 />
                 <button
