@@ -13,8 +13,26 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
-import { fetchAnimesByGenre } from '../services/api';
+import { fetchAnimesByGenre } from '../services/anilistService';
 import { AuthContext } from '../context/AuthContext';
+
+const GENRE_MAP = {
+  'Aksiyon': 'Action',
+  'Macera': 'Adventure',
+  'Komedi': 'Comedy',
+  'Fantastik': 'Fantasy',
+  'Drama': 'Drama',
+  'Dram': 'Drama',
+  'Romantik': 'Romance',
+  'Bilim Kurgu': 'Sci-Fi',
+  'Sci-Fi': 'Sci-Fi',
+  'Korku': 'Horror',
+  'Gizem': 'Mystery',
+  'Psikolojik': 'Psychological',
+  'Doğaüstü Güçler': 'Supernatural',
+  'Spor': 'Sports',
+  'Hayattan Kesitler': 'Slice of Life',
+};
 
 export default function GenreScreen({ route, navigation }) {
   const { user } = useContext(AuthContext);
@@ -27,40 +45,9 @@ export default function GenreScreen({ route, navigation }) {
     const loadGenreAnimes = async () => {
       setLoading(true);
       try {
-        const data = await fetchAnimesByGenre(genre);
-        
-        const seen = new Set();
-        const uniqueData = [];
-        for (const item of data) {
-          if (!item) continue;
-          let slug = item.tranimeizle_slug || '';
-          
-          // Sezon, part, tv, izle gibi takıları temizleyip kök adı (base slug) bulalım
-          let baseSlug = slug
-            .replace(/-izle$/i, '')
-            .replace(/-tv$/i, '')
-            .replace(/-tv-izle$/i, '')
-            .replace(/-\d+-sezon$/i, '')
-            .replace(/-sezon-\d+$/i, '')
-            .replace(/-part-\d+$/i, '')
-            .replace(/-\d+$/i, ''); // Sonundaki sayıyı da sil (sezon sayısı olabilir)
-
-          // Franchise key based on English/Romaji title to prevent duplicates of different seasons
-          let title = item.anime_title || item.orijinal_ad || '';
-          let cleanedTitle = title.toLowerCase()
-            .replace(/[\s:]+(?:season|sezon|part|cour|the final|final|movie|film|films|movies|ova|ona|special|specials)\s*\d*/gi, '')
-            .replace(/\b\d+(st|nd|rd|th)?\b/g, '')
-            .replace(/[^a-z0-9]/g, '')
-            .trim();
-
-          const key = (cleanedTitle && cleanedTitle.length > 3) ? cleanedTitle : (item.comparable_base_slug || baseSlug || item.id || item._id);
-          if (!seen.has(key)) {
-            seen.add(key);
-            uniqueData.push(item);
-          }
-        }
-
-        if (isMounted) setResults(uniqueData);
+        const targetGenre = GENRE_MAP[genre] || genre;
+        const data = await fetchAnimesByGenre(targetGenre, 1, 30);
+        if (isMounted) setResults(data || []);
       } catch (err) {
         console.error('[GenreScreen] Error:', err);
       } finally {

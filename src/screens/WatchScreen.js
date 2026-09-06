@@ -20,7 +20,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
-import { fetchAnimeDetail, fetchEpisodes, resetAnimeAnilistId, saveAnimeAnilistId, addToHistory, fetchEpisodeVideoUrl, cacheEpisodeVideoUrl, fetchAniListSingle } from '../services/api';
+import { addToHistory } from '../services/api';
+import { fetchAnimeDetails as fetchAniListDetails } from '../services/anilistService';
 import { resolveEpisodeStream } from '../services/lightweightResolver';
 import { API_BASE_URL } from '../constants/config';
 import TouchInjector from '../modules/TouchInjector';
@@ -53,7 +54,8 @@ export default function WatchScreen({ route, navigation }) {
     fansub: initialFansub, 
     fansubs: initialFansubs,
     anilistId: initialAnilistId,
-    startAt 
+    startAt,
+    episodes: initialEpisodes 
   } = route.params;
   const { showAlert } = useAlert();
 
@@ -91,7 +93,7 @@ export default function WatchScreen({ route, navigation }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [clarityMode, setClarityMode] = useState('off');
 
-  const [episodes, setEpisodes] = useState([]);
+  const [episodes, setEpisodes] = useState(initialEpisodes || []);
   const [seasons, setSeasons] = useState([]);
   const [currentAnime, setCurrentAnime] = useState(null);
   const [isFixingAnilist, setIsFixingAnilist] = useState(false);
@@ -104,25 +106,28 @@ export default function WatchScreen({ route, navigation }) {
     syncFansubOffsetsWithBackend().catch(() => {});
   }, []);
 
-  // 1. Fetch full anime detail from DB on mount
+  // 1. Fetch full anime detail from AniList on mount
   useEffect(() => {
     let isMounted = true;
     const loadDetail = async () => {
       try {
-        const detail = await fetchAnimeDetail(animeId);
-        if (detail && isMounted) {
-          setCurrentAnime(detail);
-          if (detail.anilist_id) {
-            setCurrentAnilistId(detail.anilist_id);
+        const id = initialAnilistId || (typeof animeId === 'number' ? animeId : parseInt(animeId, 10));
+        if (id && !isNaN(id)) {
+          const detail = await fetchAniListDetails(id);
+          if (detail && isMounted) {
+            setCurrentAnime(detail);
+            if (detail.id || detail.anilist_id) {
+              setCurrentAnilistId(detail.id || detail.anilist_id);
+            }
           }
         }
       } catch (err) {
         console.warn('[WatchScreen] Detail load error:', err);
       }
     };
-    if (animeId) loadDetail();
+    loadDetail();
     return () => { isMounted = false; };
-  }, [animeId]);
+  }, [animeId, initialAnilistId]);
 
   // 2. Resolve AniList ID and load AniSkip times with fansub intro offset
   useEffect(() => {
@@ -130,18 +135,7 @@ export default function WatchScreen({ route, navigation }) {
     const loadSkipTimes = async () => {
       if (!currentEpisodeNumber) return;
       try {
-        let anilistId = currentAnilistId || currentAnime?.anilist_id;
-
-        // Fallback AniList lookup if still null
-        if (!anilistId && (currentAnime?.title || currentAnime?.anime_title || currentAnime?.orijinal_ad)) {
-          const searchTitle = currentAnime.orijinal_ad || currentAnime.title || currentAnime.anime_title;
-          const matched = await fetchAniListSingle(null, searchTitle);
-          if (matched?.id && !isCancelled) {
-            anilistId = matched.id;
-            setCurrentAnilistId(matched.id);
-            saveAnimeAnilistId(animeId, matched.id, null, null, matched.title?.english || matched.title?.romaji, matched.format).catch(() => {});
-          }
-        }
+        let anilistId = currentAnilistId || currentAnime?.anilist_id || currentAnime?.id;
 
         if (anilistId) {
           const activeFansubs = currentEpisodeFansub 
@@ -296,23 +290,7 @@ export default function WatchScreen({ route, navigation }) {
     }
   };
 
-  const loadAnimeData = async () => {
-    try {
-      const detail = await fetchAnimeDetail(animeId);
-      if (detail) {
-        setCurrentAnime(detail);
-        if (detail.seasons) setSeasons(detail.seasons);
-      }
-      const epsData = await fetchEpisodes(animeId);
-      if (epsData) setEpisodes(epsData);
-    } catch (e) {
-      console.warn('[WatchScreen] Failed to load anime data', e);
-    }
-  };
-
   useEffect(() => {
-    loadAnimeData();
-
     // Her 15 saniyede bir izleme pozisyonunu backend'e kaydet
     saveIntervalRef.current = setInterval(() => {
       const time = currentVideoTimeRef.current;
@@ -336,15 +314,12 @@ export default function WatchScreen({ route, navigation }) {
 
   const checkAndResolveEp = async (epNum) => {
     try {
-      const res = await fetchEpisodeVideoUrl(animeId, epNum);
-      if (res.success && res.videoUrl) {
-        console.log(`[WatchScreen Background Queue] Episode ${epNum} is already cached.`);
-        return true;
-      } else if (res.code === 'NOT_CACHED' && res.episodeUrl) {
-        console.log(`[WatchScreen Background Queue] Episode ${epNum} is NOT cached. Queueing for silent resolution...`);
-        setBackgroundTargetEp(epNum);
-        setBackgroundResolveUrl(res.episodeUrl);
-        return false;
+      const epObj = episodes.find(e => e.episode_number === epNum);
+      if (epObj?.url) {
+        const res = await resolveEpisodeStream(epObj.url);
+        if (res?.streamUrl) {
+          return true;
+        }
       }
     } catch (err) {
       console.warn('[WatchScreen Background Queue] checkAndResolveEp failed:', err.message);
@@ -390,9 +365,6 @@ export default function WatchScreen({ route, navigation }) {
         const resolvedFansub = data.fansub || null;
         console.log(`[Bg Scraper Ep ${backgroundTargetEp}] Resolved source:`, resolvedUrl, `(Fansub: ${resolvedFansub || 'N/A'})`);
         
-        await cacheEpisodeVideoUrl(animeId, backgroundTargetEp, resolvedUrl, resolvedFansub);
-        console.log(`[Bg Scraper Ep ${backgroundTargetEp}] Cached resolved source in DB.`);
-
         const resolvedEp = backgroundTargetEp;
         setBackgroundResolveUrl(null);
         setBackgroundTargetEp(null);
@@ -468,72 +440,49 @@ export default function WatchScreen({ route, navigation }) {
     // Try to find the episode title from episodes array
     const epObj = episodes.find(e => e.episode_number === epNum);
     const epTitle = epObj ? epObj.episode_title : `${epNum}. Bölüm`;
-    
+    const targetUrl = epObj?.url;
+
+    if (!targetUrl) {
+      showAlert("Hata", "Bölüm adresi bulunamadı.");
+      setIsInlineResolving(false);
+      setInlineResolveUrl(null);
+      setInlineTargetEp(null);
+      return;
+    }
+
     try {
-      const res = await fetchEpisodeVideoUrl(animeId, epNum);
-      if (res.success && res.videoUrl) {
-        setInlineResolveState('Yükleniyor...');
-        setInlineResolveProgress(100);
-        
-        let finalUrl = res.videoUrl;
-        if (finalUrl.startsWith('sibnet-direct:')) {
-          finalUrl = finalUrl.replace('sibnet-direct:', '');
-        } else if (finalUrl.startsWith('sibnet:')) {
-          const sibnetId = finalUrl.replace('sibnet:', '');
-          finalUrl = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sibnetId}`;
-        }
-        
-        // Update states to load next episode inside the player
-        setCurrentEpisodeNumber(epNum);
-        setCurrentEpisodeTitle(epTitle);
-        setCurrentVideoUrl(finalUrl);
-        setCurrentStartAt(0); // Transitioned episode always starts at 0
-        
-        setIsInlineResolving(false);
-        setInlineResolveUrl(null);
-        setInlineTargetEp(null);
-      } else if (res.code === 'NOT_CACHED' && res.episodeUrl) {
-        setInlineResolveState('Bölüm aranıyor...');
-        setInlineResolveProgress(25);
+      setInlineResolveState('Akış taranıyor...');
+      setInlineResolveProgress(30);
 
-        // 1. Primary: Instant direct extraction without running into WebView .click blocks
-        try {
-          const directStream = await resolveEpisodeStream(res.episodeUrl);
-          if (directStream?.streamUrl) {
-            let streamFinal = directStream.streamUrl;
-            if (streamFinal.startsWith('sibnet-direct:')) {
-              streamFinal = streamFinal.replace('sibnet-direct:', '');
-            } else if (streamFinal.startsWith('sibnet:')) {
-              const sId = streamFinal.replace('sibnet:', '');
-              streamFinal = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sId}`;
-            }
-
-            // Silently cache in background
-            cacheEpisodeVideoUrl(animeId, epNum, streamFinal, null).catch(() => {});
-
-            setCurrentEpisodeNumber(epNum);
-            setCurrentEpisodeTitle(epTitle);
-            setCurrentVideoUrl(streamFinal);
-            setCurrentStartAt(0);
-
-            setIsInlineResolving(false);
-            setInlineResolveUrl(null);
-            setInlineTargetEp(null);
-            return;
+      // 1. Primary: Instant direct extraction without running into WebView .click blocks
+      try {
+        const directStream = await resolveEpisodeStream(targetUrl);
+        if (directStream?.streamUrl) {
+          let streamFinal = directStream.streamUrl;
+          if (streamFinal.startsWith('sibnet-direct:')) {
+            streamFinal = streamFinal.replace('sibnet-direct:', '');
+          } else if (streamFinal.startsWith('sibnet:')) {
+            const sId = streamFinal.replace('sibnet:', '');
+            streamFinal = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sId}`;
           }
-        } catch (fastErr) {
-          console.warn('[WatchScreen] Direct stream extraction error:', fastErr.message);
-        }
 
-        // 2. Fallback: Spawn inline WebView only if direct extraction didn't yield video link
-        setInlineResolveProgress(40);
-        setInlineResolveUrl(res.episodeUrl);
-      } else {
-        showAlert("Hata", res.error || "Bölüm adresi alınamadı.");
-        setIsInlineResolving(false);
-        setInlineResolveUrl(null);
-        setInlineTargetEp(null);
+          setCurrentEpisodeNumber(epNum);
+          setCurrentEpisodeTitle(epTitle);
+          setCurrentVideoUrl(streamFinal);
+          setCurrentStartAt(0);
+
+          setIsInlineResolving(false);
+          setInlineResolveUrl(null);
+          setInlineTargetEp(null);
+          return;
+        }
+      } catch (fastErr) {
+        console.warn('[WatchScreen] Direct stream extraction error:', fastErr.message);
       }
+
+      // 2. Fallback: Spawn inline WebView only if direct extraction didn't yield video link
+      setInlineResolveProgress(50);
+      setInlineResolveUrl(targetUrl);
     } catch (err) {
       console.warn('[WatchScreen inline resolve] failed:', err);
       showAlert("Hata", "Ağ hatası oluştu.");
@@ -570,9 +519,6 @@ export default function WatchScreen({ route, navigation }) {
         const resolvedFansub = data.fansub || null;
         console.log(`[Inline Scraper Ep ${inlineTargetEp}] Resolved source:`, resolvedUrl, `(Fansub: ${resolvedFansub || 'N/A'})`);
         setInlineResolveProgress(100);
-        
-        await cacheEpisodeVideoUrl(animeId, inlineTargetEp, resolvedUrl, resolvedFansub);
-        console.log(`[Inline Scraper Ep ${inlineTargetEp}] Cached resolved source in DB.`);
 
         let finalUrl = resolvedUrl;
         if (finalUrl.startsWith('sibnet-direct:')) {

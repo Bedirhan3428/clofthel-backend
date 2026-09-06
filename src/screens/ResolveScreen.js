@@ -15,7 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
-import { fetchEpisodeVideoUrl, cacheEpisodeVideoUrl } from '../services/api';
+import { resolveEpisodeStream, searchTranimeizleMatch, fetchEpisodesForAnime } from '../services/lightweightResolver';
 import TouchInjector from '../modules/TouchInjector';
 import { API_BASE_URL } from '../constants/config';
 import { scraperInjectedJs } from '../modules/ScraperScript';
@@ -33,10 +33,19 @@ if (Platform.OS !== 'web') {
 const IS_WEB = Platform.OS === 'web';
 
 export default function ResolveScreen({ route, navigation }) {
-  const { animeId, episodeNumber, episodeTitle, animeTitle, anilistId, fansubs, startAt } = route.params;
+  const { 
+    animeId, 
+    episodeNumber, 
+    episodeTitle, 
+    animeTitle, 
+    anilistId, 
+    fansubs, 
+    startAt,
+    episodeUrl: passedEpisodeUrl 
+  } = route.params;
 
   const [loading, setLoading] = useState(true);
-  const [resolvingState, setResolvingState] = useState('Veritabanı kontrol ediliyor...');
+  const [resolvingState, setResolvingState] = useState('Kaynak taranıyor...');
   const [errorMsg, setErrorMsg] = useState(null);
   const [episodeUrl, setEpisodeUrl] = useState(null);
   const [progressPercent, setProgressPercent] = useState(10);
@@ -120,58 +129,80 @@ export default function ResolveScreen({ route, navigation }) {
     setLoading(true);
     setErrorMsg(null);
     setEpisodeUrl(null);
-    setProgressPercent(10);
-    animatedProgress.setValue(10);
-    setDisplayedPercent(10);
-    setResolvingState('Veritabanı kontrol ediliyor...');
-
-    if (!IS_WEB && !WebView) {
-      setErrorMsg('HATA: WebView bileşeni yüklenemedi. (Native modül eksik)');
-      setLoading(false);
-      return;
-    }
+    setProgressPercent(15);
+    animatedProgress.setValue(15);
+    setDisplayedPercent(15);
+    setResolvingState('Kaynak taranıyor...');
 
     try {
-      const result = await fetchEpisodeVideoUrl(animeId, episodeNumber);
-      console.log('[ResolveScreen] DB check result:', result);
-      
-      if (result.success && result.videoUrl) {
-        setResolvingState('Video yükleniyor...');
-        let finalUrl = result.videoUrl;
+      let targetEpUrl = passedEpisodeUrl;
+
+      // 1. If episodeUrl was not directly passed, search and resolve it
+      if (!targetEpUrl && animeTitle) {
+        setResolvingState('Bölüm eşleştiriliyor...');
+        const matchUrl = await searchTranimeizleMatch({
+          orijinal_ad: animeTitle,
+          title_romaji: animeTitle,
+          title_english: animeTitle
+        });
+        if (matchUrl) {
+          const eps = await fetchEpisodesForAnime(matchUrl);
+          const found = eps.find(e => e.number === parseInt(episodeNumber, 10));
+          if (found) {
+            targetEpUrl = found.url;
+          }
+        }
+      }
+
+      if (!targetEpUrl) {
+        setErrorMsg('Bölüm izleme linki bulunamadı.');
+        setLoading(false);
+        return;
+      }
+
+      // 2. Try instant lightweight stream extraction (direct m3u8 / Sibnet)
+      setResolvingState('Akış taranıyor...');
+      setProgressPercent(40);
+      const streamRes = await resolveEpisodeStream(targetEpUrl);
+      if (streamRes && streamRes.streamUrl) {
+        setProgressPercent(100);
+        let finalUrl = streamRes.streamUrl;
         if (finalUrl.startsWith('sibnet-direct:')) {
           finalUrl = finalUrl.replace('sibnet-direct:', '');
         } else if (finalUrl.startsWith('sibnet:')) {
           const sibnetId = finalUrl.replace('sibnet:', '');
           finalUrl = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sibnetId}`;
         }
-        
-        // Immediately replace with Player Watch screen
+
+        // Direct handoff to Watch player!
         navigation.replace('Watch', {
           animeId,
           episodeNumber,
           episodeTitle,
           animeTitle,
           videoUrl: finalUrl,
-          fansub: result.fansub || null,
-          fansubs: fansubs || result.fansubs || [],
-          anilistId: anilistId || result.anilist_id || null,
-          startAt: startAt || 0
+          fansub: null,
+          fansubs: fansubs || [],
+          anilistId: anilistId || null,
+          startAt: startAt || 0,
+          episodes: route.params?.episodes || []
         });
-      } else if (result.code === 'NOT_CACHED') {
-        if (!result.episodeUrl) {
-          setErrorMsg('Bölüm izleme linki bulunamadı.');
-          setLoading(false);
-          return;
-        }
-        console.log('[ResolveScreen] Loading WebView with URL:', result.episodeUrl);
-        setEpisodeUrl(result.episodeUrl);
-        setResolvingState('Video yükleniyor...');
-      } else {
-        setErrorMsg(result.error || 'Video adresi alınamadı.');
-        setLoading(false);
+        return;
       }
+
+      // 3. If direct extraction requires captcha / JS execution, run in WebView
+      if (!IS_WEB && !WebView) {
+        setErrorMsg('HATA: WebView bileşeni yüklenemedi. (Native modül eksik)');
+        setLoading(false);
+        return;
+      }
+
+      console.log('[ResolveScreen] Opening WebView for URL:', targetEpUrl);
+      setEpisodeUrl(targetEpUrl);
+      setProgressPercent(50);
+      setResolvingState('Video oynatıcı hazırlanıyor...');
     } catch (err) {
-      console.error('[ResolveScreen] Initial load error:', err);
+      console.error('[ResolveScreen] Resolution error:', err);
       setErrorMsg('Ağ hatası oluştu. Lütfen tekrar deneyin.');
       setLoading(false);
     }
@@ -199,9 +230,6 @@ export default function ResolveScreen({ route, navigation }) {
         setProgressPercent(100);
         let finalUrl = data.videoUrl;
         
-        // Cache in backend database
-        await cacheEpisodeVideoUrl(animeId, episodeNumber, finalUrl);
-        
         if (finalUrl.startsWith('sibnet-direct:')) {
           finalUrl = finalUrl.replace('sibnet-direct:', '');
         } else if (finalUrl.startsWith('sibnet:')) {
@@ -219,7 +247,8 @@ export default function ResolveScreen({ route, navigation }) {
           fansub: data.fansub || null,
           fansubs: fansubs || [],
           anilistId: anilistId || null,
-          startAt: startAt || 0
+          startAt: startAt || 0,
+          episodes: route.params?.episodes || []
         });
       } else if (data.type === 'noSource' || data.type === 'error') {
         setErrorMsg(data.message || 'Anime bulunamadı.');

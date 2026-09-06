@@ -8,12 +8,12 @@ import {
   FlatList,
   StatusBar,
   Linking,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Image } from 'expo-image';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS } from '../constants/theme';
-import { useAnimeDirectory } from '../context/AnimeDirectoryContext';
 import { AuthContext } from '../context/AuthContext';
 import { searchAnimes as searchAniList } from '../services/anilistService';
 
@@ -32,7 +32,6 @@ function getFormatStyle(type) {
 
 export default function SearchScreen({ route, navigation }) {
   const { user } = useContext(AuthContext);
-  const { searchAnime, isLoading: directoryLoading } = useAnimeDirectory();
   const [query, setQuery] = useState(route?.params?.initialQuery || '');
   const [results, setResults] = useState([]);
   const [isSearchingAniList, setIsSearchingAniList] = useState(false);
@@ -43,7 +42,7 @@ export default function SearchScreen({ route, navigation }) {
     }
   }, [route?.params?.initialQuery]);
 
-  // ── Combined Search: Instant Local + Real-time AniList GraphQL ──
+  // ── Pure AniList GraphQL Search ──────────────────────────────
   useEffect(() => {
     const trimmed = query.trim();
     if (!trimmed || trimmed.length < 2) {
@@ -57,21 +56,15 @@ export default function SearchScreen({ route, navigation }) {
       return;
     }
 
-    // 1. Instant local search preview
-    const localMatches = searchAnime(trimmed);
-    setResults(localMatches);
-
-    // 2. Debounced AniList search
     let cancelled = false;
     setIsSearchingAniList(true);
 
     const timer = setTimeout(async () => {
       try {
-        const aniListMatches = await searchAniList(trimmed, 1, 25);
+        const aniListMatches = await searchAniList(trimmed, 1, 30);
         if (cancelled) return;
 
-        if (aniListMatches && aniListMatches.length > 0) {
-          // Merge: AniList items first, then local items not present in AniList
+        if (aniListMatches) {
           setResults(aniListMatches);
         }
       } catch (err) {
@@ -85,7 +78,7 @@ export default function SearchScreen({ route, navigation }) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query, searchAnime]);
+  }, [query]);
 
   const renderSearchItem = useCallback(({ item }) => {
     const isAniList = Boolean(item.anilist_id);
@@ -202,15 +195,10 @@ export default function SearchScreen({ route, navigation }) {
       </View>
 
       {/* ── Content ────────────────────────────────── */}
-      {directoryLoading ? (
+      {isSearchingAniList && results.length === 0 ? (
         <View style={styles.centerContainer}>
-          <View style={styles.iconCircle}>
-            <Ionicons name="cloud-download-outline" size={48} color={COLORS.accent} />
-          </View>
-          <Text style={styles.infoTitle}>Katalog Yükleniyor</Text>
-          <Text style={styles.infoSubtitle}>
-            Anime kataloğu hazırlanıyor, lütfen bekleyin...
-          </Text>
+          <ActivityIndicator size="large" color={COLORS.accent} />
+          <Text style={[styles.infoSubtitle, { marginTop: 12 }]}>AniList aranıyor...</Text>
         </View>
       ) : query.trim().length < 2 ? (
         <View style={styles.centerContainer}>
@@ -219,7 +207,7 @@ export default function SearchScreen({ route, navigation }) {
           </View>
           <Text style={styles.infoTitle}>Anime Ara</Text>
           <Text style={styles.infoSubtitle}>
-            On binlerce anime başlığı arasından anında ara ve hemen izlemeye başla!
+            AniList kataloğundaki on binlerce anime arasından hemen ara ve izle!
           </Text>
         </View>
       ) : results.length === 0 ? (

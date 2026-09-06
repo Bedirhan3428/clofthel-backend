@@ -19,9 +19,6 @@ import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, use
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { APP_VERSION } from '../constants/config';
 import {
-  fetchRecentAnimes,
-  fetchTrendingAnimes,
-  fetchAnimesByGenre,
   checkAppUpdate,
 } from '../services/api';
 import {
@@ -178,24 +175,12 @@ export default function HomeScreen() {
         fetchGenreAniList('Romance', 1, 15).catch(() => []),
       ]);
 
-      // Fallback: If AniList fails or returns empty, fetch from backend MongoDB
-      if (!trend || trend.length === 0) {
-        console.log('[HomeScreen] AniList empty/failed, falling back to backend DB...');
-        const [recentDb, trendDb, actionDb, fantasyDb, comedyDb, romanceDb] = await Promise.all([
-          fetchRecentAnimes(20).catch(() => []),
-          fetchTrendingAnimes(20).catch(() => []),
-          fetchAnimesByGenre('Aksiyon').catch(() => []),
-          fetchAnimesByGenre('Fantastik').catch(() => []),
-          fetchAnimesByGenre('Komedi').catch(() => []),
-          fetchAnimesByGenre('Romantik').catch(() => []),
-        ]);
-        seasonal = recentDb;
-        trend = trendDb;
-        action = actionDb;
-        fantasy = fantasyDb;
-        comedy = comedyDb;
-        romance = romanceDb;
-      }
+      seasonal = seasonal || [];
+      trend = trend || [];
+      action = action || [];
+      fantasy = fantasy || [];
+      comedy = comedy || [];
+      romance = romance || [];
 
       // Featured: top 5 from trending/seasonal
       const pool = [...trend, ...seasonal];

@@ -30,7 +30,7 @@ import {
   FONT_WEIGHTS,
   BORDER_RADIUS,
 } from '../constants/theme';
-import { fetchAnimeDetail, fetchEpisodes, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList, syncAnimeCacheApi } from '../services/api';
+import { addToHistory, toggleFavorite, getProfileData, toggleAnimeInList, syncAnimeCacheApi } from '../services/api';
 import { searchTranimeizleMatch, fetchEpisodesForAnime } from '../services/lightweightResolver';
 import { fetchAnimeDetails as fetchAniListDetails } from '../services/anilistService';
 import { useAlert } from '../context/AlertContext';
@@ -123,14 +123,13 @@ export default function AnimeDetailScreen({ route, navigation }) {
   }, [user, activeMongoId]);
 
   // ── Fetch Details & Episodes ─────────────────────────────────
+  // ── Fetch Details from AniList & Episodes from Lightweight Resolver ──
   useEffect(() => {
-    if (!activeMongoId) return;
-
     let cancelled = false;
+    const anilistId = anime?.anilist_id || passedAnime?.anilist_id || (typeof initialId === 'number' ? initialId : parseInt(initialId, 10));
+
     const cached = seasonCacheRef.current[activeMongoId];
-    
     if (cached) {
-      // Instant switch from local cache — zero wait, zero flicker!
       if (cached.anime) setAnime(cached.anime);
       if (cached.episodes && cached.episodes.length > 0) {
         setEpisodes(cached.episodes);
@@ -144,128 +143,92 @@ export default function AnimeDetailScreen({ route, navigation }) {
       fadeAnim.setValue(0);
     }
 
-    // 1. Fetch detail (includes orchestrator seasons list from backend)
-    fetchAnimeDetail(activeMongoId).then(data => {
-      if (cancelled) return;
-      if (data) {
-        setAnime(data);
-        if (data.seasons && data.seasons.length > 0) {
-          setSeasons(data.seasons);
-        }
-        if (data.related_movies_or_ovas) {
-          setRelatedMoviesOvas(data.related_movies_or_ovas);
-        }
-        // Save to cache
-        seasonCacheRef.current[activeMongoId] = {
-          ...(seasonCacheRef.current[activeMongoId] || {}),
-          anime: data
-        };
-      }
-      setLoading(false);
-    }).catch(err => {
-      console.error('[Detail] Error loading detail:', err);
-      if (!cancelled && !cached) setLoading(false);
-    });
+    async function loadAll() {
+      try {
+        let currentAnimeData = anime || passedAnime;
 
-    // 2. Fetch episodes with automated on-demand self-healing
-    fetchEpisodes(activeMongoId).then(async (eps) => {
-      if (cancelled) return;
-      if (eps && eps.length > 0) {
-        setEpisodes(eps);
-        setLoadingEpisodes(false);
-        seasonCacheRef.current[activeMongoId] = {
-          ...(seasonCacheRef.current[activeMongoId] || {}),
-          episodes: eps
-        };
-      } else {
-        const targetTitle = anime?.orijinal_ad || anime?.anime_title || initialTitle;
-        console.log('[Detail] 0 episodes found. Triggering on-demand client resolution for:', targetTitle);
-        
-        // 1. Primary: On-demand client resolution using mobile IP (No .click, no bot lock)
-        let resolvedOnClient = false;
-        try {
-          const matchInfo = {
-            orijinal_ad: targetTitle,
-            title_romaji: anime?.title_romaji || targetTitle,
-            title_english: anime?.title_english || anime?.title_en,
-            synonyms: anime?.synonyms,
-            seasonNumber: anime?.season_number || 1,
-            seasonYear: anime?.seasonYear
-          };
-          const resolvedUrl = await searchTranimeizleMatch(matchInfo);
-          if (resolvedUrl) {
-            const rawEps = await fetchEpisodesForAnime(resolvedUrl);
-            if (rawEps && rawEps.length > 0) {
-              const formattedEps = rawEps.map(ep => ({
-                _id: `${activeMongoId || 'ep'}_${ep.number}`,
-                episode_number: ep.number,
-                episode_title: ep.title,
-                url: ep.url
-              }));
-              if (!cancelled) {
-                setEpisodes(formattedEps);
-                seasonCacheRef.current[activeMongoId] = {
-                  ...(seasonCacheRef.current[activeMongoId] || {}),
-                  episodes: formattedEps
-                };
-              }
-              resolvedOnClient = true;
+        // 1. Fetch rich AniList details if anilistId is available
+        if (anilistId && (!currentAnimeData || !currentAnimeData.synopsis)) {
+          const aniData = await fetchAniListDetails(anilistId);
+          if (aniData && !cancelled) {
+            currentAnimeData = { ...currentAnimeData, ...aniData };
+            setAnime(currentAnimeData);
 
-              // Silently sync to MongoDB cache in background
-              syncAnimeCacheApi({
-                anilist_id: anime?.anilist_id,
-                anime_title: targetTitle,
-                cover_image: anime?.coverImage || anime?.poster || anime?.cover_image,
-                banner_image: anime?.bannerImage || anime?.banner,
-                genres: anime?.genres,
-                description: anime?.synopsis || anime?.description,
-                episodes: formattedEps,
-                tranimeizle_url: resolvedUrl
-              }).catch(() => {});
+            // Extract relations (Sequels/Prequels) as seasons
+            if (aniData.relations && aniData.relations.length > 0) {
+              const relSeasons = aniData.relations
+                .filter(r => ['SEQUEL', 'PREQUEL', 'ALTERNATIVE', 'PARENT'].includes(r.relationType))
+                .map((r, idx) => ({
+                  _id: String(r.node.id),
+                  anilist_id: r.node.id,
+                  season_number: idx + 1,
+                  label: r.node.title || r.node.orijinal_ad,
+                  title: r.node.title,
+                  category: 'seasons',
+                  cover_image: r.node.coverImage,
+                  banner_image: r.node.bannerImage,
+                  node: r.node
+                }));
+              if (relSeasons.length > 0) setSeasons(relSeasons);
             }
           }
-        } catch (clientResolverErr) {
-          console.warn('[Detail] Client-side on-demand resolution failed:', clientResolverErr.message);
         }
 
-        // 2. Fallback: If not resolved on client and not cached, empty list
-        if (!resolvedOnClient && !cached) {
+        if (!cancelled) setLoading(false);
+
+        // 2. Resolve episodes directly from Tranimeizle via lightweight resolver
+        const targetTitle = currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle;
+        const matchInfo = {
+          orijinal_ad: targetTitle,
+          title_romaji: currentAnimeData?.title_romaji || targetTitle,
+          title_english: currentAnimeData?.title_english || currentAnimeData?.title_en,
+          synonyms: currentAnimeData?.synonyms,
+          seasonNumber: currentAnimeData?.season_number || 1,
+          seasonYear: currentAnimeData?.seasonYear
+        };
+
+        const resolvedUrl = await searchTranimeizleMatch(matchInfo);
+        if (resolvedUrl && !cancelled) {
+          const rawEps = await fetchEpisodesForAnime(resolvedUrl);
+          if (rawEps && rawEps.length > 0 && !cancelled) {
+            const formattedEps = rawEps.map(ep => ({
+              _id: `${activeMongoId || 'ep'}_${ep.number}`,
+              episode_number: ep.number,
+              episode_title: ep.title,
+              url: ep.url
+            }));
+            setEpisodes(formattedEps);
+            seasonCacheRef.current[activeMongoId] = {
+              anime: currentAnimeData,
+              episodes: formattedEps
+            };
+          } else if (!cancelled && !cached) {
+            setEpisodes([]);
+          }
+        } else if (!cancelled && !cached) {
           setEpisodes([]);
         }
-        setLoadingEpisodes(false);
-      }
-
-      // Animate fade-in
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 300,
-        useNativeDriver: true,
-      }).start();
-    }).catch(async (err) => {
-      console.error('[Detail] Error loading episodes:', err);
-      if (!cached) {
-        const targetTitle = anime?.orijinal_ad || anime?.anime_title || initialTitle;
-        const healResult = await selfHealAnime(activeMongoId, anime?.tranimeizle_slug, targetTitle);
+      } catch (err) {
+        console.warn('[Detail] Error loading detail/episodes:', err.message);
+        if (!cancelled && !cached) setEpisodes([]);
+      } finally {
         if (!cancelled) {
-          if (healResult?.success && healResult?.data?.episodes) {
-            const healedEps = Object.keys(healResult.data.episodes).map(key => ({
-              _id: `${healResult.data._id}_${key}`,
-              episode_number: parseInt(key, 10),
-              episode_title: `${key}. Bölüm`,
-              url: healResult.data.episodes[key]
-            })).sort((a, b) => a.episode_number - b.episode_number);
-            setEpisodes(healedEps);
-            seasonCacheRef.current[activeMongoId] = {
-              ...(seasonCacheRef.current[activeMongoId] || {}),
-              episodes: healedEps
-            };
-          }
+          setLoading(false);
           setLoadingEpisodes(false);
+          Animated.timing(fadeAnim, {
+            toValue: 1,
+            duration: 300,
+            useNativeDriver: true,
+          }).start();
         }
       }
-    });
+    }
 
-    return () => { cancelled = true; };
+    loadAll();
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeMongoId]);
 
   // ── Handlers ─────────────────────────────────────────────────
@@ -335,7 +298,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
           episodeTitle: item.episode_title || `Bölüm ${item.episode_number}`,
           animeTitle: mainTitleEn,
           anilistId: anime?.anilist_id || null,
-          fansubs: anime?.fansubs || []
+          fansubs: anime?.fansubs || [],
+          episodeUrl: item.url,
+          episodes: episodes
         });
       }}
     >
