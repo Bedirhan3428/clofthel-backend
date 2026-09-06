@@ -241,24 +241,66 @@ export async function fetchEpisodesForAnime(animeOverviewUrl) {
   const episodes = [];
   const seenUrls = new Set();
 
-  // Pattern 1: flx-block episode cards
-  const blockRegex = /<div[^>]*class="[^"]*flx-block[^"]*"[^>]*data-href="([^"]+)"([\s\S]*?)<\/div>/gi;
+  // Pattern 0: .animeDetail-items li episode cards (Tranimeizle detail list)
+  const liRegex = /<li[^>]*>[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/li>/gi;
   let match;
-  while ((match = blockRegex.exec(html)) !== null) {
+  while ((match = liRegex.exec(html)) !== null) {
     let href = match[1].trim();
     if (href.startsWith('/')) href = `${BASE_URL}${href}`;
-    if (!seenUrls.has(href)) {
+    if (!seenUrls.has(href) && (href.includes('-bolum') || href.includes('-bolum-izle'))) {
       seenUrls.add(href);
       const content = match[2];
-      const titleMatch = content.match(/<h4>([^<]+)<\/h4>/i);
-      const epMatch = href.match(/[-_](\d+)[-_]bolum/i) || (titleMatch ? titleMatch[1].match(/(\d+)\.\s*Bölüm/i) : null);
-      const epNum = epMatch ? parseInt(epMatch[1], 10) : episodes.length + 1;
+
+      // Thumbnail
+      const imgMatch = content.match(/<img[^>]+src="([^"]+)"/i);
+      const thumb = imgMatch ? imgMatch[1] : '';
+
+      // Title
+      const titleSpanMatch = content.match(/<div class="etitle"[^>]*>[\s\S]*?<span>([^<]+)<\/span>/i);
+      const altMatch = content.match(/alt="([^"]+)"/i);
+      let title = titleSpanMatch ? titleSpanMatch[1].trim() : (altMatch ? altMatch[1].trim() : '');
+
+      // Release date
+      const dateMatch = content.match(/<small[^>]*class="[^"]*author[^"]*"[^>]*>([\s\S]*?)<\/small>/i) ||
+                        content.match(/<small[^>]*>([\s\S]*?)<\/small>/i);
+      let releaseDate = '';
+      if (dateMatch) {
+        releaseDate = dateMatch[1].replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      }
+
+      // Episode number from href or title
+      const epMatch = href.match(/[-_](\d+)[-_]bolum/i) || title.match(/(\d+)\.\s*Bölüm/i);
+      const epNum = epMatch ? parseInt(epMatch[1], 10) : (episodes.length + 1);
 
       episodes.push({
         number: epNum,
-        title: titleMatch ? titleMatch[1].trim() : `${epNum}. Bölüm`,
+        title: title || `${epNum}. Bölüm`,
         url: href,
+        thumbnail: thumb,
+        release_date: releaseDate,
       });
+    }
+  }
+
+  // Pattern 1: flx-block episode cards
+  if (episodes.length === 0) {
+    const blockRegex = /<div[^>]*class="[^"]*flx-block[^"]*"[^>]*data-href="([^"]+)"([\s\S]*?)<\/div>/gi;
+    while ((match = blockRegex.exec(html)) !== null) {
+      let href = match[1].trim();
+      if (href.startsWith('/')) href = `${BASE_URL}${href}`;
+      if (!seenUrls.has(href)) {
+        seenUrls.add(href);
+        const content = match[2];
+        const titleMatch = content.match(/<h4>([^<]+)<\/h4>/i);
+        const epMatch = href.match(/[-_](\d+)[-_]bolum/i) || (titleMatch ? titleMatch[1].match(/(\d+)\.\s*Bölüm/i) : null);
+        const epNum = epMatch ? parseInt(epMatch[1], 10) : episodes.length + 1;
+
+        episodes.push({
+          number: epNum,
+          title: titleMatch ? titleMatch[1].trim() : `${epNum}. Bölüm`,
+          url: href,
+        });
+      }
     }
   }
 

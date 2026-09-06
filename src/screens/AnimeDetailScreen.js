@@ -65,28 +65,64 @@ const webViewEpisodeExtractorJs = `
       var eps = [];
       var seen = {};
 
-      var blocks = document.querySelectorAll('.flx-block[data-href], div[data-href*="-bolum"]');
-      for (var i = 0; i < blocks.length; i++) {
-        var el = blocks[i];
-        var href = el.getAttribute('data-href') || '';
-        if (href && !seen[href]) {
-          seen[href] = true;
-          var h4 = el.querySelector('h4');
-          var title = (h4 ? h4.textContent : el.textContent || '').trim();
-          var epMatch = href.match(/[-_](\\d+)[-_]bolum/i) || title.match(/(\\d+)\\.\\s*Bölüm/i);
-          var epNum = epMatch ? parseInt(epMatch[1], 10) : (eps.length + 1);
-          eps.push({ number: epNum, title: title || (epNum + '. Bölüm'), url: href });
+      // 1. Birincil: .animeDetail-items li ve .episode-li elemanları (Gerçek Tranimeizle Yapısı)
+      var items = document.querySelectorAll('.animeDetail-items ol li, .animeDetail-items li, .episode-li');
+      for (var i = 0; i < items.length; i++) {
+        var li = items[i];
+        var a = li.tagName === 'A' ? li : li.querySelector('a');
+        if (!a && li.closest) a = li.closest('a');
+        if (!a) continue;
+
+        var href = a.getAttribute('href') || '';
+        if (!href || seen[href] || href.indexOf('/kategori') !== -1 || href.indexOf('/arama') !== -1) continue;
+        seen[href] = true;
+
+        var titleEl = li.querySelector('.etitle span, .etitle, h4, span');
+        var imgEl = li.querySelector('.imgContainer img, img.thumb, img');
+        var dateEl = li.querySelector('.etitle small.author, small.author, .author, small');
+
+        var title = titleEl ? (titleEl.textContent || '').trim() : (a.textContent || '').trim();
+        var thumb = imgEl ? (imgEl.getAttribute('src') || imgEl.src || '') : '';
+        var date = dateEl ? (dateEl.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+
+        var epMatch = href.match(/[-_](\\d+)[-_]bolum/i) || title.match(/(\\d+)\\.\\s*Bölüm/i);
+        var epNum = epMatch ? parseInt(epMatch[1], 10) : (eps.length + 1);
+
+        eps.push({
+          number: epNum,
+          title: title || (epNum + '. Bölüm'),
+          url: href,
+          thumbnail: thumb,
+          release_date: date
+        });
+      }
+
+      // 2. İkincil: .flx-block kartları
+      if (eps.length === 0) {
+        var blocks = document.querySelectorAll('.flx-block[data-href], div[data-href*="-bolum"]');
+        for (var b = 0; b < blocks.length; b++) {
+          var el = blocks[b];
+          var bHref = el.getAttribute('data-href') || '';
+          if (bHref && !seen[bHref]) {
+            seen[bHref] = true;
+            var h4 = el.querySelector('h4');
+            var bTitle = (h4 ? h4.textContent : el.textContent || '').trim();
+            var bEpMatch = bHref.match(/[-_](\\d+)[-_]bolum/i) || bTitle.match(/(\\d+)\\.\\s*Bölüm/i);
+            var bEpNum = bEpMatch ? parseInt(bEpMatch[1], 10) : (eps.length + 1);
+            eps.push({ number: bEpNum, title: bTitle || (bEpNum + '. Bölüm'), url: bHref });
+          }
         }
       }
 
+      // 3. Üçüncül: Genel a[href*="-bolum"] bağlantıları
       if (eps.length === 0) {
         var links = document.querySelectorAll('a[href*="-bolum-izle"], a[href*="-bolum"]');
         for (var j = 0; j < links.length; j++) {
-          var a = links[j];
-          var aHref = a.getAttribute('href') || '';
-          if (aHref && !seen[aHref] && aHref.indexOf('/kategori') === -1) {
+          var aEl = links[j];
+          var aHref = aEl.getAttribute('href') || '';
+          if (aHref && !seen[aHref] && aHref.indexOf('/kategori') === -1 && aHref.indexOf('/arama') === -1) {
             seen[aHref] = true;
-            var aTitle = (a.textContent || '').trim();
+            var aTitle = (aEl.textContent || '').trim();
             var aMatch = aHref.match(/[-_](\\d+)[-_]bolum/i) || aTitle.match(/(\\d+)\\.\\s*Bölüm/i);
             var aNum = aMatch ? parseInt(aMatch[1], 10) : (eps.length + 1);
             eps.push({ number: aNum, title: aTitle || (aNum + '. Bölüm'), url: aHref });
@@ -95,7 +131,7 @@ const webViewEpisodeExtractorJs = `
       }
 
       if (eps.length > 0) {
-        eps.sort(function(a, b) { return a.number - b.number; });
+        eps.sort(function(x, y) { return x.number - y.number; });
         if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
           window.ReactNativeWebView.postMessage(JSON.stringify({
             type: 'episodes_extracted',
@@ -217,7 +253,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
           _id: `${activeMongoId || 'ep'}_${ep.number}`,
           episode_number: ep.number,
           episode_title: ep.title,
-          url: ep.url
+          url: ep.url.startsWith('http') ? ep.url : `${BASE_URL}${ep.url.startsWith('/') ? '' : '/'}${ep.url}`,
+          thumbnail: ep.thumbnail ? (ep.thumbnail.startsWith('http') ? ep.thumbnail : `${BASE_URL}${ep.thumbnail.startsWith('/') ? '' : '/'}${ep.thumbnail}`) : null,
+          release_date: ep.release_date || null
         }));
         setEpisodes(formattedEps);
         addLog(`🎉 [TAMAMLANDI] ${formattedEps.length} adet bölüm listelendi!`, 'success');
@@ -469,42 +507,70 @@ export default function AnimeDetailScreen({ route, navigation }) {
                       'Sezon 1';
 
   // ── Render Episode Card ──────────────────────────────────────
-  const renderEpisodeCard = useCallback(({ item }) => (
-    <TouchableOpacity
-      style={styles.episodeCard}
-      activeOpacity={0.8}
-      onPress={() => {
-        if (user) {
-          addToHistory(activeMongoId, item.episode_number);
-        }
-        navigation.navigate('Resolve', {
-          animeId: activeMongoId,
-          episodeNumber: item.episode_number,
-          episodeTitle: item.episode_title || `Bölüm ${item.episode_number}`,
-          animeTitle: mainTitleEn,
-          anilistId: anime?.anilist_id || null,
-          fansubs: anime?.fansubs || [],
-          episodeUrl: item.url,
-          episodes: episodes
-        });
-      }}
-    >
-      <View style={styles.episodeNumberBadge}>
-        <Text style={styles.episodeNumberText}>{item.episode_number}</Text>
-      </View>
-      <View style={styles.episodeInfo}>
-        <Text style={styles.episodeTitle} numberOfLines={1}>
-          {item.episode_title || `Bölüm ${item.episode_number}`}
-        </Text>
-        <Text style={styles.episodeMeta}>
-          {item.source_url ? 'Hazır' : 'Kaynak yok'}
-        </Text>
-      </View>
-      <View style={styles.episodePlayButton}>
-        <Ionicons name="play" size={16} color={COLORS.accent} />
-      </View>
-    </TouchableOpacity>
-  ), [activeMongoId, mainTitleEn, navigation, user]);
+  const renderEpisodeCard = useCallback(({ item }) => {
+    const hasThumb = Boolean(item.thumbnail);
+
+    return (
+      <TouchableOpacity
+        style={styles.episodeCard}
+        activeOpacity={0.8}
+        onPress={() => {
+          if (user) {
+            addToHistory(activeMongoId, item.episode_number);
+          }
+          navigation.navigate('Resolve', {
+            animeId: activeMongoId,
+            episodeNumber: item.episode_number,
+            episodeTitle: item.episode_title || `${item.episode_number}. Bölüm`,
+            animeTitle: mainTitleEn,
+            anilistId: anime?.anilist_id || null,
+            fansubs: anime?.fansubs || [],
+            episodeUrl: item.url,
+            episodes: episodes
+          });
+        }}
+      >
+        {hasThumb ? (
+          <View style={styles.episodeThumbnailContainer}>
+            <Image
+              source={{ uri: item.thumbnail }}
+              style={styles.episodeThumbnail}
+              contentFit="cover"
+              transition={200}
+            />
+            <View style={styles.episodeThumbnailOverlay} />
+            <View style={styles.episodeThumbNumberBadge}>
+              <Text style={styles.episodeThumbNumberText}>#{item.episode_number}</Text>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.episodeNumberBadge}>
+            <Text style={styles.episodeNumberText}>{item.episode_number}</Text>
+          </View>
+        )}
+
+        <View style={styles.episodeInfo}>
+          <Text style={styles.episodeTitle} numberOfLines={2}>
+            {item.episode_title || `${item.episode_number}. Bölüm`}
+          </Text>
+          <View style={styles.episodeDateRow}>
+            <Ionicons
+              name={item.release_date ? "calendar-outline" : "play-circle-outline"}
+              size={12}
+              color={COLORS.accent}
+            />
+            <Text style={styles.episodeDateText}>
+              {item.release_date || (item.source_url ? 'Hazır' : 'HD')}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.episodePlayButton}>
+          <Ionicons name="play" size={16} color={COLORS.accent} />
+        </View>
+      </TouchableOpacity>
+    );
+  }, [activeMongoId, mainTitleEn, navigation, user, episodes, anime]);
 
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
@@ -984,7 +1050,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
                       _id: `${activeMongoId || 'ep'}_${ep.number}`,
                       episode_number: ep.number,
                       episode_title: ep.title || `${ep.number}. Bölüm`,
-                      url: ep.url.startsWith('http') ? ep.url : `${BASE_URL}${ep.url.startsWith('/') ? '' : '/'}${ep.url}`
+                      url: ep.url.startsWith('http') ? ep.url : `${BASE_URL}${ep.url.startsWith('/') ? '' : '/'}${ep.url}`,
+                      thumbnail: ep.thumbnail ? (ep.thumbnail.startsWith('http') ? ep.thumbnail : `${BASE_URL}${ep.thumbnail.startsWith('/') ? '' : '/'}${ep.thumbnail}`) : null,
+                      release_date: ep.release_date || null
                     }));
                     setEpisodes(formatted);
                     setIsChallengeModalVisible(false);
@@ -1334,9 +1402,51 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     gap: SPACING.md,
   },
+  episodeThumbnailContainer: {
+    width: 84,
+    height: 54,
+    borderRadius: BORDER_RADIUS.sm,
+    overflow: 'hidden',
+    backgroundColor: '#161B22',
+    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  episodeThumbnail: {
+    width: '100%',
+    height: '100%',
+  },
+  episodeThumbnailOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+  },
+  episodeThumbNumberBadge: {
+    position: 'absolute',
+    top: 3,
+    left: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
+  },
+  episodeThumbNumberText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  episodeDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    gap: 4,
+  },
+  episodeDateText: {
+    color: '#8B949E',
+    fontSize: 11,
+  },
   episodeNumberBadge: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     borderRadius: BORDER_RADIUS.sm,
     backgroundColor: 'rgba(255, 107, 0, 0.12)',
     alignItems: 'center',
@@ -1354,6 +1464,7 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.semibold,
+    lineHeight: 18,
   },
   episodeMeta: {
     color: COLORS.textMuted,
