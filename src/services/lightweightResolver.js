@@ -304,51 +304,34 @@ export function detectSeasonNumber(title, fallback = 1) {
 }
 
 /**
- * Generates direct candidate overview -izle URLs directly from anime title and season
+ * Arama sayfasında listelenen animelerden ilk çıkan sonucun içindeki linki alır
  */
-export function buildAnimeOverviewUrls(title, seasonNumber = 1) {
-  if (!title) return [];
-  const targetSeason = parseInt(seasonNumber, 10) || 1;
+export function getFirstAnimeLinkFromSearch(html) {
+  if (!html) return null;
 
-  const clean = title
-    .replace(/\b(?:season|sezon)\s*\d+\b/gi, '')
-    .replace(/\b\d+\s*\.?\s*(?:season|sezon)\b/gi, '')
-    .replace(/\b(?:1st|2nd|3rd|4th|5th)\s*season\b/gi, '')
-    .replace(/\b(?:part|kisim|cour)\s*\d+\b/gi, '')
-    .replace(/\b(?:the\s+)?final\s*season\b/gi, '')
-    .replace(/\b(?:II|III|IV|V|VI)\b/g, '')
-    .replace(/[\(\[\{].*?[\)\]\}]/g, '')
-    .trim();
-
-  const toSlug = (str) =>
-    str
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9\s-]/g, '')
-      .trim()
-      .replace(/\s+/g, '-');
-
-  const baseSlug = toSlug(clean);
-  const seasonSuffix = targetSeason > 1 ? `-${targetSeason}-sezon` : '';
-
-  const urls = [
-    `${BASE_URL}/anime/${baseSlug}${seasonSuffix}-izle`,
-    `${BASE_URL}/anime/${baseSlug}${seasonSuffix}`,
-    `${BASE_URL}/${baseSlug}${seasonSuffix}-izle`,
-    `${BASE_URL}/${baseSlug}${seasonSuffix}`,
-  ];
-
-  const shortTitle = clean.split(/[:\-–—]/)[0].trim();
-  if (shortTitle && shortTitle !== clean && shortTitle.length >= 3) {
-    const shortSlug = toSlug(shortTitle);
-    urls.push(`${BASE_URL}/anime/${shortSlug}${seasonSuffix}-izle`);
-    urls.push(`${BASE_URL}/anime/${shortSlug}${seasonSuffix}`);
-    urls.push(`${BASE_URL}/${shortSlug}${seasonSuffix}-izle`);
-    urls.push(`${BASE_URL}/${shortSlug}${seasonSuffix}`);
+  // 1. .flx-block with data-href
+  const blockMatch = html.match(/<div[^>]*class=["'][^"']*flx-block[^"']*["'][^>]*data-href=["']([^"']+)["']/i);
+  if (blockMatch && blockMatch[1]) {
+    let href = blockMatch[1].trim();
+    return href.startsWith('http') ? href : `${BASE_URL}${href.startsWith('/') ? '' : '/'}${href}`;
   }
 
-  return urls;
+  // 2. <a href="/anime/...">
+  const animeLinkMatch = html.match(/<a[^>]+href=["']((?:https?:\/\/[^\/]+)?\/anime\/[^"']+)["']/i);
+  if (animeLinkMatch && animeLinkMatch[1]) {
+    let href = animeLinkMatch[1].trim();
+    if (!href.includes('-bolum') && !href.includes('/arama') && !href.includes('/kategori')) {
+      return href.startsWith('http') ? href : `${BASE_URL}${href.startsWith('/') ? '' : '/'}${href}`;
+    }
+  }
+
+  // 3. parseSearchResultsHtml ilk eleman
+  const candidates = parseSearchResultsHtml(html);
+  if (candidates.length > 0) {
+    return candidates[0].url;
+  }
+
+  return null;
 }
 
 /**

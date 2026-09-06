@@ -36,6 +36,7 @@ import {
   fetchEpisodesForAnime, 
   parseEpisodesHtml,
   searchAndExtractEpisodes,
+  getFirstAnimeLinkFromSearch,
   fetchHtml, 
   parseSearchResultsHtml, 
   isBotBlocked, 
@@ -43,7 +44,6 @@ import {
   getCleanSearchQuery,
   detectSeasonNumber,
   extractSeasonsFromCandidates,
-  buildAnimeOverviewUrls,
   BASE_URL 
 } from '../services/lightweightResolver';
 import { fetchAnimeDetails as fetchAniListDetails } from '../services/anilistService';
@@ -458,7 +458,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
               };
             } else {
               const cleanTitle = getCleanSearchQuery(targetTitle);
-              const fallbackUrl = pipelineRes.targetUrl || buildAnimeOverviewUrls(targetTitle, seasonNum)[0] || `${BASE_URL}/arama/${encodeURIComponent(cleanTitle)}`;
+              const fallbackUrl = pipelineRes.targetUrl || `${BASE_URL}/arama/${encodeURIComponent(cleanTitle)}`;
               setSelectedCandidateUrl(fallbackUrl);
               setChallengeUrl(fallbackUrl);
               if (WebView) {
@@ -533,7 +533,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
       };
     } else {
       const cleanTitle = getCleanSearchQuery(targetTitle);
-      const fallbackUrl = pipelineRes.targetUrl || buildAnimeOverviewUrls(targetTitle, seasonNum)[0] || `${BASE_URL}/arama/${encodeURIComponent(cleanTitle)}`;
+      const fallbackUrl = pipelineRes.targetUrl || `${BASE_URL}/arama/${encodeURIComponent(cleanTitle)}`;
       setSelectedCandidateUrl(fallbackUrl);
       setChallengeUrl(fallbackUrl);
       if (WebView) {
@@ -958,7 +958,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
             </View>
             <WebView
               ref={webViewRef}
-              source={{ uri: challengeUrl || (buildAnimeOverviewUrls(anime?.title || anime?.orijinal_ad || initialTitle, (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId)))?.season_number || 1)[0]) || `${BASE_URL}/` }}
+              source={{ uri: challengeUrl || `${BASE_URL}/arama/${encodeURIComponent(getCleanSearchQuery(anime?.title || anime?.orijinal_ad || initialTitle || ''))}` }}
               style={{ flex: 1 }}
               userAgent="Mozilla/5.0 (Linux; Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"
               injectedJavaScriptBeforeContentLoaded={`
