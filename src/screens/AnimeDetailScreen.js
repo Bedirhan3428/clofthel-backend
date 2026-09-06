@@ -58,6 +58,59 @@ const BANNER_HEIGHT = 320;
 const POSTER_WIDTH = 130;
 const POSTER_HEIGHT = 190;
 
+const webViewEpisodeExtractorJs = `
+(function() {
+  function tryExtractEpisodes() {
+    try {
+      var eps = [];
+      var seen = {};
+
+      var blocks = document.querySelectorAll('.flx-block[data-href], div[data-href*="-bolum"]');
+      for (var i = 0; i < blocks.length; i++) {
+        var el = blocks[i];
+        var href = el.getAttribute('data-href') || '';
+        if (href && !seen[href]) {
+          seen[href] = true;
+          var h4 = el.querySelector('h4');
+          var title = (h4 ? h4.textContent : el.textContent || '').trim();
+          var epMatch = href.match(/[-_](\\d+)[-_]bolum/i) || title.match(/(\\d+)\\.\\s*Bölüm/i);
+          var epNum = epMatch ? parseInt(epMatch[1], 10) : (eps.length + 1);
+          eps.push({ number: epNum, title: title || (epNum + '. Bölüm'), url: href });
+        }
+      }
+
+      if (eps.length === 0) {
+        var links = document.querySelectorAll('a[href*="-bolum-izle"], a[href*="-bolum"]');
+        for (var j = 0; j < links.length; j++) {
+          var a = links[j];
+          var aHref = a.getAttribute('href') || '';
+          if (aHref && !seen[aHref] && aHref.indexOf('/kategori') === -1) {
+            seen[aHref] = true;
+            var aTitle = (a.textContent || '').trim();
+            var aMatch = aHref.match(/[-_](\\d+)[-_]bolum/i) || aTitle.match(/(\\d+)\\.\\s*Bölüm/i);
+            var aNum = aMatch ? parseInt(aMatch[1], 10) : (eps.length + 1);
+            eps.push({ number: aNum, title: aTitle || (aNum + '. Bölüm'), url: aHref });
+          }
+        }
+      }
+
+      if (eps.length > 0) {
+        eps.sort(function(a, b) { return a.number - b.number; });
+        if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: 'episodes_extracted',
+            episodes: eps
+          }));
+        }
+      }
+    } catch(err) {}
+  }
+
+  setInterval(tryExtractEpisodes, 1000);
+  tryExtractEpisodes();
+})();
+`;
+
 export default function AnimeDetailScreen({ route, navigation }) {
   const { showAlert } = useAlert();
   const { user } = useContext(AuthContext);
@@ -175,8 +228,14 @@ export default function AnimeDetailScreen({ route, navigation }) {
           selectedCandidateUrl: overviewUrl
         };
       } else {
-        addLog(`⚠️ [UYARI] Bu sayfadan oynatılabilir bölüm ayrıştırılamadı.`, 'warn');
-        setEpisodes([]);
+        if (WebView) {
+          addLog(`🛡️ Doğrudan HTTP engelli (403). WebView köprüsü açılıyor...`, 'warn');
+          setChallengeUrl(overviewUrl);
+          setIsChallengeModalVisible(true);
+        } else {
+          addLog(`⚠️ [UYARI] Bu sayfadan oynatılabilir bölüm ayrıştırılamadı.`, 'warn');
+          setEpisodes([]);
+        }
       }
     } catch (err) {
       addLog(`❌ [HATA] Bölüm yüklenirken hata: ${err.message}`, 'error');
@@ -906,8 +965,8 @@ export default function AnimeDetailScreen({ route, navigation }) {
               source={{ uri: challengeUrl || `${BASE_URL}/arama/${encodeURIComponent(searchQueryInput || mainTitleEn)}` }}
               style={{ flex: 1 }}
               userAgent="Mozilla/5.0 (Linux; Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"
-              injectedJavaScriptBeforeContentLoaded={scraperInjectedJs}
-              injectedJavaScript={scraperInjectedJs}
+              injectedJavaScriptBeforeContentLoaded={scraperInjectedJs + ';' + webViewEpisodeExtractorJs}
+              injectedJavaScript={scraperInjectedJs + ';' + webViewEpisodeExtractorJs}
               javaScriptEnabled={true}
               domStorageEnabled={true}
               onMessage={(event) => {
@@ -917,6 +976,21 @@ export default function AnimeDetailScreen({ route, navigation }) {
                     addLog(data.message, 'info');
                   } else if (data.type === 'captcha_detected') {
                     addLog('🛡️ Bot koruması algılandı, otomatik çözülüyor...', 'warn');
+                  } else if (data.type === 'episodes_extracted' && Array.isArray(data.episodes) && data.episodes.length > 0) {
+                    addLog(`🎉 WebView köprüsü üzerinden ${data.episodes.length} adet bölüm başarıyla çıkarıldı!`, 'success');
+                    const formatted = data.episodes.map(ep => ({
+                      _id: `${activeMongoId || 'ep'}_${ep.number}`,
+                      episode_number: ep.number,
+                      episode_title: ep.title || `${ep.number}. Bölüm`,
+                      url: ep.url.startsWith('http') ? ep.url : `${BASE_URL}${ep.url.startsWith('/') ? '' : '/'}${ep.url}`
+                    }));
+                    setEpisodes(formatted);
+                    setIsChallengeModalVisible(false);
+                    seasonCacheRef.current[activeMongoId] = {
+                      anime: anime || passedAnime,
+                      episodes: formatted,
+                      selectedCandidateUrl: challengeUrl
+                    };
                   } else if (data.type === 'resolved') {
                     addLog('🎉 Doğrulama başarılı!', 'success');
                   }
