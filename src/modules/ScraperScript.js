@@ -344,27 +344,68 @@ export const scraperInjectedJs = `
                 $h.trigger('success', [{ captcha_id: cid }]);
                 $h.trigger('success.iconCaptcha', [cid]);
               }
-              // Form varsa gönder
+              // Form varsa input değerlerini güncelle
               var form = holder.closest('form');
               if (form) {
                 var hfInput = form.querySelector('input[name="captcha-hf"]');
                 if (hfInput) hfInput.value = hash;
                 var idhfInput = form.querySelector('input[name="captcha-idhf"]');
                 if (idhfInput) idhfInput.value = cid;
+              }
+            }
 
-                var action = form.getAttribute('action') || '';
-                if (action && action !== '#' && !action.endsWith('#')) {
-                  sendToNative({ type: 'log', message: '📄 Form action tetikleniyor: ' + action });
-                  form.submit();
+            // --- REDIRECT & NAVIGATION HANDLER ---
+            var pathname = window.location.pathname || '';
+            var targetPath = '';
+
+            // 1. /api/CaptchaChallenge/%2F... path'i kontrolü veya window.__targetOverviewUrl
+            if (pathname.indexOf('/api/CaptchaChallenge/') !== -1) {
+              var raw = pathname.replace('/api/CaptchaChallenge/', '');
+              try {
+                targetPath = decodeURIComponent(raw);
+              } catch(e) {
+                targetPath = raw;
+              }
+            } else if (window.__targetOverviewUrl) {
+              targetPath = window.__targetOverviewUrl;
+            }
+
+            if (targetPath) {
+              if (!targetPath.startsWith('/') && !targetPath.startsWith('http')) {
+                targetPath = '/' + targetPath;
+              }
+              sendToNative({ type: 'log', message: '🚀 Captcha tamamlandı! Hedef sayfaya yönlendiriliyor: ' + targetPath });
+              setTimeout(function() {
+                window.location.replace(targetPath);
+              }, 400);
+              return;
+            }
+
+            // 2. Sayfa içi form varsa ve geçerli bir action barındırıyorsa
+            if (holder) {
+              var f = holder.closest('form');
+              if (f) {
+                var act = f.getAttribute('action') || '';
+                if (act && act !== '#' && !act.endsWith('#')) {
+                  sendToNative({ type: 'log', message: '📄 Form action tetikleniyor: ' + act });
+                  f.submit();
+                  return;
                 } else {
-                  var submitBtn = form.querySelector('button[type="submit"], input[type="submit"]');
-                  if (submitBtn) {
+                  var sBtn = f.querySelector('button[type="submit"], input[type="submit"]');
+                  if (sBtn) {
                     sendToNative({ type: 'log', message: '🔘 Form submit butonu tetikleniyor...' });
-                    submitBtn.click();
+                    sBtn.click();
+                    return;
                   }
                 }
               }
             }
+
+            // 3. Form yoksa veya # ise, sayfayı yenileyerek onaylı çerezle aç
+            sendToNative({ type: 'log', message: '🔄 Sayfa yenileniyor (Çerez onaylandı)...' });
+            setTimeout(function() {
+              window.location.reload();
+            }, 500);
           };
 
           if (window.jQuery) {

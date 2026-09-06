@@ -60,13 +60,33 @@ const POSTER_HEIGHT = 190;
 
 const webViewEpisodeExtractorJs = `
 (function() {
-  function tryExtractEpisodes() {
+  if (window.__episode_extractor_running) return;
+  window.__episode_extractor_running = true;
+
+  function postMsg(obj) {
     try {
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage(JSON.stringify(obj));
+      }
+    } catch(e) {}
+  }
+
+  function tryExtract() {
+    try {
+      var currentUrl = window.location.href || '';
+      var currentPath = window.location.pathname || '';
+
+      // Captcha veya Network Challenge sayfasındaysak bekle
+      if (currentPath.indexOf('/api/CaptchaChallenge') !== -1 || currentPath.indexOf('/_aitr/') !== -1) {
+        return;
+      }
+
+      // 1. EPISODES EXTRACTION (.animeDetail-items li, .episode-li, vb.)
       var eps = [];
       var seen = {};
 
-      // 1. Birincil: .animeDetail-items li ve .episode-li elemanları (Gerçek Tranimeizle Yapısı)
-      var items = document.querySelectorAll('.animeDetail-items ol li, .animeDetail-items li, .episode-li');
+      // Pattern A: .animeDetail-items (Tranimeizle gerçek DOM yapısı)
+      var items = document.querySelectorAll('.animeDetail-items ol li, .animeDetail-items ul li, .animeDetail-items li, .episode-li');
       for (var i = 0; i < items.length; i++) {
         var li = items[i];
         var a = li.tagName === 'A' ? li : li.querySelector('a');
@@ -85,7 +105,10 @@ const webViewEpisodeExtractorJs = `
         var thumb = imgEl ? (imgEl.getAttribute('src') || imgEl.src || '') : '';
         var date = dateEl ? (dateEl.textContent || '').replace(/\\s+/g, ' ').trim() : '';
 
-        var epMatch = href.match(/[-_](\\d+)[-_]bolum/i) || title.match(/(\\d+)\\.\\s*Bölüm/i);
+        var epMatch = href.match(/[-_](\\d+)[-_]bolum/i) ||
+                      href.match(/bolum[-_](\\d+)/i) ||
+                      title.match(/(\\d+)\\.\\s*Bölüm/i) ||
+                      title.match(/Bölüm\\s*(\\d+)/i);
         var epNum = epMatch ? parseInt(epMatch[1], 10) : (eps.length + 1);
 
         eps.push({
@@ -97,7 +120,7 @@ const webViewEpisodeExtractorJs = `
         });
       }
 
-      // 2. İkincil: .flx-block kartları
+      // Pattern B: .flx-block kartları
       if (eps.length === 0) {
         var blocks = document.querySelectorAll('.flx-block[data-href], div[data-href*="-bolum"]');
         for (var b = 0; b < blocks.length; b++) {
@@ -114,7 +137,7 @@ const webViewEpisodeExtractorJs = `
         }
       }
 
-      // 3. Üçüncül: Genel a[href*="-bolum"] bağlantıları
+      // Pattern C: Genel a[href*="-bolum"] bağlantıları
       if (eps.length === 0) {
         var links = document.querySelectorAll('a[href*="-bolum-izle"], a[href*="-bolum"]');
         for (var j = 0; j < links.length; j++) {
@@ -132,18 +155,51 @@ const webViewEpisodeExtractorJs = `
 
       if (eps.length > 0) {
         eps.sort(function(x, y) { return x.number - y.number; });
-        if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({
+        if (!window.__episodes_extracted_sent || window.__episodes_extracted_count !== eps.length) {
+          window.__episodes_extracted_sent = true;
+          window.__episodes_extracted_count = eps.length;
+          postMsg({
             type: 'episodes_extracted',
-            episodes: eps
-          }));
+            episodes: eps,
+            count: eps.length,
+            url: currentUrl
+          });
+        }
+        return;
+      }
+
+      // 2. SEARCH CANDIDATES EXTRACTION (Eğer /arama sayfasındaysak)
+      if (currentPath.indexOf('/arama') !== -1 || currentUrl.indexOf('/arama/') !== -1) {
+        var candLinks = document.querySelectorAll('a[href*="-izle"], .flx-block[data-href]');
+        var cands = [];
+        var candSeen = {};
+        for (var c = 0; c < candLinks.length; c++) {
+          var cEl = candLinks[c];
+          var cHref = cEl.getAttribute('href') || cEl.getAttribute('data-href') || '';
+          if (cHref && !candSeen[cHref] && cHref.indexOf('-bolum') === -1 && cHref.indexOf('/arama') === -1 && cHref.indexOf('/kategori') === -1) {
+            candSeen[cHref] = true;
+            var cTitleEl = cEl.querySelector('h4, .title, span') || cEl;
+            var cTitle = (cTitleEl.textContent || cTitleEl.innerText || '').trim();
+            if (cTitle && (cHref.indexOf('-izle') !== -1 || cHref.indexOf('/anime/') !== -1)) {
+              cands.push({ url: cHref, title: cTitle });
+            }
+          }
+        }
+        if (cands.length > 0 && !window.__candidates_sent) {
+          window.__candidates_sent = true;
+          postMsg({
+            type: 'candidates_extracted',
+            candidates: cands
+          });
         }
       }
-    } catch(err) {}
+    } catch(err) {
+      postMsg({ type: 'log', message: 'Extractor Hatası: ' + err.message });
+    }
   }
 
-  setInterval(tryExtractEpisodes, 1000);
-  tryExtractEpisodes();
+  setInterval(tryExtract, 800);
+  tryExtract();
 })();
 `;
 
@@ -204,6 +260,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const fadeAnim = useRefValue.current;
   const seasonCacheRef = useRef({});
   const isAlertOpenRef = useRef(false);
+  const webViewRef = useRef(null);
 
   // ── Tranimeizle Canlı İstek & Arama Konsolu Durumları ────────
   const [logs, setLogs] = useState([]);
@@ -216,6 +273,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const [challengeUrl, setChallengeUrl] = useState('');
 
   const addLog = useCallback((message, type = 'info') => {
+    console.log(`[DetailLog:${type}] ${message}`);
     const now = new Date();
     const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
     const newEntry = { id: `${Date.now()}_${Math.random()}`, time, message, type };
@@ -226,6 +284,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
     if (!overviewUrl) return;
     setLoadingEpisodes(true);
     setSelectedCandidateUrl(overviewUrl);
+    setChallengeUrl(overviewUrl);
     addLog(`📥 [BÖLÜMLER] Sayfa yükleniyor: ${overviewUrl}`, 'info');
 
     try {
@@ -235,7 +294,12 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
       if (error) {
         addLog(`❌ [HATA] Bölüm sayfası isteği başarısız (${duration}ms): ${error}`, 'error');
-        setLoadingEpisodes(false);
+        if (WebView) {
+          addLog(`🛡️ Doğrudan HTTP başarısız, WebView köprüsü açılıyor...`, 'warn');
+          setIsChallengeModalVisible(true);
+        } else {
+          setLoadingEpisodes(false);
+        }
         return;
       }
 
@@ -268,7 +332,6 @@ export default function AnimeDetailScreen({ route, navigation }) {
       } else {
         if (WebView) {
           addLog(`🛡️ Doğrudan HTTP engelli (403). WebView köprüsü açılıyor...`, 'warn');
-          setChallengeUrl(overviewUrl);
           setIsChallengeModalVisible(true);
         } else {
           addLog(`⚠️ [UYARI] Bu sayfadan oynatılabilir bölüm ayrıştırılamadı.`, 'warn');
@@ -277,7 +340,11 @@ export default function AnimeDetailScreen({ route, navigation }) {
       }
     } catch (err) {
       addLog(`❌ [HATA] Bölüm yüklenirken hata: ${err.message}`, 'error');
-      setEpisodes([]);
+      if (WebView) {
+        setIsChallengeModalVisible(true);
+      } else {
+        setEpisodes([]);
+      }
     } finally {
       setLoadingEpisodes(false);
     }
@@ -309,6 +376,11 @@ export default function AnimeDetailScreen({ route, navigation }) {
         setSearchStatus('error');
         setLoadingEpisodes(false);
         addLog(`❌ [AĞ HATASI] ${error} (${duration}ms)`, 'error');
+        if (WebView) {
+          addLog(`🛡️ Ağ hatası nedeniyle WebView üzerinden deneniyor...`, 'warn');
+          setChallengeUrl(searchUrl);
+          setIsChallengeModalVisible(true);
+        }
         return;
       }
 
@@ -325,6 +397,12 @@ export default function AnimeDetailScreen({ route, navigation }) {
         if (html && (html.includes('cf-turnstile') || html.includes('turnstile') || html.includes('challenges.cloudflare.com'))) {
           addLog(`🔒 [TURNSTILE] Sayfada Cloudflare Turnstile Javascript challenge tespit edildi.`, 'warn');
         }
+        if (WebView) {
+          addLog(`🛡️ Doğrudan HTTP engelli (403). WebView köprüsü açılıyor...`, 'warn');
+          setChallengeUrl(searchUrl);
+          setIsChallengeModalVisible(true);
+        }
+        return;
       }
 
       const candidates = parseSearchResultsHtml(html);
@@ -351,6 +429,10 @@ export default function AnimeDetailScreen({ route, navigation }) {
       setSearchStatus('error');
       setLoadingEpisodes(false);
       addLog(`❌ [İSTİSNA] Arama hatası: ${err.message}`, 'error');
+      if (WebView) {
+        setChallengeUrl(searchUrl);
+        setIsChallengeModalVisible(true);
+      }
     }
   }, [anime, passedAnime, searchQueryInput, initialTitle, addLog, loadEpisodesForUrl]);
 
@@ -862,7 +944,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
           {/* If Bot Blocked: Helper notice */}
           {searchStatus === 'blocked' && (
             <View style={styles.blockedNoticeBox}>
-              <Ionicons name="shield-alert-outline" size={20} color="#FFB86C" />
+              <Ionicons name="shield-outline" size={20} color="#FFB86C" />
               <View style={{ flex: 1, marginLeft: 8 }}>
                 <Text style={styles.blockedNoticeTitle}>Cloudflare Koruması Algılandı</Text>
                 <Text style={styles.blockedNoticeDesc}>
@@ -948,8 +1030,8 @@ export default function AnimeDetailScreen({ route, navigation }) {
             </View>
           ) : (
             <Animated.View style={{ opacity: fadeAnim }}>
-              {episodes.map((ep) => (
-                <View key={`ep-${ep.episode_number}`}>
+              {episodes.map((ep, epIdx) => (
+                <View key={ep._id || `ep-${ep.episode_number}-${epIdx}`}>
                   {renderEpisodeCard({ item: ep })}
                 </View>
               ))}
@@ -1019,15 +1101,15 @@ export default function AnimeDetailScreen({ route, navigation }) {
               <Text style={styles.challengeModalTitle}>Cloudflare Doğrulaması</Text>
               <TouchableOpacity
                 onPress={() => {
-                  setIsChallengeModalVisible(false);
-                  performTranimeizleSearch(searchQueryInput);
+                  webViewRef.current?.reload();
                 }}
                 style={styles.challengeDoneBtn}
               >
-                <Text style={styles.challengeDoneBtnText}>Yeniden Dene</Text>
+                <Text style={styles.challengeDoneBtnText}>Yenile</Text>
               </TouchableOpacity>
             </View>
             <WebView
+              ref={webViewRef}
               source={{ uri: challengeUrl || `${BASE_URL}/arama/${encodeURIComponent(searchQueryInput || mainTitleEn)}` }}
               style={{ flex: 1 }}
               userAgent="Mozilla/5.0 (Linux; Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"
@@ -1035,6 +1117,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
               injectedJavaScript={scraperInjectedJs + ';' + webViewEpisodeExtractorJs}
               javaScriptEnabled={true}
               domStorageEnabled={true}
+              onLoadEnd={() => {
+                webViewRef.current?.injectJavaScript(webViewEpisodeExtractorJs);
+              }}
               onMessage={(event) => {
                 try {
                   const data = JSON.parse(event.nativeEvent.data);
@@ -1044,6 +1129,15 @@ export default function AnimeDetailScreen({ route, navigation }) {
                     addLog('🛡️ Bot koruması algılandı, doğrudan HTTP API ile çözülüyor...', 'warn');
                   } else if (data.type === 'captcha_solved') {
                     addLog(`🎉 Doğru görsel HTTP isteğiyle onaylandı! (Hash: ${data.hash ? data.hash.substring(0, 8) : ''}...)`, 'success');
+                  } else if (data.type === 'candidates_extracted' && Array.isArray(data.candidates) && data.candidates.length > 0) {
+                    addLog(`🎉 WebView üzerinden ${data.candidates.length} aday bulundu!`, 'success');
+                    setSearchCandidates(data.candidates);
+                    setSearchStatus('success');
+                    const firstCand = data.candidates[0];
+                    const target = firstCand.url.startsWith('http') ? firstCand.url : `${BASE_URL}${firstCand.url.startsWith('/') ? '' : '/'}${firstCand.url}`;
+                    addLog(`⚡ [OTOMATİK] 1. aday seçildi: "${firstCand.title}" ➔ ${target}`, 'info');
+                    setSelectedCandidateUrl(target);
+                    setChallengeUrl(target);
                   } else if (data.type === 'episodes_extracted' && Array.isArray(data.episodes) && data.episodes.length > 0) {
                     addLog(`🎉 WebView köprüsü üzerinden ${data.episodes.length} adet bölüm başarıyla çıkarıldı!`, 'success');
                     const formatted = data.episodes.map(ep => ({
@@ -1059,7 +1153,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
                     seasonCacheRef.current[activeMongoId] = {
                       anime: anime || passedAnime,
                       episodes: formatted,
-                      selectedCandidateUrl: challengeUrl
+                      selectedCandidateUrl: challengeUrl || selectedCandidateUrl
                     };
                   } else if (data.type === 'resolved') {
                     addLog('🎉 Doğrulama başarılı!', 'success');
