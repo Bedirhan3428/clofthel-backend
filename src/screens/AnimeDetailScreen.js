@@ -37,6 +37,10 @@ import {
   fetchHtml, 
   parseSearchResultsHtml, 
   isBotBlocked, 
+  matchCandidateForSeason,
+  getCleanSearchQuery,
+  detectSeasonNumber,
+  extractSeasonsFromCandidates,
   BASE_URL 
 } from '../services/lightweightResolver';
 import { fetchAnimeDetails as fetchAniListDetails } from '../services/anilistService';
@@ -259,6 +263,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const useRefValue = useRef(new Animated.Value(0));
   const fadeAnim = useRefValue.current;
   const seasonCacheRef = useRef({});
+  const allCandidatesRef = useRef([]);
   const isAlertOpenRef = useRef(false);
   const webViewRef = useRef(null);
 
@@ -350,21 +355,26 @@ export default function AnimeDetailScreen({ route, navigation }) {
     }
   }, [activeMongoId, addLog]);
 
-  const performTranimeizleSearch = useCallback(async (customQuery) => {
+  const performTranimeizleSearch = useCallback(async (customQuery, targetSeasonNum) => {
     const currentAnimeData = anime || passedAnime;
     const fallbackTitle = currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle || '';
-    const query = (typeof customQuery === 'string' ? customQuery : (searchQueryInput || fallbackTitle)).trim();
+    const rawQuery = (typeof customQuery === 'string' ? customQuery : (searchQueryInput || fallbackTitle)).trim();
+    const cleanFranchiseQuery = getCleanSearchQuery(rawQuery);
 
-    if (!query) {
+    const currentSeason = (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))) || (seasons && seasons[0]) || null;
+    const seasonNum = targetSeasonNum !== undefined ? targetSeasonNum : (currentSeason?.season_number || detectSeasonNumber(rawQuery, 1));
+
+    if (!cleanFranchiseQuery) {
       addLog('⚠️ [ARAMA] Arama sorgusu boş!', 'warn');
       return;
     }
 
     setSearchStatus('searching');
     setLoadingEpisodes(true);
-    addLog(`🔍 [ARAMA] Tranimeizle araması başlatılıyor: "${query}"`, 'info');
+    addLog(`🔍 [ARAMA] Sezon ${seasonNum} için Tranimeizle taranıyor: "${cleanFranchiseQuery}"`, 'info');
 
-    const searchUrl = `${BASE_URL}/arama/${encodeURIComponent(query)}`;
+    const searchUrl = `${BASE_URL}/arama/${encodeURIComponent(cleanFranchiseQuery)}`;
+    setChallengeUrl(searchUrl);
     addLog(`🌐 [URL] ${searchUrl}`, 'info');
 
     try {
@@ -410,18 +420,27 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
       if (candidates.length > 0) {
         setSearchCandidates(candidates);
+        allCandidatesRef.current = candidates;
         setSearchStatus('success');
-        candidates.forEach((cand, idx) => {
-          addLog(`📌 [${idx + 1}] ${cand.title || 'Başlık'} ➔ ${cand.url}`, 'info');
-        });
 
-        addLog(`⚡ [OTOMATİK] 1. aday seçildi, bölümler yükleniyor...`, 'info');
-        await loadEpisodesForUrl(candidates[0].url, candidates[0].title);
+        // Otomatik sezon butonları (eğer mevcut sezon listesi 1 veya boşsa)
+        if (!seasons || seasons.length <= 1) {
+          const derived = extractSeasonsFromCandidates(candidates, activeMongoId);
+          if (derived.length > 1) {
+            setSeasons(derived);
+          }
+        }
+
+        // Sezon numarasına en uygun anime sayfasını otomatik seç ve SADECE onun bölümlerini yükle!
+        const matchedSeasonUrl = matchCandidateForSeason(candidates, seasonNum, cleanFranchiseQuery);
+        addLog(`🎯 [SEZON EŞLEŞTİ] Sezon ${seasonNum} adresi seçildi: ${matchedSeasonUrl}`, 'success');
+        await loadEpisodesForUrl(matchedSeasonUrl);
       } else {
         setSearchCandidates([]);
+        allCandidatesRef.current = [];
         if (!blocked) {
           setSearchStatus('empty');
-          addLog(`ℹ️ [BOŞ] "${query}" aramasına uygun anime bulunamadı.`, 'info');
+          addLog(`ℹ️ [BOŞ] "${cleanFranchiseQuery}" aramasına uygun anime bulunamadı.`, 'info');
         }
         setLoadingEpisodes(false);
       }
@@ -434,7 +453,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
         setIsChallengeModalVisible(true);
       }
     }
-  }, [anime, passedAnime, searchQueryInput, initialTitle, addLog, loadEpisodesForUrl]);
+  }, [anime, passedAnime, searchQueryInput, initialTitle, seasons, activeMongoId, addLog, loadEpisodesForUrl]);
 
   // ── Load user status ─────────────────────────────────────────
   useEffect(() => {
@@ -504,13 +523,15 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
         if (!cancelled) setLoading(false);
 
-        // 2. Perform live search immediately on detail load!
-        const targetTitle = currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle;
+        // 2. Perform live search immediately on detail load for the active season!
+        const currentSeason = (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))) || (seasons && seasons[0]) || null;
+        const targetTitle = currentSeason?.title || currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle || '';
+        const seasonNum = currentSeason?.season_number || detectSeasonNumber(targetTitle, 1);
         if (targetTitle) {
           setSearchQueryInput(targetTitle);
-          addLog(`🚀 Detay sayfası yüklendi: "${targetTitle}" için arama başlatılıyor...`, 'info');
+          addLog(`🚀 Sezon ${seasonNum} ("${targetTitle}") için bölümler getiriliyor...`, 'info');
           if (!cancelled) {
-            await performTranimeizleSearch(targetTitle);
+            await performTranimeizleSearch(targetTitle, seasonNum);
           }
         }
       } catch (err) {
@@ -540,6 +561,32 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const handleSeasonSelect = (seasonId) => {
     if (seasonId === activeMongoId) return;
     setActiveMongoId(seasonId);
+
+    // Check if season episodes are cached
+    const cached = seasonCacheRef.current[seasonId];
+    if (cached && cached.episodes && cached.episodes.length > 0) {
+      setEpisodes(cached.episodes);
+      setLoadingEpisodes(false);
+      return;
+    }
+
+    setEpisodes([]);
+    setLoadingEpisodes(true);
+
+    // Determine the target season number
+    const selSeason = (seasons && seasons.find(s => s && String(s._id) === String(seasonId))) || null;
+    const seasonNum = selSeason?.season_number || detectSeasonNumber(selSeason?.title || selSeason?.label || '', 1);
+
+    // If candidates are already in memory, directly pull that season's episodes
+    if (allCandidatesRef.current && allCandidatesRef.current.length > 0) {
+      const currentAnimeData = anime || passedAnime;
+      const baseTitle = getCleanSearchQuery(currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle || '');
+      const matchedUrl = matchCandidateForSeason(allCandidatesRef.current, seasonNum, baseTitle);
+      if (matchedUrl) {
+        addLog(`🎯 [SEZON DEĞİŞTİ] Sezon ${seasonNum} adresi seçildi ➔ ${matchedUrl}`, 'info');
+        loadEpisodesForUrl(matchedUrl);
+      }
+    }
   };
 
   const handleToggleFavorite = async () => {
@@ -838,126 +885,26 @@ export default function AnimeDetailScreen({ route, navigation }) {
           </View>
         )}
 
-        {/* ── Tranimeizle Canlı İstek & Log Konsolu ────────────────────── */}
-        <View style={styles.consoleWrapper}>
-          {/* Header */}
-          <View style={styles.consoleHeader}>
-            <View style={styles.consoleHeaderLeft}>
-              <Ionicons name="terminal-outline" size={18} color="#00FF66" />
-              <Text style={styles.consoleTitle}>Tranimeizle Canlı İstek</Text>
-              <View style={[
-                styles.statusBadge,
-                searchStatus === 'searching' && styles.statusBadgeSearching,
-                searchStatus === 'success' && styles.statusBadgeSuccess,
-                searchStatus === 'blocked' && styles.statusBadgeBlocked,
-                searchStatus === 'error' && styles.statusBadgeError,
-              ]}>
-                <Text style={styles.statusBadgeText}>
-                  {searchStatus === 'searching' ? 'Aranıyor...' :
-                   searchStatus === 'success' ? `${searchCandidates.length} Aday` :
-                   searchStatus === 'blocked' ? 'Bot Koruması (403)' :
-                   searchStatus === 'empty' ? 'Sonuç Yok' :
-                   searchStatus === 'error' ? 'Hata' : 'Hazır'}
-                </Text>
-              </View>
-            </View>
+        {/* ── Episodes Grid ───────────────────────────── */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>
+            {activeLabel} — Bölümler {episodes.length > 0 ? `(${episodes.length})` : ''}
+          </Text>
 
-            <View style={styles.consoleHeaderRight}>
-              <TouchableOpacity
-                style={styles.consoleMiniBtn}
-                onPress={() => setLogs([])}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="trash-outline" size={14} color={COLORS.textMuted} />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.consoleMiniBtn}
-                onPress={() => setIsLogExpanded(!isLogExpanded)}
-                activeOpacity={0.7}
-              >
-                <Ionicons
-                  name={isLogExpanded ? 'chevron-up' : 'chevron-down'}
-                  size={16}
-                  color={COLORS.textPrimary}
-                />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Search Query Input Bar */}
-          <View style={styles.consoleSearchBar}>
-            <Ionicons name="search" size={16} color={COLORS.textMuted} style={{ marginRight: 6 }} />
-            <TextInput
-              style={styles.consoleSearchInput}
-              value={searchQueryInput}
-              onChangeText={setSearchQueryInput}
-              placeholder="Tranimeizle'de aranacak isim..."
-              placeholderTextColor={COLORS.textMuted}
-              returnKeyType="search"
-              onSubmitEditing={() => performTranimeizleSearch(searchQueryInput)}
-            />
-            <TouchableOpacity
-              style={styles.consoleSearchBtn}
-              onPress={() => performTranimeizleSearch(searchQueryInput)}
-              disabled={searchStatus === 'searching'}
-              activeOpacity={0.7}
-            >
-              {searchStatus === 'searching' ? (
-                <ActivityIndicator size="small" color="#000" />
-              ) : (
-                <Text style={styles.consoleSearchBtnText}>Ara</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-
-          {/* Log Window Terminal Screen */}
-          {isLogExpanded && (
-            <View style={styles.terminalBody}>
-              <ScrollView
-                style={styles.terminalScroll}
-                nestedScrollEnabled
-                showsVerticalScrollIndicator={true}
-              >
-                {logs.length === 0 ? (
-                  <Text style={styles.terminalEmptyText}>
-                    Henüz log kaydı yok. Arama yapıldığında istek ve yanıtlar burada listelenecektir.
-                  </Text>
-                ) : (
-                  logs.map(log => {
-                    const color =
-                      log.type === 'error' ? '#FF5555' :
-                      log.type === 'warn' ? '#FFB86C' :
-                      log.type === 'success' ? '#50FA7B' :
-                      '#8BE9FD';
-                    return (
-                      <View key={log.id} style={styles.logRow}>
-                        <Text style={styles.logTimestamp}>[{log.time}]</Text>
-                        <Text style={[styles.logText, { color }]}>{log.message}</Text>
-                      </View>
-                    );
-                  })
-                )}
-              </ScrollView>
-            </View>
-          )}
-
-          {/* If Bot Blocked: Helper notice */}
-          {searchStatus === 'blocked' && (
+          {/* Cloudflare blocked notice if needed */}
+          {searchStatus === 'blocked' && episodes.length === 0 && (
             <View style={styles.blockedNoticeBox}>
               <Ionicons name="shield-outline" size={20} color="#FFB86C" />
               <View style={{ flex: 1, marginLeft: 8 }}>
-                <Text style={styles.blockedNoticeTitle}>Cloudflare Koruması Algılandı</Text>
+                <Text style={styles.blockedNoticeTitle}>Cloudflare Doğrulaması</Text>
                 <Text style={styles.blockedNoticeDesc}>
-                  Tranimeizle doğrudan HTTP isteklerini bot kontrolü (Turnstile/403) ile kısıtlamış olabilir.
+                  Bölüm listesini yükleyebilmek için lütfen doğrulamayı tamamlayın.
                 </Text>
               </View>
               {WebView && (
                 <TouchableOpacity
                   style={styles.solveChallengeBtn}
-                  onPress={() => {
-                    setChallengeUrl(`${BASE_URL}/arama/${encodeURIComponent(searchQueryInput || mainTitleEn)}`);
-                    setIsChallengeModalVisible(true);
-                  }}
+                  onPress={() => setIsChallengeModalVisible(true)}
                   activeOpacity={0.8}
                 >
                   <Text style={styles.solveChallengeBtnText}>Doğrula</Text>
@@ -965,58 +912,6 @@ export default function AnimeDetailScreen({ route, navigation }) {
               )}
             </View>
           )}
-        </View>
-
-        {/* ── Found Candidate Cards ────────────────────────────────────── */}
-        {searchCandidates.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>
-              Tranimeizle Eşleşenleri ({searchCandidates.length})
-            </Text>
-            <Text style={styles.candidateSubTitle}>
-              Aşağıdaki anime sayfalarından birine tıklayarak bölümlerini getirebilirsiniz:
-            </Text>
-            {searchCandidates.map((cand, idx) => {
-              const isSelected = selectedCandidateUrl === cand.url;
-              return (
-                <View
-                  key={cand.url || idx}
-                  style={[styles.candidateCard, isSelected && styles.candidateCardSelected]}
-                >
-                  <View style={styles.candidateCardInfo}>
-                    <Text style={styles.candidateCardTitle} numberOfLines={2}>
-                      {cand.title || 'İsimsiz Başlık'}
-                    </Text>
-                    <Text style={styles.candidateCardUrl} numberOfLines={1}>
-                      {cand.url}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    style={[styles.candidateSelectBtn, isSelected && styles.candidateSelectBtnActive]}
-                    onPress={() => loadEpisodesForUrl(cand.url, cand.title)}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons
-                      name={isSelected ? "checkmark-circle" : "cloud-download-outline"}
-                      size={16}
-                      color={isSelected ? "#FFF" : "#000"}
-                      style={{ marginRight: 4 }}
-                    />
-                    <Text style={[styles.candidateSelectBtnText, isSelected && styles.candidateSelectBtnTextActive]}>
-                      {isSelected ? "Aktif" : "Bölümleri Getir"}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              );
-            })}
-          </View>
-        )}
-
-        {/* ── Episodes Grid ───────────────────────────── */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>
-            {activeLabel} — Bölümler {episodes.length > 0 ? `(${episodes.length})` : ''}
-          </Text>
 
           {loadingEpisodes ? (
             <View style={styles.loadingContainer}>
@@ -1132,12 +1027,37 @@ export default function AnimeDetailScreen({ route, navigation }) {
                   } else if (data.type === 'candidates_extracted' && Array.isArray(data.candidates) && data.candidates.length > 0) {
                     addLog(`🎉 WebView üzerinden ${data.candidates.length} aday bulundu!`, 'success');
                     setSearchCandidates(data.candidates);
+                    allCandidatesRef.current = data.candidates;
                     setSearchStatus('success');
-                    const firstCand = data.candidates[0];
-                    const target = firstCand.url.startsWith('http') ? firstCand.url : `${BASE_URL}${firstCand.url.startsWith('/') ? '' : '/'}${firstCand.url}`;
-                    addLog(`⚡ [OTOMATİK] 1. aday seçildi: "${firstCand.title}" ➔ ${target}`, 'info');
-                    setSelectedCandidateUrl(target);
-                    setChallengeUrl(target);
+
+                    const currentSeason = (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))) || (seasons && seasons[0]) || null;
+                    const seasonNum = currentSeason?.season_number || detectSeasonNumber(anime?.title || anime?.orijinal_ad || initialTitle, 1);
+                    const baseTitle = getCleanSearchQuery(anime?.title_romaji || anime?.orijinal_ad || anime?.title || initialTitle || '');
+
+                    // Otomatik sezon butonları (eğer mevcut sezon listesi 1 veya boşsa)
+                    if (!seasons || seasons.length <= 1) {
+                      const derived = extractSeasonsFromCandidates(data.candidates, activeMongoId);
+                      if (derived.length > 1) {
+                        setSeasons(derived);
+                      }
+                    }
+
+                    const matchedSeasonUrl = matchCandidateForSeason(data.candidates, seasonNum, baseTitle);
+
+                    if (matchedSeasonUrl) {
+                      const target = matchedSeasonUrl.startsWith('http') ? matchedSeasonUrl : `${BASE_URL}${matchedSeasonUrl.startsWith('/') ? '' : '/'}${matchedSeasonUrl}`;
+                      addLog(`🎯 [SEZON EŞLEŞTİ] Sezon ${seasonNum} adresi seçildi ➔ ${target}`, 'info');
+                      setSelectedCandidateUrl(target);
+                      setChallengeUrl(target);
+
+                      // Doğrudan HTTP isteğiyle bölümleri çekmeyi dene
+                      loadEpisodesForUrl(target);
+
+                      // WebView'ı sezon sayfasına yönlendir ki bölümleri çıkarsın
+                      if (webViewRef.current) {
+                        webViewRef.current.injectJavaScript(`window.location.href = "${target}"; true;`);
+                      }
+                    }
                   } else if (data.type === 'episodes_extracted' && Array.isArray(data.episodes) && data.episodes.length > 0) {
                     addLog(`🎉 WebView köprüsü üzerinden ${data.episodes.length} adet bölüm başarıyla çıkarıldı!`, 'success');
                     const formatted = data.episodes.map(ep => ({
@@ -1149,6 +1069,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
                       release_date: ep.release_date || null
                     }));
                     setEpisodes(formatted);
+                    setLoadingEpisodes(false);
                     setIsChallengeModalVisible(false);
                     seasonCacheRef.current[activeMongoId] = {
                       anime: anime || passedAnime,

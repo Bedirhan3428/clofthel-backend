@@ -227,6 +227,160 @@ function pickBestCandidate(candidates, expectedTitles) {
 }
 
 /**
+ * Cleans anime title for optimal Tranimeizle search results
+ * Strips season markers, roman numerals, and subtitles so search returns all seasons
+ */
+export function getCleanSearchQuery(title) {
+  if (!title) return '';
+  let clean = title
+    .replace(/\b(?:season|sezon)\s*\d+\b/gi, '')
+    .replace(/\b\d+\s*\.?\s*(?:season|sezon)\b/gi, '')
+    .replace(/\b(?:1st|2nd|3rd|4th|5th)\s*season\b/gi, '')
+    .replace(/\b(?:part|kisim|cour)\s*\d+\b/gi, '')
+    .replace(/\b(?:the\s+)?final\s*season\b/gi, '')
+    .replace(/\b(?:II|III|IV|V|VI)\b/g, '')
+    .replace(/[\(\[\{].*?[\)\]\}]/g, '')
+    .trim();
+
+  // If there's a colon or dash, and the prefix is at least 3 characters, keep the primary franchise title
+  const colonParts = clean.split(/[:\-–—]/);
+  if (colonParts.length > 1 && colonParts[0].trim().length >= 3) {
+    clean = colonParts[0].trim();
+  }
+
+  clean = clean.replace(/\s+/g, ' ').trim();
+  return clean || title;
+}
+
+/**
+ * Extracts season number from title or metadata
+ */
+export function detectSeasonNumber(title, fallback = 1) {
+  if (!title) return fallback;
+  const raw = title.toLowerCase();
+  if (raw.includes('final season')) return 4;
+  const m = raw.match(/(\d+)\s*\.?\s*sezon/i) ||
+            raw.match(/season\s*(\d+)/i) ||
+            raw.match(/(\d+)(?:st|nd|rd|th)\s*season/i);
+  if (m) return parseInt(m[1], 10);
+  if (/\b(?:iv|4th)\b/i.test(raw)) return 4;
+  if (/\b(?:iii|3rd)\b/i.test(raw)) return 3;
+  if (/\b(?:ii|2nd)\b/i.test(raw)) return 2;
+  return fallback;
+}
+
+/**
+ * Intelligently matches candidates against a specific season number
+ * e.g. Season 1 gets the base anime page, Season 2 gets 2. Sezon, Season 3 gets 3. Sezon
+ */
+export function matchCandidateForSeason(candidates, seasonNumber = 1, baseTitle = '') {
+  if (!candidates || candidates.length === 0) return null;
+  const targetSeason = parseInt(seasonNumber, 10) || 1;
+  if (candidates.length === 1 && targetSeason === 1) return candidates[0].url;
+
+  const expectedTokens = new Set();
+  if (baseTitle) {
+    tokenizeTitleClient(baseTitle).forEach(tok => expectedTokens.add(tok));
+  }
+
+  let bestScore = -9999;
+  let bestCandidate = candidates[0].url;
+
+  candidates.forEach(cand => {
+    const raw = `${cand.title || ''} ${cand.url || ''}`.toLowerCase();
+    let score = 0;
+
+    // Detect season number in candidate
+    let candSeason = 1;
+    const seasonMatch = raw.match(/(\d+)\s*\.?\s*sezon/i) || raw.match(/sezon\s*(\d+)/i) || raw.match(/season\s*(\d+)/i);
+    if (seasonMatch) {
+      candSeason = parseInt(seasonMatch[1], 10);
+    } else if (raw.includes('2nd-season') || raw.includes('2nd season') || raw.includes('-2-sezon')) {
+      candSeason = 2;
+    } else if (raw.includes('3rd-season') || raw.includes('3rd season') || raw.includes('-3-sezon')) {
+      candSeason = 3;
+    } else if (raw.includes('4th-season') || raw.includes('4th season') || raw.includes('-4-sezon')) {
+      candSeason = 4;
+    } else {
+      candSeason = 1;
+    }
+
+    // Exact season match gives high priority
+    if (candSeason === targetSeason) {
+      score += 100;
+    } else {
+      score -= 50; // Wrong season penalty
+    }
+
+    // Token overlap with base title
+    const candTokens = tokenizeTitleClient(cand.title || cand.url);
+    let overlap = 0;
+    candTokens.forEach(t => {
+      if (expectedTokens.has(t)) overlap++;
+    });
+    score += overlap * 10;
+
+    // Penalize movies/specials when seeking TV seasons
+    if (raw.includes('movie') || raw.includes('filmi') || raw.includes('ova') || raw.includes('shugo-jutsushi')) {
+      score -= 30;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestCandidate = cand.url;
+    }
+  });
+
+  return bestCandidate;
+}
+
+/**
+ * Extracts distinct season pills from Tranimeizle candidates
+ */
+export function extractSeasonsFromCandidates(candidates, baseAnimeId = 'anime') {
+  if (!candidates || candidates.length <= 1) return [];
+
+  const seasonsMap = new Map();
+
+  candidates.forEach(cand => {
+    const raw = `${cand.title || ''} ${cand.url || ''}`.toLowerCase();
+
+    // Skip movies/OVAs/specials for the main season pills
+    if (raw.includes('movie') || raw.includes('filmi') || raw.includes('ova') || raw.includes('special')) {
+      return;
+    }
+
+    let seasonNum = 1;
+    const m = raw.match(/(\d+)\s*\.?\s*sezon/i) || raw.match(/season\s*(\d+)/i);
+    if (m) {
+      seasonNum = parseInt(m[1], 10);
+    } else if (raw.includes('2nd-season') || raw.includes('2nd season') || raw.includes('-2-sezon')) {
+      seasonNum = 2;
+    } else if (raw.includes('3rd-season') || raw.includes('3rd season') || raw.includes('-3-sezon')) {
+      seasonNum = 3;
+    } else if (raw.includes('4th-season') || raw.includes('4th season') || raw.includes('-4-sezon')) {
+      seasonNum = 4;
+    }
+
+    // Keep primary entry for each season
+    if (!seasonsMap.has(seasonNum)) {
+      seasonsMap.set(seasonNum, {
+        _id: `${baseAnimeId}_s${seasonNum}`,
+        season_number: seasonNum,
+        label: `${seasonNum}. Sezon`,
+        title: cand.title,
+        url: cand.url,
+        category: 'seasons'
+      });
+    }
+  });
+
+  if (seasonsMap.size <= 1) return [];
+
+  return Array.from(seasonsMap.values()).sort((a, b) => a.season_number - b.season_number);
+}
+
+/**
  * 2. Fetches anime overview page and extracts all episodes
  */
 export async function fetchEpisodesForAnime(animeOverviewUrl) {
