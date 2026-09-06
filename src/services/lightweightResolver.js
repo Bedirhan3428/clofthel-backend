@@ -467,16 +467,11 @@ export function extractSeasonsFromCandidates(candidates, baseAnimeId = 'anime') 
 }
 
 /**
- * 2. Fetches anime overview page and extracts all episodes
+ * Parses episode links from anime detail HTML
+ * Supports .animeDetail-items li (Tranimeizle standard), flx-block, and <a> lists
  */
-export async function fetchEpisodesForAnime(animeOverviewUrl) {
-  if (!animeOverviewUrl) return [];
-
-  const { html, size, ok } = await fetchHtml(animeOverviewUrl);
-  if (!ok || isBotBlocked(html, size)) {
-    console.warn('[Resolver] Overview page blocked or empty:', animeOverviewUrl);
-    return [];
-  }
+export function parseEpisodesHtml(html) {
+  if (!html) return [];
 
   const episodes = [];
   const seenUrls = new Set();
@@ -533,6 +528,7 @@ export async function fetchEpisodesForAnime(animeOverviewUrl) {
 
   // Pattern 1: flx-block episode cards
   if (episodes.length === 0) {
+    let match;
     const blockRegex = /<div[^>]*class="[^"]*flx-block[^"]*"[^>]*data-href="([^"]+)"([\s\S]*?)<\/div>/gi;
     while ((match = blockRegex.exec(html)) !== null) {
       let href = match[1].trim();
@@ -555,6 +551,7 @@ export async function fetchEpisodesForAnime(animeOverviewUrl) {
 
   // Pattern 2: Standard episode link list <a href="...-bolum-izle...">
   if (episodes.length === 0) {
+    let match;
     const linkRegex = /<a[^>]+href="((?:https?:\/\/[^\/]+)?\/[^"]+?-(\d+)-bolum-izle[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
     while ((match = linkRegex.exec(html)) !== null) {
       let href = match[1].trim();
@@ -575,6 +572,61 @@ export async function fetchEpisodesForAnime(animeOverviewUrl) {
   // Sort episodes by number ascending
   episodes.sort((a, b) => a.number - b.number);
   return episodes;
+}
+
+/**
+ * 2. Fetches anime overview page and extracts all episodes
+ */
+export async function fetchEpisodesForAnime(animeOverviewUrl) {
+  if (!animeOverviewUrl) return [];
+
+  const { html, size, ok } = await fetchHtml(animeOverviewUrl);
+  if (!ok || isBotBlocked(html, size)) {
+    console.warn('[Resolver] Overview page blocked or empty:', animeOverviewUrl);
+    return [];
+  }
+
+  return parseEpisodesHtml(html);
+}
+
+/**
+ * Kullanıcı Talebi: Arama yapacaksın -> ilk çıkan sonucun içindeki linke gideceksin -> ordan linkleri çekip listeleyeceksin!
+ */
+export async function searchAndExtractEpisodes(animeTitle, seasonNum = 1) {
+  const cleanTitle = getCleanSearchQuery(animeTitle);
+  const searchUrl = `${BASE_URL}/arama/${encodeURIComponent(cleanTitle)}`;
+
+  try {
+    // 1. Arama yap
+    const searchRes = await fetchHtml(searchUrl, 10000);
+    if (!searchRes.ok || isBotBlocked(searchRes.html, searchRes.size)) {
+      return { success: false, blocked: true, searchUrl };
+    }
+
+    // 2. İlk çıkan sonucun içindeki linke git
+    const candidates = parseSearchResultsHtml(searchRes.html);
+    const targetUrl = matchCandidateForSeason(candidates, seasonNum, cleanTitle) || (candidates[0] ? candidates[0].url : null);
+
+    if (!targetUrl) {
+      return { success: false, empty: true, searchUrl };
+    }
+
+    // 3. Oradan linkleri çek
+    const animePageRes = await fetchHtml(targetUrl, 12000);
+    if (!animePageRes.ok || isBotBlocked(animePageRes.html, animePageRes.size)) {
+      return { success: false, blocked: true, targetUrl, searchUrl };
+    }
+
+    const episodes = parseEpisodesHtml(animePageRes.html);
+    return {
+      success: episodes.length > 0,
+      targetUrl,
+      episodes,
+      candidates
+    };
+  } catch (err) {
+    return { success: false, error: err.message, searchUrl };
+  }
 }
 
 /**

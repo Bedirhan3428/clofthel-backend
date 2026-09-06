@@ -34,6 +34,8 @@ import { addToHistory, toggleFavorite, getProfileData, toggleAnimeInList, syncAn
 import { 
   searchTranimeizleMatch, 
   fetchEpisodesForAnime, 
+  parseEpisodesHtml,
+  searchAndExtractEpisodes,
   fetchHtml, 
   parseSearchResultsHtml, 
   isBotBlocked, 
@@ -160,99 +162,34 @@ const webViewEpisodeExtractorJs = `
         return;
       }
 
-      // 2. SEARCH PAGE HANDLING (/arama/...) - DO NOT LIST, IMMEDIATELY REDIRECT TO BEST MATCH!
-      if (currentPath.indexOf('/arama') !== -1 || currentUrl.indexOf('/arama/') !== -1) {
-        var allLinks = document.querySelectorAll('a[href], .flx-block[data-href]');
-        var cands = [];
-        var candSeen = {};
-        for (var c = 0; c < allLinks.length; c++) {
-          var cEl = allLinks[c];
-          var cHref = cEl.getAttribute('href') || cEl.getAttribute('data-href') || '';
-          if (!cHref) continue;
-          if (
-            cHref.indexOf('#') === 0 ||
-            cHref.indexOf('javascript:') === 0 ||
-            cHref.indexOf('/arama') !== -1 ||
-            cHref.indexOf('/kategori') !== -1 ||
-            cHref.indexOf('/login') !== -1 ||
-            cHref.indexOf('/kayit') !== -1 ||
-            cHref.indexOf('/iletisim') !== -1 ||
-            cHref.indexOf('/api/') !== -1 ||
-            cHref.indexOf('/dmca') !== -1 ||
-            cHref.indexOf('-bolum') !== -1 ||
-            cHref === '/'
-          ) {
-            continue;
-          }
-          if (!candSeen[cHref]) {
-            candSeen[cHref] = true;
-            var cTitleEl = cEl.querySelector('h4, .title, span, strong') || cEl;
-            var cTitle = (cTitleEl.textContent || cTitleEl.innerText || '').trim();
-            if (cTitle && cTitle.length > 1 && cTitle.length < 150) {
-              cands.push({ url: cHref, title: cTitle });
+      // 2. SEARCH PAGE HANDLING (/arama/...) - DO NOT LIST, GO DIRECTLY TO FIRST RESULT LINK!
+      if (currentPath.indexOf('/arama') !== -1 || currentUrl.indexOf('/arama') !== -1) {
+        if (document.body) document.body.style.opacity = '0.05';
+
+        var firstBlock = document.querySelector('.flx-block[data-href]');
+        var firstLink = firstBlock ? firstBlock.getAttribute('data-href') : null;
+        if (!firstLink) {
+          var allA = document.querySelectorAll('a[href*="/anime/"], a[href*="-izle"], .flx-block a');
+          for (var aIdx = 0; aIdx < allA.length; aIdx++) {
+            var h = allA[aIdx].getAttribute('href') || '';
+            if (h && h.indexOf('-bolum') === -1 && h.indexOf('/arama') === -1 && h.indexOf('/kategori') === -1 && h !== '/') {
+              firstLink = h;
+              break;
             }
           }
         }
 
-        if (cands.length > 0 && !window.__auto_navigated) {
-          var targetSeason = window.__TARGET_SEASON || 1;
-          var baseTitle = (window.__TARGET_TITLE || '').toLowerCase();
-          var bestScore = -9999;
-          var bestUrl = null;
-
-          for (var k = 0; k < cands.length; k++) {
-            var cand = cands[k];
-            var raw = (cand.title + ' ' + cand.url).toLowerCase();
-            var score = 0;
-
-            var candSeason = 1;
-            var sMatch = raw.match(/(\d+)\s*\.?\s*sezon/i) || raw.match(/sezon\s*(\d+)/i);
-            if (sMatch) {
-              candSeason = parseInt(sMatch[1], 10);
-            } else if (raw.indexOf('2nd-season') !== -1 || raw.indexOf('2nd season') !== -1 || raw.indexOf('-2-sezon') !== -1) {
-              candSeason = 2;
-            } else if (raw.indexOf('3rd-season') !== -1 || raw.indexOf('3rd season') !== -1 || raw.indexOf('-3-sezon') !== -1) {
-              candSeason = 3;
-            } else if (raw.indexOf('4th-season') !== -1 || raw.indexOf('4th season') !== -1 || raw.indexOf('-4-sezon') !== -1) {
-              candSeason = 4;
-            }
-
-            if (candSeason === targetSeason) {
-              score += 100;
-            } else {
-              score -= 50;
-            }
-
-            if (raw.indexOf('movie') !== -1 || raw.indexOf('film') !== -1 || raw.indexOf('ova') !== -1) {
-              score -= 30;
-            }
-
-            if (baseTitle) {
-              var tokens = baseTitle.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/);
-              for (var t = 0; t < tokens.length; t++) {
-                if (tokens[t].length > 2 && raw.indexOf(tokens[t]) !== -1) {
-                  score += 15;
-                }
-              }
-            }
-
-            if (score > bestScore) {
-              bestScore = score;
-              bestUrl = cand.url;
-            }
-          }
-
-          if (bestUrl) {
-            window.__auto_navigated = true;
-            var fullBest = bestUrl.indexOf('http') === 0 ? bestUrl : window.location.origin + (bestUrl.indexOf('/') === 0 ? '' : '/') + bestUrl;
-            postMsg({
-              type: 'log',
-              message: '🎯 [OTOMATİK GEÇİŞ] Arama sonuçları listelenmeden doğrudan animeye gidiliyor: ' + fullBest
-            });
-            window.location.replace(fullBest);
-            return;
-          }
+        if (firstLink && !window.__auto_navigated) {
+          window.__auto_navigated = true;
+          var fullDest = firstLink.indexOf('http') === 0 ? firstLink : window.location.origin + (firstLink.indexOf('/') === 0 ? '' : '/') + firstLink;
+          postMsg({
+            type: 'log',
+            message: '🎯 [İLK SONUCUN LİNKİNE GİDİLİYOR] ' + fullDest
+          });
+          window.location.replace(fullDest);
+          return;
         }
+        return;
       }
     } catch(err) {
       postMsg({ type: 'log', message: 'Extractor Hatası: ' + err.message });
@@ -493,20 +430,41 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
         if (!cancelled) setLoading(false);
 
-        // 2. Perform search on Tranimeizle, get the anime link and extract its episodes!
+        // 2. Arama yap -> ilk çıkan sonucun içindeki linke git -> ordan bölümleri çekip listele!
         const currentSeason = (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))) || (seasons && seasons[0]) || null;
         const targetTitle = currentSeason?.title || currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle || '';
         const seasonNum = currentSeason?.season_number || detectSeasonNumber(targetTitle, 1);
         if (targetTitle) {
           setSearchQueryInput(targetTitle);
-          addLog(`🚀 Sezon ${seasonNum} ("${targetTitle}") için bölümler getiriliyor...`, 'info');
+          addLog(`🚀 Sezon ${seasonNum} ("${targetTitle}") için arama yapılıp bölümler getiriliyor...`, 'info');
           if (!cancelled) {
-            const overviewUrls = buildAnimeOverviewUrls(targetTitle, seasonNum);
-            const directAnimeUrl = overviewUrls[0];
-            addLog(`🔗 [ANİME BAĞLANTISI] ${directAnimeUrl}`, 'info');
-            setSelectedCandidateUrl(directAnimeUrl);
-            setChallengeUrl(directAnimeUrl);
-            await loadEpisodesForUrl(directAnimeUrl);
+            const pipelineRes = await searchAndExtractEpisodes(targetTitle, seasonNum);
+            if (pipelineRes.success && pipelineRes.episodes.length > 0) {
+              const formattedEps = pipelineRes.episodes.map(ep => ({
+                _id: `${activeMongoId || 'ep'}_${ep.number}`,
+                episode_number: ep.number,
+                episode_title: ep.title || `${ep.number}. Bölüm`,
+                url: ep.url.startsWith('http') ? ep.url : `${BASE_URL}${ep.url.startsWith('/') ? '' : '/'}${ep.url}`,
+                thumbnail: ep.thumbnail ? (ep.thumbnail.startsWith('http') ? ep.thumbnail : `${BASE_URL}${ep.thumbnail.startsWith('/') ? '' : '/'}${ep.thumbnail}`) : null,
+                release_date: ep.release_date || null
+              }));
+              setEpisodes(formattedEps);
+              setLoadingEpisodes(false);
+              addLog(`🎉 [BÖLÜMLER LİSTELENDİ] ${formattedEps.length} adet bölüm başarıyla yüklendi!`, 'success');
+              seasonCacheRef.current[activeMongoId] = {
+                anime: currentAnimeData,
+                episodes: formattedEps,
+                selectedCandidateUrl: pipelineRes.targetUrl
+              };
+            } else {
+              const cleanTitle = getCleanSearchQuery(targetTitle);
+              const fallbackUrl = pipelineRes.targetUrl || buildAnimeOverviewUrls(targetTitle, seasonNum)[0] || `${BASE_URL}/arama/${encodeURIComponent(cleanTitle)}`;
+              setSelectedCandidateUrl(fallbackUrl);
+              setChallengeUrl(fallbackUrl);
+              if (WebView) {
+                setIsChallengeModalVisible(true);
+              }
+            }
           }
         }
       } catch (err) {
@@ -533,7 +491,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
   }, [activeMongoId]);
 
   // ── Handlers ─────────────────────────────────────────────────
-  const handleSeasonSelect = (seasonId) => {
+  const handleSeasonSelect = async (seasonId) => {
     if (seasonId === activeMongoId) return;
     setActiveMongoId(seasonId);
 
@@ -548,31 +506,40 @@ export default function AnimeDetailScreen({ route, navigation }) {
     setEpisodes([]);
     setLoadingEpisodes(true);
 
-    // Determine the target season number
     const selSeason = (seasons && seasons.find(s => s && String(s._id) === String(seasonId))) || null;
     const seasonNum = selSeason?.season_number || detectSeasonNumber(selSeason?.title || selSeason?.label || '', 1);
-
-    // If candidates are already in memory, directly pull that season's episodes
-    if (allCandidatesRef.current && allCandidatesRef.current.length > 0) {
-      const currentAnimeData = anime || passedAnime;
-      const baseTitle = getCleanSearchQuery(currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle || '');
-      const matchedUrl = matchCandidateForSeason(allCandidatesRef.current, seasonNum, baseTitle);
-      if (matchedUrl) {
-        addLog(`🎯 [SEZON DEĞİŞTİ] Sezon ${seasonNum} adresi seçildi ➔ ${matchedUrl}`, 'info');
-        loadEpisodesForUrl(matchedUrl);
-        return;
-      }
-    }
-
-    // Direct overview URL for that season
     const currentAnimeData = anime || passedAnime;
     const targetTitle = selSeason?.title || currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle || '';
-    const overviewUrls = buildAnimeOverviewUrls(targetTitle, seasonNum);
-    const seasonUrl = overviewUrls[0];
-    addLog(`🎯 [SEZON SEÇİLDİ] Sezon ${seasonNum} adresi: ${seasonUrl}`, 'info');
-    setSelectedCandidateUrl(seasonUrl);
-    setChallengeUrl(seasonUrl);
-    loadEpisodesForUrl(seasonUrl);
+
+    addLog(`🎯 [SEZON SEÇİLDİ] Sezon ${seasonNum} aranıyor...`, 'info');
+
+    const pipelineRes = await searchAndExtractEpisodes(targetTitle, seasonNum);
+    if (pipelineRes.success && pipelineRes.episodes.length > 0) {
+      const formattedEps = pipelineRes.episodes.map(ep => ({
+        _id: `${seasonId || 'ep'}_${ep.number}`,
+        episode_number: ep.number,
+        episode_title: ep.title || `${ep.number}. Bölüm`,
+        url: ep.url.startsWith('http') ? ep.url : `${BASE_URL}${ep.url.startsWith('/') ? '' : '/'}${ep.url}`,
+        thumbnail: ep.thumbnail ? (ep.thumbnail.startsWith('http') ? ep.thumbnail : `${BASE_URL}${ep.thumbnail.startsWith('/') ? '' : '/'}${ep.thumbnail}`) : null,
+        release_date: ep.release_date || null
+      }));
+      setEpisodes(formattedEps);
+      setLoadingEpisodes(false);
+      addLog(`🎉 [BÖLÜMLER LİSTELENDİ] ${formattedEps.length} adet bölüm başarıyla yüklendi!`, 'success');
+      seasonCacheRef.current[seasonId] = {
+        anime: currentAnimeData,
+        episodes: formattedEps,
+        selectedCandidateUrl: pipelineRes.targetUrl
+      };
+    } else {
+      const cleanTitle = getCleanSearchQuery(targetTitle);
+      const fallbackUrl = pipelineRes.targetUrl || buildAnimeOverviewUrls(targetTitle, seasonNum)[0] || `${BASE_URL}/arama/${encodeURIComponent(cleanTitle)}`;
+      setSelectedCandidateUrl(fallbackUrl);
+      setChallengeUrl(fallbackUrl);
+      if (WebView) {
+        setIsChallengeModalVisible(true);
+      }
+    }
   };
 
   const handleToggleFavorite = async () => {
