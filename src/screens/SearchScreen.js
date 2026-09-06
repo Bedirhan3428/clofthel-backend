@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -14,15 +14,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Image } from 'expo-image';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS } from '../constants/theme';
-import { AuthContext } from '../context/AuthContext';
 import { searchAnimes as searchAniList } from '../services/anilistService';
 
 // ── Format badge colors ────────────────────────────────────────
 const FORMAT_COLORS = {
   TV: { bg: 'rgba(255, 107, 0, 0.15)', border: 'rgba(255, 107, 0, 0.3)', text: COLORS.accent },
+  MOVIE: { bg: 'rgba(147, 51, 234, 0.15)', border: 'rgba(147, 51, 234, 0.3)', text: '#9333EA' },
   Movie: { bg: 'rgba(147, 51, 234, 0.15)', border: 'rgba(147, 51, 234, 0.3)', text: '#9333EA' },
   OVA: { bg: 'rgba(59, 130, 246, 0.15)', border: 'rgba(59, 130, 246, 0.3)', text: '#3B82F6' },
   ONA: { bg: 'rgba(16, 185, 129, 0.15)', border: 'rgba(16, 185, 129, 0.3)', text: '#10B981' },
+  SPECIAL: { bg: 'rgba(245, 158, 11, 0.15)', border: 'rgba(245, 158, 11, 0.3)', text: '#F59E0B' },
   Special: { bg: 'rgba(245, 158, 11, 0.15)', border: 'rgba(245, 158, 11, 0.3)', text: '#F59E0B' },
 };
 
@@ -31,10 +32,9 @@ function getFormatStyle(type) {
 }
 
 export default function SearchScreen({ route, navigation }) {
-  const { user } = useContext(AuthContext);
   const [query, setQuery] = useState(route?.params?.initialQuery || '');
   const [results, setResults] = useState([]);
-  const [isSearchingAniList, setIsSearchingAniList] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
 
   useEffect(() => {
     if (route?.params?.initialQuery) {
@@ -47,7 +47,7 @@ export default function SearchScreen({ route, navigation }) {
     const trimmed = query.trim();
     if (!trimmed || trimmed.length < 2) {
       setResults([]);
-      setIsSearchingAniList(false);
+      setIsSearching(false);
       return;
     }
 
@@ -57,20 +57,23 @@ export default function SearchScreen({ route, navigation }) {
     }
 
     let cancelled = false;
-    setIsSearchingAniList(true);
+    setIsSearching(true);
 
     const timer = setTimeout(async () => {
       try {
         const aniListMatches = await searchAniList(trimmed, 1, 30);
         if (cancelled) return;
 
-        if (aniListMatches) {
+        if (Array.isArray(aniListMatches)) {
           setResults(aniListMatches);
+        } else {
+          setResults([]);
         }
       } catch (err) {
         console.warn('[SearchScreen] AniList search error:', err.message);
+        if (!cancelled) setResults([]);
       } finally {
-        if (!cancelled) setIsSearchingAniList(false);
+        if (!cancelled) setIsSearching(false);
       }
     }, 280);
 
@@ -81,13 +84,11 @@ export default function SearchScreen({ route, navigation }) {
   }, [query]);
 
   const renderSearchItem = useCallback(({ item }) => {
-    const isAniList = Boolean(item.anilist_id);
-    const itemType = item.format || item.type || 'TV';
+    const itemType = item.format || 'TV';
     const formatStyle = getFormatStyle(itemType);
-    const titleText = item.title || item.orijinal_ad || item.main_title_en || 'İsimsiz Anime';
-    const subTitle = item.title_native || item.main_title_jp || item.title_english || '';
-    const coverUrl = item.coverImage || item.cover_image || item.poster;
-    const seasonCount = (item.seasons || []).length;
+    const titleText = item.title || item.orijinal_ad || 'İsimsiz Anime';
+    const subTitle = item.title_native || item.title_english || '';
+    const coverUrl = item.coverImage || item.poster;
     const totalEps = item.total_episodes || item.totalEpisodes;
 
     return (
@@ -95,15 +96,7 @@ export default function SearchScreen({ route, navigation }) {
         style={styles.searchCard}
         activeOpacity={0.8}
         onPress={() => {
-          if (!user) {
-            navigation.navigate('Login');
-            return;
-          }
-          if (isAniList) {
-            navigation.navigate('AnimeDetail', { anime: item });
-          } else {
-            navigation.navigate('AnimeDetail', { orchestratorEntry: item });
-          }
+          navigation.navigate('AnimeDetail', { anime: item });
         }}
       >
         {/* Cover image or fallback type icon */}
@@ -116,7 +109,7 @@ export default function SearchScreen({ route, navigation }) {
         ) : (
           <View style={[styles.typeIcon, { backgroundColor: formatStyle.bg, borderColor: formatStyle.border }]}>
             <Ionicons
-              name={itemType === 'Movie' ? 'film-outline' : 'tv-outline'}
+              name={itemType === 'MOVIE' || itemType === 'Movie' ? 'film-outline' : 'tv-outline'}
               size={22}
               color={formatStyle.text}
             />
@@ -134,10 +127,6 @@ export default function SearchScreen({ route, navigation }) {
             {totalEps ? (
               <Text style={styles.metaText}>
                 {totalEps} Bölüm
-              </Text>
-            ) : seasonCount > 0 ? (
-              <Text style={styles.metaText}>
-                {seasonCount} Sezon
               </Text>
             ) : null}
             {item.rating && (
@@ -158,7 +147,7 @@ export default function SearchScreen({ route, navigation }) {
         </View>
       </TouchableOpacity>
     );
-  }, [navigation, user]);
+  }, [navigation]);
 
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
@@ -178,7 +167,7 @@ export default function SearchScreen({ route, navigation }) {
           <Ionicons name="search" size={18} color={COLORS.textSecondary} style={styles.searchIcon} />
           <TextInput
             style={styles.input}
-            placeholder="Anime adı ara..."
+            placeholder="AniList'te anime ara..."
             placeholderTextColor={COLORS.textMuted}
             value={query}
             onChangeText={setQuery}
@@ -195,7 +184,7 @@ export default function SearchScreen({ route, navigation }) {
       </View>
 
       {/* ── Content ────────────────────────────────── */}
-      {isSearchingAniList && results.length === 0 ? (
+      {isSearching && results.length === 0 ? (
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color={COLORS.accent} />
           <Text style={[styles.infoSubtitle, { marginTop: 12 }]}>AniList aranıyor...</Text>
@@ -207,7 +196,7 @@ export default function SearchScreen({ route, navigation }) {
           </View>
           <Text style={styles.infoTitle}>Anime Ara</Text>
           <Text style={styles.infoSubtitle}>
-            AniList kataloğundaki on binlerce anime arasından hemen ara ve izle!
+            AniList kataloğundaki on binlerce anime arasından hemen ara!
           </Text>
         </View>
       ) : results.length === 0 ? (
@@ -217,13 +206,13 @@ export default function SearchScreen({ route, navigation }) {
           </View>
           <Text style={styles.infoTitle}>Sonuç Bulunamadı</Text>
           <Text style={styles.infoSubtitle}>
-            "{query}" aramasına uygun hiçbir anime bulunamadı. Lütfen kelimeleri kontrol edin.
+            "{query}" aramasına uygun hiçbir anime bulunamadı.
           </Text>
         </View>
       ) : (
         <FlatList
           data={results}
-          keyExtractor={(item) => item._key}
+          keyExtractor={(item, index) => String(item.id || item._id || item.anilist_id || index)}
           renderItem={renderSearchItem}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}

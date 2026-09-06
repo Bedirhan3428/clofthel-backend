@@ -44,7 +44,9 @@ async function fetchAniListGraphQL(query, variables = {}) {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'User-Agent': 'ClofthelApp/2.0 (Mobile Android; Lightweight Client)',
+        'Origin': 'https://anilist.co',
+        'Referer': 'https://anilist.co/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       },
       body: JSON.stringify({ query, variables }),
       signal: controller.signal,
