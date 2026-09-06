@@ -163,26 +163,60 @@ export function parseSearchResultsHtml(html) {
   const candidates = [];
   const seen = new Set();
 
-  // Pattern 1: <a href="/anime/slug-izle"> or href="https://.../anime/slug-izle"
-  const regex1 = /<a[^>]+href="((?:https?:\/\/[^\/]+)?\/(?:anime\/)?[^"]+-izle)"[^>]*>([\s\S]*?)<\/a>/gi;
+  // Pattern 1: All <a href="..."> tags
+  const aRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let match;
-  while ((match = regex1.exec(html)) !== null) {
-    let href = match[1];
-    if (href.startsWith('/')) href = `${BASE_URL}${href}`;
-    if (!seen.has(href) && !href.includes('/arama') && !href.includes('/kategori')) {
+  while ((match = aRegex.exec(html)) !== null) {
+    let href = match[1].trim();
+    const content = match[2];
+
+    if (
+      !href ||
+      href.startsWith('#') ||
+      href.startsWith('javascript:') ||
+      href.includes('/arama') ||
+      href.includes('/kategori') ||
+      href.includes('/iletisim') ||
+      href.includes('/login') ||
+      href.includes('/kayit') ||
+      href.includes('/api/') ||
+      href.includes('/dmca') ||
+      href.includes('/profil') ||
+      href.includes('-bolum') || // skip individual episodes
+      href === '/'
+    ) {
+      continue;
+    }
+
+    if (href.startsWith('/')) {
+      href = `${BASE_URL}${href}`;
+    }
+
+    if (seen.has(href)) continue;
+
+    const titleMatch = content.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i) ||
+                       content.match(/class=["'][^"']*title[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i) ||
+                       content.match(/alt=["']([^"']+)["']/i);
+
+    let title = '';
+    if (titleMatch) {
+      title = titleMatch[1].replace(/<[^>]*>/g, '').trim();
+    } else {
+      title = content.replace(/<[^>]*>/g, '').trim();
+    }
+
+    if (title && title.length > 1 && !title.toLowerCase().includes('izle full hd') && title.length < 150) {
       seen.add(href);
-      // Clean inner text
-      const innerText = match[2].replace(/<[^>]*>/g, '').trim();
-      candidates.push({ url: href, title: innerText });
+      candidates.push({ url: href, title });
     }
   }
 
   // Pattern 2: flx-block cards
-  const blockRegex = /<div[^>]*class="[^"]*flx-block[^"]*"[^>]*data-href="([^"]+)"([\s\S]*?)<\/div>/gi;
+  const blockRegex = /<div[^>]*class=["'][^"']*flx-block[^"']*["'][^>]*data-href=["']([^"']+)["']([\s\S]*?)<\/div>/gi;
   while ((match = blockRegex.exec(html)) !== null) {
-    let href = match[1];
+    let href = match[1].trim();
     if (href.startsWith('/')) href = `${BASE_URL}${href}`;
-    if (!seen.has(href)) {
+    if (!seen.has(href) && !href.includes('-bolum')) {
       seen.add(href);
       const titleMatch = match[2].match(/<h4>([^<]+)<\/h4>/i);
       candidates.push({
@@ -330,6 +364,10 @@ export function matchCandidateForSeason(candidates, seasonNumber = 1, baseTitle 
       bestCandidate = cand.url;
     }
   });
+
+  if (bestCandidate && bestCandidate.startsWith('/')) {
+    bestCandidate = `${BASE_URL}${bestCandidate}`;
+  }
 
   return bestCandidate;
 }

@@ -174,6 +174,11 @@ export default function SearchScreen({ route, navigation }) {
             autoFocus
             clearButtonMode="while-editing"
             returnKeyType="search"
+            onSubmitEditing={() => {
+              if (results && results.length > 0) {
+                navigation.navigate('AnimeDetail', { anime: results[0] });
+              }
+            }}
           />
           {query.trim().length > 0 && (
             <TouchableOpacity onPress={() => setQuery('')} style={styles.clearButton}>

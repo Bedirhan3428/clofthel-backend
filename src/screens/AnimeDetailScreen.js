@@ -172,29 +172,107 @@ const webViewEpisodeExtractorJs = `
         return;
       }
 
-      // 2. SEARCH CANDIDATES EXTRACTION (Eğer /arama sayfasındaysak)
+      // 2. SEARCH PAGE HANDLING (/arama/...) - DO NOT LIST, DIRECTLY GO TO BEST MATCH!
       if (currentPath.indexOf('/arama') !== -1 || currentUrl.indexOf('/arama/') !== -1) {
-        var candLinks = document.querySelectorAll('a[href*="-izle"], .flx-block[data-href]');
+        var allLinks = document.querySelectorAll('a[href], .flx-block[data-href]');
         var cands = [];
         var candSeen = {};
-        for (var c = 0; c < candLinks.length; c++) {
-          var cEl = candLinks[c];
+        for (var c = 0; c < allLinks.length; c++) {
+          var cEl = allLinks[c];
           var cHref = cEl.getAttribute('href') || cEl.getAttribute('data-href') || '';
-          if (cHref && !candSeen[cHref] && cHref.indexOf('-bolum') === -1 && cHref.indexOf('/arama') === -1 && cHref.indexOf('/kategori') === -1) {
+          if (!cHref) continue;
+          if (
+            cHref.indexOf('#') === 0 ||
+            cHref.indexOf('javascript:') === 0 ||
+            cHref.indexOf('/arama') !== -1 ||
+            cHref.indexOf('/kategori') !== -1 ||
+            cHref.indexOf('/login') !== -1 ||
+            cHref.indexOf('/kayit') !== -1 ||
+            cHref.indexOf('/iletisim') !== -1 ||
+            cHref.indexOf('/api/') !== -1 ||
+            cHref.indexOf('/dmca') !== -1 ||
+            cHref.indexOf('-bolum') !== -1 ||
+            cHref === '/'
+          ) {
+            continue;
+          }
+          if (!candSeen[cHref]) {
             candSeen[cHref] = true;
-            var cTitleEl = cEl.querySelector('h4, .title, span') || cEl;
+            var cTitleEl = cEl.querySelector('h4, .title, span, strong') || cEl;
             var cTitle = (cTitleEl.textContent || cTitleEl.innerText || '').trim();
-            if (cTitle && (cHref.indexOf('-izle') !== -1 || cHref.indexOf('/anime/') !== -1)) {
+            if (cTitle && cTitle.length > 1 && cTitle.length < 150) {
               cands.push({ url: cHref, title: cTitle });
             }
           }
         }
-        if (cands.length > 0 && !window.__candidates_sent) {
-          window.__candidates_sent = true;
-          postMsg({
-            type: 'candidates_extracted',
-            candidates: cands
-          });
+
+        if (cands.length > 0) {
+          if (!window.__candidates_sent) {
+            window.__candidates_sent = true;
+            postMsg({
+              type: 'candidates_extracted',
+              candidates: cands
+            });
+          }
+
+          if (!window.__auto_navigated) {
+            var targetSeason = window.__TARGET_SEASON || 1;
+            var baseTitle = (window.__TARGET_TITLE || '').toLowerCase();
+            var bestScore = -9999;
+            var bestUrl = null;
+
+            for (var k = 0; k < cands.length; k++) {
+              var cand = cands[k];
+              var raw = (cand.title + ' ' + cand.url).toLowerCase();
+              var score = 0;
+
+              var candSeason = 1;
+              var sMatch = raw.match(/(\d+)\s*\.?\s*sezon/i) || raw.match(/sezon\s*(\d+)/i);
+              if (sMatch) {
+                candSeason = parseInt(sMatch[1], 10);
+              } else if (raw.indexOf('2nd-season') !== -1 || raw.indexOf('2nd season') !== -1 || raw.indexOf('-2-sezon') !== -1) {
+                candSeason = 2;
+              } else if (raw.indexOf('3rd-season') !== -1 || raw.indexOf('3rd season') !== -1 || raw.indexOf('-3-sezon') !== -1) {
+                candSeason = 3;
+              } else if (raw.indexOf('4th-season') !== -1 || raw.indexOf('4th season') !== -1 || raw.indexOf('-4-sezon') !== -1) {
+                candSeason = 4;
+              }
+
+              if (candSeason === targetSeason) {
+                score += 100;
+              } else {
+                score -= 50;
+              }
+
+              if (raw.indexOf('movie') !== -1 || raw.indexOf('film') !== -1 || raw.indexOf('ova') !== -1) {
+                score -= 30;
+              }
+
+              if (baseTitle) {
+                var tokens = baseTitle.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/);
+                for (var t = 0; t < tokens.length; t++) {
+                  if (tokens[t].length > 2 && raw.indexOf(tokens[t]) !== -1) {
+                    score += 15;
+                  }
+                }
+              }
+
+              if (score > bestScore) {
+                bestScore = score;
+                bestUrl = cand.url;
+              }
+            }
+
+            if (bestUrl) {
+              window.__auto_navigated = true;
+              postMsg({
+                type: 'log',
+                message: '🎯 [OTOMATİK GEÇİŞ] En çok uyuşan anime sayfasına gidiliyor: ' + bestUrl
+              });
+              window.location.href = bestUrl;
+              return;
+            }
+          }
         }
       }
     } catch(err) {
@@ -1008,12 +1086,29 @@ export default function AnimeDetailScreen({ route, navigation }) {
               source={{ uri: challengeUrl || `${BASE_URL}/arama/${encodeURIComponent(searchQueryInput || mainTitleEn)}` }}
               style={{ flex: 1 }}
               userAgent="Mozilla/5.0 (Linux; Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"
-              injectedJavaScriptBeforeContentLoaded={scraperInjectedJs + ';' + webViewEpisodeExtractorJs}
-              injectedJavaScript={scraperInjectedJs + ';' + webViewEpisodeExtractorJs}
+              injectedJavaScriptBeforeContentLoaded={`
+                window.__TARGET_TITLE = ${JSON.stringify(getCleanSearchQuery(anime?.title || anime?.orijinal_ad || initialTitle || ''))};
+                window.__TARGET_SEASON = ${(seasons && seasons.find(s => s && String(s._id) === String(activeMongoId)))?.season_number || 1};
+                ${scraperInjectedJs};
+                ${webViewEpisodeExtractorJs};
+              `}
+              injectedJavaScript={`
+                window.__TARGET_TITLE = ${JSON.stringify(getCleanSearchQuery(anime?.title || anime?.orijinal_ad || initialTitle || ''))};
+                window.__TARGET_SEASON = ${(seasons && seasons.find(s => s && String(s._id) === String(activeMongoId)))?.season_number || 1};
+                ${scraperInjectedJs};
+                ${webViewEpisodeExtractorJs};
+              `}
               javaScriptEnabled={true}
               domStorageEnabled={true}
               onLoadEnd={() => {
-                webViewRef.current?.injectJavaScript(webViewEpisodeExtractorJs);
+                const currentSeason = (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))) || (seasons && seasons[0]) || null;
+                const sNum = currentSeason?.season_number || 1;
+                const cleanTitle = getCleanSearchQuery(anime?.title || anime?.orijinal_ad || initialTitle || '');
+                webViewRef.current?.injectJavaScript(`
+                  window.__TARGET_TITLE = ${JSON.stringify(cleanTitle)};
+                  window.__TARGET_SEASON = ${sNum};
+                  ${webViewEpisodeExtractorJs};
+                `);
               }}
               onMessage={(event) => {
                 try {
