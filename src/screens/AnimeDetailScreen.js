@@ -975,7 +975,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
                   if (data.type === 'log') {
                     addLog(data.message, 'info');
                   } else if (data.type === 'captcha_detected') {
-                    addLog('🛡️ Bot koruması algılandı, otomatik çözülüyor...', 'warn');
+                    addLog('🛡️ Bot koruması algılandı, doğrudan HTTP API ile çözülüyor...', 'warn');
+                  } else if (data.type === 'captcha_solved') {
+                    addLog(`🎉 Doğru görsel HTTP isteğiyle onaylandı! (Hash: ${data.hash ? data.hash.substring(0, 8) : ''}...)`, 'success');
                   } else if (data.type === 'episodes_extracted' && Array.isArray(data.episodes) && data.episodes.length > 0) {
                     addLog(`🎉 WebView köprüsü üzerinden ${data.episodes.length} adet bölüm başarıyla çıkarıldı!`, 'success');
                     const formatted = data.episodes.map(ep => ({

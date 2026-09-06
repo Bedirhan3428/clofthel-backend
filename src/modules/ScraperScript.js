@@ -312,11 +312,60 @@ export const scraperInjectedJs = `
           });
         } catch(e) {}
 
-        // Doğrudan API Onaylayıcı Yardımcı Fonksiyon
+        // Doğrudan API Onaylayıcı Yardımcı Fonksiyon (HTTP İsteğini Taklit Etme)
         function submitCaptchaDirectly(hash, cid) {
-          cid = cid || 0;
+          cid = cid || '0';
           if (!hash) return;
-          sendToNative({ type: 'log', message: '⚡ Captcha API doğrudan onaylanıyor (Hash: ' + hash.substring(0, 8) + '...)' });
+          if (window.__captcha_solved_success) return;
+          
+          sendToNative({ type: 'log', message: '⚡ Captcha HTTP isteği doğrudan taklit ediliyor (POST /api/Captcha/ | Hash: ' + hash.substring(0, 8) + '...)' });
+
+          var onVerificationSuccess = function() {
+            window.__captcha_solved_success = true;
+            sendToNative({ 
+              type: 'log', 
+              message: '🎉 Captcha HTTP isteği sunucu tarafından ONAYLANDI! Sayfa yönlendiriliyor...' 
+            });
+            sendToNative({
+              type: 'captcha_solved',
+              hash: hash,
+              captchaId: cid
+            });
+
+            var holder = document.querySelector('.captcha-holder');
+            if (holder) {
+              holder.classList.add('captcha-success');
+              var icons = holder.querySelector('.captcha-modal__icons');
+              if (icons) {
+                icons.innerHTML = '<div class="captcha-modal__icons-title">İyi seyirler!</div><div class="captcha-modal__icons-subtitle">Doğrulamanız için teşekkürler.</div>';
+              }
+              if (window.jQuery) {
+                var $h = window.jQuery(holder);
+                $h.trigger('success', [{ captcha_id: cid }]);
+                $h.trigger('success.iconCaptcha', [cid]);
+              }
+              // Form varsa gönder
+              var form = holder.closest('form');
+              if (form) {
+                var hfInput = form.querySelector('input[name="captcha-hf"]');
+                if (hfInput) hfInput.value = hash;
+                var idhfInput = form.querySelector('input[name="captcha-idhf"]');
+                if (idhfInput) idhfInput.value = cid;
+
+                var action = form.getAttribute('action') || '';
+                if (action && action !== '#' && !action.endsWith('#')) {
+                  sendToNative({ type: 'log', message: '📄 Form action tetikleniyor: ' + action });
+                  form.submit();
+                } else {
+                  var submitBtn = form.querySelector('button[type="submit"], input[type="submit"]');
+                  if (submitBtn) {
+                    sendToNative({ type: 'log', message: '🔘 Form submit butonu tetikleniyor...' });
+                    submitBtn.click();
+                  }
+                }
+              }
+            }
+          };
 
           if (window.jQuery) {
             window.jQuery('input[name="captcha-hf"]').val(hash);
@@ -325,19 +374,16 @@ export const scraperInjectedJs = `
               url: '/api/Captcha/',
               type: 'POST',
               data: { cID: cid, pC: hash, rT: 2 },
-              success: function() {
-                sendToNative({ type: 'log', message: '🎉 Captcha API onayı başarılı! Sayfa yönlendiriliyor...' });
-                var $holder = window.jQuery('.captcha-holder');
-                $holder.addClass('captcha-success');
-                $holder.find('.captcha-modal__icons').html(
-                  '<div class="captcha-modal__icons-title">İyi seyirler!</div>' +
-                  '<div class="captcha-modal__icons-subtitle">Doğrulamanız için teşekkürler.</div>'
-                );
-                $holder.trigger('success', [{ captcha_id: cid }]);
-                $holder.trigger('success.iconCaptcha', [cid]);
+              headers: { 'X-Requested-With': 'XMLHttpRequest' },
+              success: function(res) {
+                onVerificationSuccess();
               },
               error: function(err) {
-                sendToNative({ type: 'log', message: 'Captcha API yanıtı: ' + (err.statusText || 'Tamamlandı') });
+                if (err && err.status === 200) {
+                  onVerificationSuccess();
+                } else {
+                  sendToNative({ type: 'log', message: 'Captcha API yanıtı: ' + (err.statusText || err.status || 'Hata') });
+                }
               }
             });
           } else {
@@ -348,20 +394,19 @@ export const scraperInjectedJs = `
             fetch('/api/Captcha/', {
               method: 'POST',
               body: fd,
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }
-            }).then(function(res) {
-              if (res.ok) {
-                sendToNative({ type: 'log', message: '🎉 Captcha API onayı (Fetch) başarılı!' });
-                var holder = document.querySelector('.captcha-holder');
-                if (holder) {
-                  holder.classList.add('captcha-success');
-                  var icons = holder.querySelector('.captcha-modal__icons');
-                  if (icons) {
-                    icons.innerHTML = '<div class="captcha-modal__icons-title">İyi seyirler!</div><div class="captcha-modal__icons-subtitle">Doğrulamanız için teşekkürler.</div>';
-                  }
-                }
+              headers: { 
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'X-Requested-With': 'XMLHttpRequest'
               }
-            }).catch(function(e) {});
+            }).then(function(res) {
+              if (res.ok || res.status === 200) {
+                onVerificationSuccess();
+              } else {
+                sendToNative({ type: 'log', message: 'Captcha Fetch yanıt kodu: ' + res.status });
+              }
+            }).catch(function(e) {
+              sendToNative({ type: 'log', message: 'Captcha Fetch hatası: ' + e.message });
+            });
           }
         }
 
