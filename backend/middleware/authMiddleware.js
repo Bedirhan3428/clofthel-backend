@@ -79,18 +79,14 @@ const verifyRequestSignature = (req, res, next) => {
     req.isWebClient = true;
   }
 
-  // Stream, Proxy, Admin ve Client-Scraper endpointleri için imzayı bypass et
+  // Stream, Proxy, Admin ve Cache-Sync endpointleri için imzayı bypass et
   const bypassPaths = [
     '/stream.m3u8',
     '/chunk.ts',
     '/sibnet-proxy',
     '/resolve-source',
     '/reload-orchestrator',
-    '/client-add-anime',
-    '/check-exists',
-    '/sync-scraped-page',
-    '/fix-season',
-    '/self-heal'
+    '/cache-sync'
   ];
   if (bypassPaths.some(p => req.originalUrl.includes(p))) {
     return next();

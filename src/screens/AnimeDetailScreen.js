@@ -30,12 +30,11 @@ import {
   FONT_WEIGHTS,
   BORDER_RADIUS,
 } from '../constants/theme';
-import { fetchAnimeDetail, fetchEpisodes, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList, selfHealAnime, fixOrAddAnimeSeasonApi, clientAddAnimeApi } from '../services/api';
+import { fetchAnimeDetail, fetchEpisodes, addToHistory, toggleFavorite, getProfileData, toggleAnimeInList, syncAnimeCacheApi } from '../services/api';
+import { searchTranimeizleMatch, fetchEpisodesForAnime } from '../services/lightweightResolver';
+import { fetchAnimeDetails as fetchAniListDetails } from '../services/anilistService';
 import { useAlert } from '../context/AlertContext';
 import { AuthContext } from '../context/AuthContext';
-import { animePageScraperInjectedJs } from '../modules/AnimePageScraperScript';
-import { resolveTargetTranimeizleUrl, verifyTitleMatchClient } from '../utils/clientAnimeHealer';
-import * as Clipboard from 'expo-clipboard';
 
 let WebView = null;
 if (Platform.OS !== 'web') {
@@ -102,60 +101,6 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const [isFavorite, setIsFavorite] = useState(false);
   const [customLists, setCustomLists] = useState([]);
   const [isListModalVisible, setIsListModalVisible] = useState(false);
-
-  // Fix Season / Add Season Modal State
-  const [isFixModalVisible, setIsFixModalVisible] = useState(false);
-  const [fixMode, setFixMode] = useState('fix_season'); // 'fix_season' | 'add_season'
-  const [customUrl, setCustomUrl] = useState('');
-  const [animeTitleInput, setAnimeTitleInput] = useState('');
-  const [targetSeasonNum, setTargetSeasonNum] = useState('');
-  const [totalEpisodesInput, setTotalEpisodesInput] = useState('');
-  const [isFixing, setIsFixing] = useState(false);
-  const [fixStatusText, setFixStatusText] = useState('');
-  const [clientScrapeUrl, setClientScrapeUrl] = useState(null);
-  const [isFullScreenBrowser, setIsFullScreenBrowser] = useState(false);
-  const [lastErrorMessage, setLastErrorMessage] = useState(null);
-  const [posterTapCount, setPosterTapCount] = useState(0);
-  const posterTapTimerRef = useRef(null);
-  const clientWebViewRef = useRef(null);
-
-  // Helper to extract a clean title from a URL or raw scraped title
-  const extractCleanTitleFromUrl = (urlOrSlug, rawTitle = '') => {
-    const isGeneric = !rawTitle || /^(tranimeizle|anime\s*izle|bağlantı\s*doğrulaması|cloudflare|ana\s*sayfa|yükleniyor|error|404)/i.test(String(rawTitle).trim());
-    let title = (!isGeneric ? rawTitle : '')
-      .replace(/\s*\d+\.\s*Bölüm\s*İzle.*$/i, '')
-      .replace(/\s*Türkçe\s*(?:Altyazılı|Dublaj)?\s*İzle.*$/i, '')
-      .replace(/\s*İzle.*$/i, '')
-      .trim();
-
-    if ((!title || isGeneric) && urlOrSlug) {
-      try {
-        let slug = decodeURIComponent(String(urlOrSlug))
-          .split(/[?#]/)[0]
-          .replace(/^https?:\/\/[^\/]+\/(?:anime\/)?/i, '')
-          .replace(/-(?:\d+)-bolum.*$/i, '')
-          .replace(/-izle.*$/i, '')
-          .replace(/^\/+|\/+$/g, '')
-          .trim();
-
-        if (slug) {
-          title = slug
-            .replace(/-/g, ' ')
-            .replace(/\b(izle|turkce|altyazi|altyazili|dublaj|dublajli|full|hd)\b/gi, '')
-            .replace(/\b(\d+)\.?\s*sezon\b/gi, 'Season $1')
-            .replace(/\bsezon\b/gi, 'Season')
-            .replace(/\b(\d+)\.?\s*kisim\b/gi, 'Part $1')
-            .replace(/\bkisim\b/gi, 'Part')
-            .replace(/\bbolum\b/gi, 'Episode')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .replace(/\b\w/g, c => c.toUpperCase());
-        }
-      } catch (e) {}
-    }
-
-    return title || rawTitle || '';
-  };
 
   // Animation and Season Cache
   const useRefValue = useRef(new Animated.Value(0));
@@ -234,24 +179,58 @@ export default function AnimeDetailScreen({ route, navigation }) {
         };
       } else {
         const targetTitle = anime?.orijinal_ad || anime?.anime_title || initialTitle;
-        console.log('[Detail] 0 episodes found. Triggering client-side self-heal for:', targetTitle);
-        const healResult = await selfHealAnime(activeMongoId, anime?.tranimeizle_slug, targetTitle);
-        if (!cancelled) {
-          if (healResult?.success && healResult?.data?.episodes) {
-            const healedEps = Object.keys(healResult.data.episodes).map(key => ({
-              _id: `${healResult.data._id}_${key}`,
-              episode_number: parseInt(key, 10),
-              episode_title: `${key}. Bölüm`,
-              url: healResult.data.episodes[key]
-            })).sort((a, b) => a.episode_number - b.episode_number);
-            setEpisodes(healedEps);
-            seasonCacheRef.current[activeMongoId] = {
-              ...(seasonCacheRef.current[activeMongoId] || {}),
-              episodes: healedEps
-            };
-          } else if (!cached) {
-            setEpisodes([]);
+        console.log('[Detail] 0 episodes found. Triggering on-demand client resolution for:', targetTitle);
+        
+        // 1. Primary: On-demand client resolution using mobile IP (No .click, no bot lock)
+        let resolvedOnClient = false;
+        try {
+          const matchInfo = {
+            orijinal_ad: targetTitle,
+            title_romaji: anime?.title_romaji || targetTitle,
+            title_english: anime?.title_english || anime?.title_en,
+            synonyms: anime?.synonyms,
+            seasonNumber: anime?.season_number || 1,
+            seasonYear: anime?.seasonYear
+          };
+          const resolvedUrl = await searchTranimeizleMatch(matchInfo);
+          if (resolvedUrl) {
+            const rawEps = await fetchEpisodesForAnime(resolvedUrl);
+            if (rawEps && rawEps.length > 0) {
+              const formattedEps = rawEps.map(ep => ({
+                _id: `${activeMongoId || 'ep'}_${ep.number}`,
+                episode_number: ep.number,
+                episode_title: ep.title,
+                url: ep.url
+              }));
+              if (!cancelled) {
+                setEpisodes(formattedEps);
+                seasonCacheRef.current[activeMongoId] = {
+                  ...(seasonCacheRef.current[activeMongoId] || {}),
+                  episodes: formattedEps
+                };
+              }
+              resolvedOnClient = true;
+
+              // Silently sync to MongoDB cache in background
+              syncAnimeCacheApi({
+                anilist_id: anime?.anilist_id,
+                anime_title: targetTitle,
+                cover_image: anime?.coverImage || anime?.poster || anime?.cover_image,
+                banner_image: anime?.bannerImage || anime?.banner,
+                genres: anime?.genres,
+                description: anime?.synopsis || anime?.description,
+                episodes: formattedEps,
+                tranimeizle_url: resolvedUrl
+              }).catch(() => {});
+            }
           }
+        } catch (clientResolverErr) {
+          console.warn('[Detail] Client-side on-demand resolution failed:', clientResolverErr.message);
+        }
+
+        // 2. Fallback: If not resolved on client and not cached, empty list
+        if (!resolvedOnClient && !cached) {
+          setEpisodes([]);
         }
         setLoadingEpisodes(false);
       }
@@ -315,184 +294,6 @@ export default function AnimeDetailScreen({ route, navigation }) {
     }
   };
 
-  const handlePosterTap = () => {
-    const nextCount = posterTapCount + 1;
-    setPosterTapCount(nextCount);
-    if (posterTapTimerRef.current) clearTimeout(posterTapTimerRef.current);
-    posterTapTimerRef.current = setTimeout(() => {
-      setPosterTapCount(0);
-    }, 2500);
-
-    if (nextCount >= 5) {
-      setPosterTapCount(0);
-      setLastErrorMessage(null);
-      setIsFixModalVisible(true);
-    }
-  };
-
-  const handleCopyError = async () => {
-    if (lastErrorMessage) {
-      try {
-        await Clipboard.setStringAsync(String(lastErrorMessage));
-        showAlert('Kopyalandı 📋', 'Hata kodu panoya kopyalandı.');
-      } catch (err) {
-        console.warn('Clipboard copy error:', err);
-      }
-    }
-  };
-
-  const handleManualScrape = () => {
-    setIsFixing(true);
-    setFixStatusText('Sayfadaki bölümler taranıp ayıklanıyor...');
-    setLastErrorMessage(null);
-    clientWebViewRef.current?.injectJavaScript('window.clofthelTriggerScrape ? window.clofthelTriggerScrape() : null; true;');
-  };
-
-  const handleFixOrAddSeason = async () => {
-    if (fixMode === 'add_season' && !targetSeasonNum.trim()) {
-      showAlert('Uyarı', 'Lütfen eklemek istediğiniz sezon numarasını girin (Örn: 2).');
-      return;
-    }
-
-    setLastErrorMessage(null);
-    setIsFixing(true);
-    setFixStatusText(fixMode === 'add_season' ? 'Yeni sezon istemci tarayıcısında açılıyor...' : 'Mevcut sezon istemci tarayıcısında açılıyor...');
-
-    const resolvedUrl = resolveTargetTranimeizleUrl(
-      customUrl.trim() || mainTitleEn,
-      fixMode === 'add_season' ? parseInt(targetSeasonNum, 10) : null
-    );
-
-    if (!resolvedUrl) {
-      const err = 'Geçerli bir link veya arama sorgusu oluşturulamadı.';
-      showAlert('Hata', err);
-      setLastErrorMessage(err);
-      setIsFixing(false);
-      return;
-    }
-
-    setFixStatusText('Sayfa cihazınızda taranıyor...');
-    setClientScrapeUrl(resolvedUrl);
-  };
-
-  const executeSaveScrapedData = async (scraped, customTitleToUse = null) => {
-    const finalTitle = customTitleToUse || animeTitleInput.trim() || extractCleanTitleFromUrl(scraped?.url || clientScrapeUrl, scraped?.title);
-    setFixStatusText(`"${finalTitle}" için ${scraped.totalEpisodes} bölüm ve AniList verileri kaydediliyor...`);
-    setIsFixing(true);
-
-    const saveRes = await clientAddAnimeApi({
-      parsedData: {
-        ...scraped,
-        customTitle: finalTitle
-      },
-      mode: fixMode,
-      targetAnimeId: activeMongoId,
-      targetSeasonNumber: fixMode === 'add_season' ? parseInt(targetSeasonNum, 10) : null,
-      totalEpisodesOverride: totalEpisodesInput.trim() ? parseInt(totalEpisodesInput, 10) : null
-    });
-
-    if (saveRes?.success) {
-      showAlert('Başarılı 🚀', saveRes.message || `"${finalTitle}" başarıyla güncellendi ve AniList ile senkronize edildi!`);
-      setIsFixModalVisible(false);
-      setIsFullScreenBrowser(false);
-      setCustomUrl('');
-      setAnimeTitleInput('');
-      setTargetSeasonNum('');
-      setTotalEpisodesInput('');
-      setClientScrapeUrl(null);
-      setLastErrorMessage(null);
-      setIsFixing(false);
-
-      // Re-fetch detail to reload seasons & episodes immediately
-      const updated = await fetchAnimeDetail(activeMongoId);
-      if (updated) {
-        setAnime(updated);
-        if (updated.seasons && updated.seasons.length > 0) setSeasons(updated.seasons);
-        if (updated.related_movies_or_ovas) setRelatedMoviesOvas(updated.related_movies_or_ovas);
-        if (updated.episodes) {
-          const epArray = Object.keys(updated.episodes).map(k => ({
-            episode_number: parseInt(k, 10),
-            episode_title: `${k}. Bölüm`,
-            url: updated.episodes[k]
-          })).sort((a, b) => a.episode_number - b.episode_number);
-          setEpisodes(epArray);
-        }
-      }
-    } else {
-      const err = saveRes?.error || 'Kaydetme sırasında bir hata oluştu.';
-      showAlert('Kayıt Hatası', err);
-      setLastErrorMessage(err);
-      setIsFixing(false);
-    }
-  };
-
-  const handleClientScraperMessage = async (event) => {
-    try {
-      const data = JSON.parse(event.nativeEvent.data);
-
-      if (data.type === 'page_navigated') {
-        setFixStatusText(`Sayfa yüklendi: ${data.url || ''}`);
-        // Auto extract title from page URL if title input is empty
-        if (!animeTitleInput.trim()) {
-          const autoTitle = extractCleanTitleFromUrl(data.url);
-          if (autoTitle) setAnimeTitleInput(autoTitle);
-        }
-      } else if (data.type === 'cloudflare_detected') {
-        setFixStatusText('Cloudflare doğrulaması tespit edildi! Lütfen ekrandaki doğrulama kutusuna dokunun.');
-        setIsFullScreenBrowser(true);
-      } else if (data.type === 'scraper_waiting') {
-        setFixStatusText(`Bölümler aranıyor (Deneme ${data.retry || 1}/6)...`);
-      } else if (data.type === 'search_result_found') {
-        setFixStatusText(`Anime sayfası bulundu, yönlendiriliyor...`);
-      } else if (data.type === 'anime_overview_scraped') {
-        const scraped = data.data;
-        if (!scraped || Object.keys(scraped.episodes || {}).length === 0) {
-          const err = 'Sayfadan bölüm bilgisi otomatik bulunamadı. Lütfen tam ekranda sayfayı açıp kontrol edin veya "Ayıkla & Kaydet" butonuna basın.';
-          setLastErrorMessage(err);
-          setIsFixing(false);
-          return;
-        }
-
-        const candidateTitle = animeTitleInput.trim() || extractCleanTitleFromUrl(scraped?.url || clientScrapeUrl, scraped?.title);
-        if (!animeTitleInput.trim() && candidateTitle) {
-          setAnimeTitleInput(candidateTitle);
-        }
-
-        // Prevent duplicate alert stacking
-        if (isAlertOpenRef.current) return;
-        isAlertOpenRef.current = true;
-
-        // Confirm Anime Title & AniList Sync with user
-        showAlert(
-          'Anime İsmi & AniList Onayı 🏷️',
-          `Ayıklanan Anime Başlığı:\n"${candidateTitle}"\n\nBu isimle kaydedilip AniList ID ve bilgileri güncellensin mi?`,
-          [
-            { 
-              text: 'İptal / Değiştir', 
-              style: 'cancel',
-              onPress: () => {
-                isAlertOpenRef.current = false;
-                setIsFixing(false);
-              }
-            },
-            { 
-              text: '⚡ Evet, Kaydet', 
-              onPress: () => {
-                isAlertOpenRef.current = false;
-                executeSaveScrapedData(scraped, candidateTitle);
-              }
-            }
-          ]
-        );
-      } else if (data.type === 'scraper_error') {
-        setLastErrorMessage(`[WebView Scraper error]: ${data.error}`);
-        setIsFixing(false);
-      }
-    } catch (err) {
-      console.warn('[AnimeDetailScreen client scraper] Parse error:', err);
-      setLastErrorMessage(`[JSON Parse error]: ${err.message}`);
-    }
-  };
 
   // ── Derived dynamic values ───────────────────────────────────
   const mainTitleEn = anime?.title || anime?.anime_title || initialTitle || 'Loading...';
@@ -604,7 +405,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
           {/* Poster + Title overlay */}
           <View style={styles.headerOverlay}>
-            <TouchableOpacity activeOpacity={0.85} onPress={handlePosterTap}>
+            <View>
               {coverImage ? (
                 <Image source={{ uri: coverImage }} style={styles.posterImage} contentFit="cover" />
               ) : (
@@ -612,7 +413,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
                   <Ionicons name="image-outline" size={40} color={COLORS.textMuted} />
                 </View>
               )}
-            </TouchableOpacity>
+            </View>
 
             <View style={styles.titleContainer}>
               <Text style={styles.mainTitle} numberOfLines={3}>{mainTitleEn}</Text>
@@ -753,15 +554,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
           ) : episodes.length === 0 ? (
             <View style={styles.emptyContainer}>
               <Ionicons name="videocam-off-outline" size={40} color={COLORS.textMuted} />
-              <Text style={styles.emptyText}>Bu seçim için bölüm bulunamadı.</Text>
-              <TouchableOpacity
-                style={styles.emptyHealButton}
-                onPress={() => setIsFixModalVisible(true)}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="sparkles-outline" size={18} color="#000" style={{ marginRight: 6 }} />
-                <Text style={styles.emptyHealButtonText}>Animeyi Otomatik Tara & Düzelt</Text>
-              </TouchableOpacity>
+              <Text style={styles.emptyText}>Bu sezon için henüz oynatılabilir bölüm bulunamadı.</Text>
             </View>
           ) : (
             <Animated.View style={{ opacity: fadeAnim }}>
@@ -815,295 +608,6 @@ export default function AnimeDetailScreen({ route, navigation }) {
             )}
           </View>
         </TouchableOpacity>
-      </Modal>
-
-      {/* ── Fix & Add Season Modal ────────────────────── */}
-      <Modal
-        visible={isFixModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => !isFixing && setIsFixModalVisible(false)}
-      >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => !isFixing && setIsFixModalVisible(false)}
-        >
-          <TouchableOpacity activeOpacity={1} style={styles.fixModalCard}>
-            <View style={styles.fixModalHeader}>
-              <Ionicons name="construct-outline" size={24} color={COLORS.accent} style={{ marginRight: 8 }} />
-              <Text style={styles.modalTitle}>Anime & Sezon Yönetimi</Text>
-            </View>
-
-            {/* Mode Switcher Tabs */}
-            <View style={styles.fixTabRow}>
-              <TouchableOpacity
-                style={[styles.fixTabBtn, fixMode === 'fix_season' && styles.fixTabBtnActive]}
-                onPress={() => setFixMode('fix_season')}
-                disabled={isFixing}
-              >
-                <Ionicons name="sync-outline" size={16} color={fixMode === 'fix_season' ? '#000' : COLORS.textMuted} style={{ marginRight: 6 }} />
-                <Text style={[styles.fixTabText, fixMode === 'fix_season' && styles.fixTabTextActive]}>Sezonu Düzelt</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.fixTabBtn, fixMode === 'add_season' && styles.fixTabBtnActive]}
-                onPress={() => setFixMode('add_season')}
-                disabled={isFixing}
-              >
-                <Ionicons name="add-circle-outline" size={16} color={fixMode === 'add_season' ? '#000' : COLORS.textMuted} style={{ marginRight: 6 }} />
-                <Text style={[styles.fixTabText, fixMode === 'add_season' && styles.fixTabTextActive]}>Yeni Sezon Ekle</Text>
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.fixHelpText}>
-              {fixMode === 'add_season'
-                ? 'Bu animeye yeni bir sezon eklemek için linki veya sezon numarasını girin. Link girilmezse anime adı ve sezon numarası otomatik taranacaktır.'
-                : 'Mevcut sezonun linklerini ve bölümlerini yenilemek için linki yapıştırın veya boş bırakarak otomatik onarımı başlatın.'}
-            </Text>
-
-            {/* Season Number Input (Only for Add Season) */}
-            {fixMode === 'add_season' && (
-              <View style={styles.fixInputGroup}>
-                <Text style={styles.fixInputLabel}>Sezon Numarası (Örn: 2, 3)</Text>
-                <TextInput
-                  style={styles.fixTextInput}
-                  placeholder="Örn: 2"
-                  placeholderTextColor={COLORS.textMuted}
-                  value={targetSeasonNum}
-                  onChangeText={setTargetSeasonNum}
-                  keyboardType="numeric"
-                  editable={!isFixing}
-                />
-              </View>
-            )}
-
-            {/* Anime Title / AniList Name Input */}
-            <View style={styles.fixInputGroup}>
-              <Text style={styles.fixInputLabel}>Anime Adı (AniList ve Veritabanı Başlığı)</Text>
-              <TextInput
-                style={styles.fixTextInput}
-                placeholder="Örn: Solo Leveling Season 2"
-                placeholderTextColor={COLORS.textMuted}
-                value={animeTitleInput}
-                onChangeText={setAnimeTitleInput}
-                autoCapitalize="words"
-                editable={!isFixing}
-              />
-            </View>
-
-            {/* Tranimeizle URL Input */}
-            <View style={styles.fixInputGroup}>
-              <Text style={styles.fixInputLabel}>Tranimeizle Linki (İsteğe Bağlı)</Text>
-              <TextInput
-                style={styles.fixTextInput}
-                placeholder="https://www.tranimeizle.io/anime/..."
-                placeholderTextColor={COLORS.textMuted}
-                value={customUrl}
-                onChangeText={(text) => {
-                  setCustomUrl(text);
-                  const extracted = extractCleanTitleFromUrl(text);
-                  if (extracted) {
-                    setAnimeTitleInput(extracted);
-                  }
-                }}
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!isFixing}
-              />
-            </View>
-
-            {/* Total Episodes Override Input */}
-            <View style={styles.fixInputGroup}>
-              <Text style={styles.fixInputLabel}>Toplam Bölüm Sayısı (İsteğe Bağlı)</Text>
-              <TextInput
-                style={styles.fixTextInput}
-                placeholder="Örn: 12 veya 24 (Zorlama için)"
-                placeholderTextColor={COLORS.textMuted}
-                value={totalEpisodesInput}
-                onChangeText={setTotalEpisodesInput}
-                keyboardType="numeric"
-                editable={!isFixing}
-              />
-            </View>
-
-            {/* Status Progress */}
-            {isFixing && (
-              <View style={styles.fixProgressBox}>
-                <ActivityIndicator size="small" color={COLORS.accent} style={{ marginRight: 10 }} />
-                <Text style={styles.fixProgressText}>{fixStatusText}</Text>
-              </View>
-            )}
-
-            {/* Live WebView Browser Preview */}
-            {Platform.OS !== 'web' && WebView && clientScrapeUrl && (
-              <View style={styles.liveBrowserBox}>
-                <View style={styles.liveBrowserHeader}>
-                  <Ionicons name="globe-outline" size={14} color={COLORS.accent} style={{ marginRight: 6 }} />
-                  <Text style={styles.liveBrowserTitle} numberOfLines={1}>
-                    {clientScrapeUrl}
-                  </Text>
-                  <TouchableOpacity 
-                    style={styles.browserMiniActionBtn}
-                    onPress={() => clientWebViewRef.current?.reload()}
-                  >
-                    <Ionicons name="reload" size={13} color="#FFF" />
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={styles.browserMiniActionBtn}
-                    onPress={handleManualScrape}
-                  >
-                    <Ionicons name="flash" size={13} color={COLORS.accent} />
-                    <Text style={styles.browserMiniActionText}>Ayıkla</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={styles.browserMiniExpandBtn}
-                    onPress={() => setIsFullScreenBrowser(true)}
-                  >
-                    <Ionicons name="scan-outline" size={13} color="#FFF" />
-                    <Text style={styles.browserMiniExpandText}>Tam Ekran</Text>
-                  </TouchableOpacity>
-                </View>
-                <View style={styles.liveBrowserWebViewContainer}>
-                  <WebView
-                    ref={clientWebViewRef}
-                    source={{ uri: clientScrapeUrl }}
-                    injectedJavaScriptBeforeContentLoaded={animePageScraperInjectedJs}
-                    injectedJavaScript={animePageScraperInjectedJs}
-                    onLoadEnd={() => {
-                      clientWebViewRef.current?.injectJavaScript('window.clofthelTriggerScrape ? window.clofthelTriggerScrape() : null; true;');
-                    }}
-                    onMessage={handleClientScraperMessage}
-                    javaScriptEnabled={true}
-                    domStorageEnabled={true}
-                    mixedContentMode="always"
-                    mediaPlaybackRequiresUserAction={false}
-                    setSupportMultipleWindows={false}
-                    onError={(e) => {
-                      const err = `WebView Error: ${e.nativeEvent.description || 'Yükleme hatası'}`;
-                      console.warn('[AnimeDetailScreen client scraper] WebView error:', err);
-                      setFixStatusText(err);
-                      setLastErrorMessage(err);
-                      setIsFixing(false);
-                    }}
-                  />
-                </View>
-              </View>
-            )}
-
-            {/* Error Display with Copy Button */}
-            {lastErrorMessage && (
-              <View style={styles.errorBox}>
-                <View style={styles.errorHeader}>
-                  <Ionicons name="alert-circle" size={18} color={COLORS.error} style={{ marginRight: 6 }} />
-                  <Text style={styles.errorTitle}>Hata / Bildirim</Text>
-                </View>
-                <Text style={styles.errorContent} selectable={true}>
-                  {lastErrorMessage}
-                </Text>
-                <TouchableOpacity style={styles.copyErrorBtn} onPress={handleCopyError} activeOpacity={0.8}>
-                  <Ionicons name="copy-outline" size={15} color="#FFF" style={{ marginRight: 6 }} />
-                  <Text style={styles.copyErrorBtnText}>Hata Kodunu Kopyala</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* Modal Action Buttons */}
-            <View style={styles.fixModalActions}>
-              <TouchableOpacity
-                style={styles.fixCancelBtn}
-                onPress={() => {
-                  setIsFixModalVisible(false);
-                  setClientScrapeUrl(null);
-                  setLastErrorMessage(null);
-                  setIsFullScreenBrowser(false);
-                }}
-                disabled={isFixing}
-              >
-                <Text style={styles.fixCancelBtnText}>Kapat</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.fixSubmitBtn, isFixing && styles.fixSubmitBtnDisabled]}
-                onPress={handleFixOrAddSeason}
-                disabled={isFixing}
-              >
-                <Text style={styles.fixSubmitBtnText}>
-                  {fixMode === 'add_season' ? 'Sezonu Ekle & Tara' : 'Sezonu Tara & Düzelt'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* ── Full-Screen In-App Browser Modal ──────────────── */}
-      <Modal 
-        visible={isFullScreenBrowser && !!clientScrapeUrl} 
-        animationType="slide" 
-        transparent={false}
-        onRequestClose={() => setIsFullScreenBrowser(false)}
-      >
-        <SafeAreaView style={styles.fullScreenBrowserContainer}>
-          <View style={styles.fullScreenBrowserHeader}>
-            <TouchableOpacity 
-              style={styles.browserHeaderBtn} 
-              onPress={() => setIsFullScreenBrowser(false)}
-            >
-              <Ionicons name="chevron-down" size={22} color="#FFF" />
-              <Text style={styles.browserHeaderBtnText}>Küçült</Text>
-            </TouchableOpacity>
-
-            <Text style={styles.fullScreenBrowserUrl} numberOfLines={1}>
-              {clientScrapeUrl}
-            </Text>
-
-            <TouchableOpacity 
-              style={styles.browserHeaderBtn} 
-              onPress={() => clientWebViewRef.current?.reload()}
-            >
-              <Ionicons name="reload" size={18} color="#FFF" />
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              style={styles.browserExtractBtn} 
-              onPress={handleManualScrape}
-              disabled={isFixing}
-            >
-              <Ionicons name="flash" size={15} color="#000" style={{ marginRight: 4 }} />
-              <Text style={styles.browserExtractBtnText}>Ayıkla & Kaydet</Text>
-            </TouchableOpacity>
-          </View>
-
-          {isFixing && (
-            <View style={styles.browserTopStatusBar}>
-              <ActivityIndicator size="small" color={COLORS.accent} style={{ marginRight: 8 }} />
-              <Text style={styles.browserTopStatusText}>{fixStatusText}</Text>
-            </View>
-          )}
-
-          <View style={{ flex: 1, backgroundColor: '#000' }}>
-            <WebView
-              ref={clientWebViewRef}
-              source={{ uri: clientScrapeUrl }}
-              injectedJavaScriptBeforeContentLoaded={animePageScraperInjectedJs}
-              injectedJavaScript={animePageScraperInjectedJs}
-              onMessage={handleClientScraperMessage}
-              javaScriptEnabled={true}
-              domStorageEnabled={true}
-              mixedContentMode="always"
-              mediaPlaybackRequiresUserAction={false}
-              setSupportMultipleWindows={false}
-              onError={(e) => {
-                const err = `WebView Error: ${e.nativeEvent.description || 'Yükleme hatası'}`;
-                console.warn('[AnimeDetailScreen full browser] WebView error:', err);
-                setFixStatusText(err);
-                setLastErrorMessage(err);
-                setIsFixing(false);
-              }}
-            />
-          </View>
-        </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );

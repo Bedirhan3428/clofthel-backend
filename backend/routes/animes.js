@@ -1731,20 +1731,7 @@ router.get('/:id/episodes', async (req, res, next) => {
       source_url: epsMap[key],
     })).sort((a, b) => a.episode_number - b.episode_number);
 
-    // If 0 episodes found, trigger On-Demand Self-Healing to scrape main anime overview page
-    if (formattedEpisodes.length === 0) {
-      console.log(`[Episodes Route] 0 episodes found for ${anime.tranimeizle_slug}. Triggering On-Demand Self-Healing...`);
-      const healed = await fetchAndHealAnime(anime.tranimeizle_slug || anime.tranimeizle_url, anime._id, anime.orijinal_ad);
-      if (healed && healed.episodes) {
-        const healedMap = healed.episodes;
-        formattedEpisodes = Object.keys(healedMap).map(key => ({
-          _id: `${healed._id}_${key}`,
-          episode_number: parseInt(key) || 1,
-          episode_title: `Bölüm ${key}`,
-          source_url: healedMap[key],
-        })).sort((a, b) => a.episode_number - b.episode_number);
-      }
-    }
+
 
     // If it's a Movie or Single-episode content with no parsed episodes map, return a single episode pointing to the main url
     // BUT only for genuinely single-content entries (movies, OVAs, specials), NOT root series pages
@@ -2247,316 +2234,105 @@ router.get('/:id/stream-data', async (req, res, next) => {
  * POST /api/animes/reload-orchestrator
  * Reloads the orchestrator state from MongoDB into the server's cache immediately.
  */
-/**
- * POST /api/animes/self-heal
- * Triggers on-demand background scrape and sync of main anime overview page
- */
-const { fetchAndHealAnime, saveScrapedAnimeData, parseAnimeMainPageHtml, fixOrAddAnimeSeason } = require('../utils/animeSelfHealer');
 
-router.post('/self-heal', async (req, res) => {
-  try {
-    const { animeId, slug, title, url } = req.body;
-    console.log(`[POST /api/animes/self-heal] Request for animeId: ${animeId}, slug: ${slug}, title: ${title}`);
-
-    let healedDoc = await fetchAndHealAnime(slug || url, animeId, title);
-
-    if (healedDoc) {
-      await loadOrchestratorMap();
-      return res.json({
-        success: true,
-        message: 'Anime başarıyla tarandı ve veritabanına kaydedildi.',
-        data: healedDoc
-      });
-    }
-
-    res.status(404).json({ success: false, message: 'Anime ana sayfası taranamadı veya bulunamadı.' });
-  } catch (err) {
-    console.error('[POST /api/animes/self-heal] Error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 /**
- * POST /api/animes/:id/fix-season
- * Allows user to Fix Current Season or Add a New Season with title verification and last episode check
+ * POST /api/animes/cache-sync
+ * Lightweight sync endpoint called by mobile client when on-demand AniList/Tranimeizle
+ * resolver discovers or resolves episodes. Saves/updates MongoDB cache asynchronously.
  */
-router.post('/:id/fix-season', async (req, res) => {
+router.post('/cache-sync', async (req, res) => {
   try {
-    const { id } = req.params;
-    const { url, mode, targetSeasonNumber, totalEpisodes, searchTitle } = req.body;
+    const {
+      anilist_id,
+      anime_title,
+      cover_image,
+      banner_image,
+      genres,
+      episodes,
+      tranimeizle_slug,
+      tranimeizle_url,
+      description
+    } = req.body;
 
-    console.log(`[POST /api/animes/:id/fix-season] Action on Anime ${id} | Mode: ${mode || 'fix_season'} | Target Season: ${targetSeasonNumber || 'N/A'}`);
-
-    const result = await fixOrAddAnimeSeason({
-      currentAnimeId: id,
-      url: url || null,
-      mode: mode || 'fix_season',
-      targetSeasonNumber: targetSeasonNumber ? parseInt(targetSeasonNumber, 10) : null,
-      totalEpisodesOverride: totalEpisodes ? parseInt(totalEpisodes, 10) : null,
-      searchTitle: searchTitle || ''
-    });
-
-    await loadOrchestratorMap();
-
-    res.json(result);
-  } catch (err) {
-    console.error(`[POST /api/animes/:id/fix-season] Error:`, err.message);
-    res.status(400).json({
-      success: false,
-      error: err.message || 'Anime sezon işlemi tamamlanamadı.'
-    });
-  }
-});
-
-/**
- * GET /api/animes/check-exists
- * Checks if an anime exists in database by slug, URL, or title
- */
-router.get('/check-exists', async (req, res) => {
-  try {
-    const { slug, title, url } = req.query;
-    let cleanSlug = '';
-
-    if (url) {
-      cleanSlug = url.replace(/^https?:\/\/[^\/]+\/(?:anime\/)?/i, '').replace(/-izle$/i, '').trim();
-    } else if (slug) {
-      cleanSlug = slug.replace(/^anime\//i, '').replace(/-izle$/i, '').trim();
+    if (!anime_title && !anilist_id && !tranimeizle_slug) {
+      return res.status(400).json({ success: false, message: 'Missing required identifier (anilist_id, anime_title, or tranimeizle_slug)' });
     }
 
-    const queryConditions = [];
-    if (cleanSlug) {
-      queryConditions.push({ tranimeizle_slug: cleanSlug });
-      queryConditions.push({ tranimeizle_slug: `${cleanSlug}-izle` });
-    }
-    if (title) {
-      queryConditions.push({ orijinal_ad: new RegExp(`^${title.trim()}$`, 'i') });
-      queryConditions.push({ anime_title: new RegExp(`^${title.trim()}$`, 'i') });
-    }
+    const query = [];
+    if (anilist_id) query.push({ anilist_id: parseInt(anilist_id, 10) });
+    if (tranimeizle_slug) query.push({ tranimeizle_slug });
+    if (anime_title) query.push({ orijinal_ad: new RegExp(`^${anime_title.trim()}$`, 'i') });
 
-    if (queryConditions.length === 0) {
-      return res.json({ exists: false });
-    }
+    let anime = await Anime.findOne({ $or: query });
 
-    const found = await Anime.findOne({ $or: queryConditions }).lean();
-    if (found) {
-      return res.json({
-        exists: true,
-        anime: {
-          _id: found._id,
-          title: found.orijinal_ad || found.anime_title || formatSlugToTitle(found.tranimeizle_slug),
-          total_episodes: found.total_episodes || (found.episodes ? Object.keys(found.episodes).length : 0),
-          format: found.format,
-          tranimeizle_slug: found.tranimeizle_slug,
-          cover_image: found.cover_image
-        }
-      });
-    }
+    if (anime) {
+      // Merge episodes if provided
+      if (Array.isArray(episodes) && episodes.length > 0) {
+        if (!anime.episodes) anime.episodes = new Map();
 
-    res.json({ exists: false });
-  } catch (err) {
-    console.error('[GET /api/animes/check-exists] Error:', err.message);
-    res.status(500).json({ exists: false, error: err.message });
-  }
-});
+        episodes.forEach(ep => {
+          const epKey = String(ep.number || ep.episode || '1');
+          const existing = anime.episodes.get ? anime.episodes.get(epKey) : anime.episodes[epKey];
+          const newEpData = {
+            title: ep.title || existing?.title || `${epKey}. Bölüm`,
+            source_url: ep.url || existing?.source_url || '',
+            stream_url: ep.stream_url || existing?.stream_url || '',
+            fansub: ep.fansub || existing?.fansub || null,
+          };
 
-/**
- * POST /api/animes/client-add-anime
- * Receives completely client-scraped structured anime data and persists to MongoDB Atlas & Orchestrator
- */
-router.post('/client-add-anime', async (req, res) => {
-  try {
-    const { parsedData, mode, targetAnimeId, targetSeasonNumber, totalEpisodesOverride } = req.body;
-    if (!parsedData || !parsedData.episodes || Object.keys(parsedData.episodes).length === 0) {
-      return res.status(400).json({ success: false, error: 'Geçerli bölüm verisi bulunamadı.' });
-    }
-
-    console.log(`[POST /api/animes/client-add-anime] Saving client-scraped anime "${parsedData.title}" (Mode: ${mode || 'new_anime'}, Season: ${targetSeasonNumber || '1'})`);
-
-    if (totalEpisodesOverride && parseInt(totalEpisodesOverride, 10) > 0) {
-      parsedData.totalEpisodes = parseInt(totalEpisodesOverride, 10);
-    }
-
-    const savedDoc = await saveScrapedAnimeData(
-      parsedData,
-      mode === 'fix_season' ? targetAnimeId : null,
-      targetSeasonNumber
-    );
-
-    await loadOrchestratorMap();
-
-    res.json({
-      success: true,
-      message: mode === 'add_season'
-        ? `Sezon ${targetSeasonNumber || 'yeni'} başarıyla kaydedildi!`
-        : (mode === 'fix_season' ? 'Anime sezonu başarıyla güncellendi!' : 'Yeni anime başarıyla veritabanına eklendi!'),
-      totalEpisodes: Object.keys(parsedData.episodes).length,
-      data: savedDoc
-    });
-  } catch (err) {
-    console.error('[POST /api/animes/client-add-anime] Error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * POST /api/animes/sync-scraped-page
- * Receives raw HTML of anime overview page from client-side WebView scraper and saves to DB & Orchestrator
- */
-router.post('/sync-scraped-page', async (req, res) => {
-  try {
-    const { html, url, slug, animeId } = req.body;
-    if (!html) {
-      return res.status(400).json({ success: false, error: 'HTML içeriği gerekli.' });
-    }
-
-    console.log(`[POST /api/animes/sync-scraped-page] Parsing scraped HTML for animeId: ${animeId}, slug: ${slug}`);
-    const parsed = parseAnimeMainPageHtml(html, slug || '');
-
-    if (!parsed || Object.keys(parsed.episodes || {}).length === 0) {
-      return res.status(422).json({ success: false, error: 'HTML içinden bölüm listesi ayıklanamadı.' });
-    }
-
-    const savedDoc = await saveScrapedAnimeData(parsed, animeId);
-    await loadOrchestratorMap();
-
-    res.json({
-      success: true,
-      message: 'Bölümler ve anime bilgisi başarıyla veritabanına ve orkestraya kaydedildi.',
-      totalEpisodes: Object.keys(parsed.episodes).length,
-      data: savedDoc
-    });
-  } catch (err) {
-    console.error('[POST /api/animes/sync-scraped-page] Error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * POST /api/animes/client-ingest-batch
- * Open endpoint for client-side scraper browser to ingest an entire batch of episodes from list pages
- */
-router.post('/client-ingest-batch', async (req, res) => {
-  try {
-    const { items } = req.body;
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ success: false, error: 'En az bir bölüm öğesi gerekli.' });
-    }
-
-    console.log(`[POST /api/animes/client-ingest-batch] Ingesting ${items.length} items from client scraper...`);
-    let newEpisodesCount = 0;
-    let updatedAnimesCount = 0;
-    let newAnimesCount = 0;
-
-    for (const item of items) {
-      const { href, title: rawTitle } = item;
-      if (!href) continue;
-
-      const epMatch = href.match(/^\/(.*?)-(\d+)-bolum(?:-izle)?$/i);
-      let baseSlug = null;
-      let episodeNum = null;
-
-      if (epMatch) {
-        baseSlug = epMatch[1];
-        episodeNum = parseInt(epMatch[2], 10);
-      } else {
-        const movieMatch = href.match(/^\/(.*?-izle)$/i);
-        if (movieMatch) {
-          baseSlug = movieMatch[1].replace(/-izle$/, '');
-          episodeNum = 1;
-        } else {
-          continue;
-        }
-      }
-
-      const animeSlug = `${baseSlug}-izle`;
-      const fullEpisodeUrl = href.startsWith('http') ? href : `https://www.tranimeizle.io${href}`;
-      const animeTrUrl = `https://www.tranimeizle.io/${animeSlug}`;
-
-      let anime = await Anime.findOne({
-        $or: [
-          { tranimeizle_slug: animeSlug },
-          { tranimeizle_slug: baseSlug },
-          { tranimeizle_url: animeTrUrl }
-        ]
-      });
-
-      if (anime) {
-        const eps = anime.episodes || {};
-        if (!eps[String(episodeNum)]) {
-          eps[String(episodeNum)] = fullEpisodeUrl;
-          anime.episodes = eps;
-          anime.total_episodes = Math.max(anime.total_episodes || 0, episodeNum);
-          anime.markModified('episodes');
-          await anime.save();
-          newEpisodesCount++;
-          updatedAnimesCount++;
-        }
-      } else {
-        // Create new anime with AniList sync
-        const cleanGuess = baseSlug
-          .replace(/-/g, ' ')
-          .replace(/\b(izle|turkce|altyazi|dublaj|full|hd)\b/gi, '')
-          .replace(/\bsezon\b/gi, 'Season')
-          .replace(/\bbolum\b/gi, 'Episode')
-          .replace(/\s+/g, ' ')
-          .trim();
-
-        let exactAniList = null;
-        try {
-          exactAniList = await resolveExactAniListId(cleanGuess, animeSlug);
-        } catch (e) {}
-
-        const newEpisodes = {};
-        newEpisodes[String(episodeNum)] = fullEpisodeUrl;
-
-        anime = new Anime({
-          tranimeizle_slug: animeSlug,
-          tranimeizle_url: animeTrUrl,
-          orijinal_ad: exactAniList?.title_en || cleanGuess,
-          format: exactAniList?.format || 'TV',
-          anilist_id: exactAniList?.anilist_id || null,
-          season_year: exactAniList?.season_year || null,
-          genres: exactAniList?.genres || [],
-          cover_image: exactAniList?.cover_image || null,
-          banner_image: exactAniList?.banner_image || null,
-          description: exactAniList?.description || null,
-          total_episodes: episodeNum,
-          episodes: newEpisodes
+          if (anime.episodes.set) {
+            anime.episodes.set(epKey, newEpData);
+          } else {
+            anime.episodes[epKey] = newEpData;
+          }
         });
 
-        await anime.save();
-        newAnimesCount++;
-        newEpisodesCount++;
-
-        // Sync to orchestrator
-        try {
-          await saveScrapedAnimeData({
-            title: exactAniList?.title_en || cleanGuess,
-            slug: animeSlug,
-            url: animeTrUrl,
-            totalEpisodes: episodeNum,
-            episodes: newEpisodes
-          }, anime._id);
-        } catch (syncErr) {
-          console.warn('[client-ingest-batch] Orchestrator sync warning:', syncErr.message);
-        }
+        anime.markModified('episodes');
+        anime.total_episodes = Math.max(anime.total_episodes || 0, episodes.length);
       }
+
+      if (anilist_id && !anime.anilist_id) anime.anilist_id = parseInt(anilist_id, 10);
+      if (cover_image && !anime.cover_image) anime.cover_image = cover_image;
+      if (banner_image && !anime.banner_image) anime.banner_image = banner_image;
+      if (tranimeizle_slug && !anime.tranimeizle_slug) anime.tranimeizle_slug = tranimeizle_slug;
+      if (tranimeizle_url && !anime.tranimeizle_url) anime.tranimeizle_url = tranimeizle_url;
+
+      await anime.save();
+      return res.json({ success: true, action: 'updated', anime_id: anime._id });
+    } else {
+      // Create new lightweight cache record
+      const episodesMap = {};
+      if (Array.isArray(episodes)) {
+        episodes.forEach(ep => {
+          const epKey = String(ep.number || ep.episode || '1');
+          episodesMap[epKey] = {
+            title: ep.title || `${epKey}. Bölüm`,
+            source_url: ep.url || '',
+            stream_url: ep.stream_url || '',
+            fansub: ep.fansub || null,
+          };
+        });
+      }
+
+      const newDoc = new Anime({
+        orijinal_ad: anime_title || 'Bilinmeyen Anime',
+        anilist_id: anilist_id ? parseInt(anilist_id, 10) : null,
+        tranimeizle_slug: tranimeizle_slug || null,
+        tranimeizle_url: tranimeizle_url || null,
+        cover_image: cover_image || null,
+        banner_image: banner_image || null,
+        genres: Array.isArray(genres) ? genres : [],
+        description: description || null,
+        total_episodes: Array.isArray(episodes) ? episodes.length : 0,
+        episodes: episodesMap
+      });
+
+      await newDoc.save();
+      return res.json({ success: true, action: 'created', anime_id: newDoc._id });
     }
-
-    await loadOrchestratorMap();
-
-    res.json({
-      success: true,
-      message: `${newEpisodesCount} yeni bölüm başarıyla işlendi! (${newAnimesCount} yeni anime, ${updatedAnimesCount} güncellenen)`,
-      stats: {
-        totalReceived: items.length,
-        newEpisodes: newEpisodesCount,
-        newAnimes: newAnimesCount,
-        updatedAnimes: updatedAnimesCount
-      }
-    });
   } catch (err) {
-    console.error('[POST /api/animes/client-ingest-batch] Error:', err.message);
+    console.error('[POST /api/animes/cache-sync] Error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });

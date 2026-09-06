@@ -15,6 +15,7 @@ import { Image } from 'expo-image';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS } from '../constants/theme';
 import { useAnimeDirectory } from '../context/AnimeDirectoryContext';
 import { AuthContext } from '../context/AuthContext';
+import { searchAnimes as searchAniList } from '../services/anilistService';
 
 // ── Format badge colors ────────────────────────────────────────
 const FORMAT_COLORS = {
@@ -34,6 +35,7 @@ export default function SearchScreen({ route, navigation }) {
   const { searchAnime, isLoading: directoryLoading } = useAnimeDirectory();
   const [query, setQuery] = useState(route?.params?.initialQuery || '');
   const [results, setResults] = useState([]);
+  const [isSearchingAniList, setIsSearchingAniList] = useState(false);
 
   useEffect(() => {
     if (route?.params?.initialQuery) {
@@ -41,27 +43,59 @@ export default function SearchScreen({ route, navigation }) {
     }
   }, [route?.params?.initialQuery]);
 
-  // ── Instant local search (zero network latency) ──────────────
+  // ── Combined Search: Instant Local + Real-time AniList GraphQL ──
   useEffect(() => {
-    if (!query.trim() || query.trim().length < 2) {
+    const trimmed = query.trim();
+    if (!trimmed || trimmed.length < 2) {
       setResults([]);
+      setIsSearchingAniList(false);
       return;
     }
 
-    if (query.trim().toLowerCase() === 'localapp') {
+    if (trimmed.toLowerCase() === 'localapp') {
       Linking.openURL('http://192.168.1.13:23504');
       return;
     }
 
-    // Synchronous fuzzy search — no debounce needed
-    const matches = searchAnime(query.trim());
-    setResults(matches);
+    // 1. Instant local search preview
+    const localMatches = searchAnime(trimmed);
+    setResults(localMatches);
+
+    // 2. Debounced AniList search
+    let cancelled = false;
+    setIsSearchingAniList(true);
+
+    const timer = setTimeout(async () => {
+      try {
+        const aniListMatches = await searchAniList(trimmed, 1, 25);
+        if (cancelled) return;
+
+        if (aniListMatches && aniListMatches.length > 0) {
+          // Merge: AniList items first, then local items not present in AniList
+          setResults(aniListMatches);
+        }
+      } catch (err) {
+        console.warn('[SearchScreen] AniList search error:', err.message);
+      } finally {
+        if (!cancelled) setIsSearchingAniList(false);
+      }
+    }, 280);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [query, searchAnime]);
 
   const renderSearchItem = useCallback(({ item }) => {
-    const formatStyle = getFormatStyle(item.type);
+    const isAniList = Boolean(item.anilist_id);
+    const itemType = item.format || item.type || 'TV';
+    const formatStyle = getFormatStyle(itemType);
+    const titleText = item.title || item.orijinal_ad || item.main_title_en || 'İsimsiz Anime';
+    const subTitle = item.title_native || item.main_title_jp || item.title_english || '';
+    const coverUrl = item.coverImage || item.cover_image || item.poster;
     const seasonCount = (item.seasons || []).length;
-    const movieCount = (item.related_movies_or_ovas || []).length;
+    const totalEps = item.total_episodes || item.totalEpisodes;
 
     return (
       <TouchableOpacity
@@ -72,20 +106,24 @@ export default function SearchScreen({ route, navigation }) {
             navigation.navigate('Login');
             return;
           }
-          navigation.navigate('AnimeDetail', { orchestratorEntry: item });
+          if (isAniList) {
+            navigation.navigate('AnimeDetail', { anime: item });
+          } else {
+            navigation.navigate('AnimeDetail', { orchestratorEntry: item });
+          }
         }}
       >
         {/* Cover image or fallback type icon */}
-        {item.cover_image ? (
+        {coverUrl ? (
           <Image
-            source={{ uri: item.cover_image }}
+            source={{ uri: coverUrl }}
             style={styles.typeIcon}
             contentFit="cover"
           />
         ) : (
           <View style={[styles.typeIcon, { backgroundColor: formatStyle.bg, borderColor: formatStyle.border }]}>
             <Ionicons
-              name={item.type === 'Movie' ? 'film-outline' : 'tv-outline'}
+              name={itemType === 'Movie' ? 'film-outline' : 'tv-outline'}
               size={22}
               color={formatStyle.text}
             />
@@ -94,26 +132,30 @@ export default function SearchScreen({ route, navigation }) {
 
         <View style={styles.cardInfo}>
           <Text style={styles.cardTitle} numberOfLines={2}>
-            {item.main_title_en}
+            {titleText}
           </Text>
           <View style={styles.metaRow}>
             <View style={[styles.formatBadge, { backgroundColor: formatStyle.bg, borderColor: formatStyle.border }]}>
-              <Text style={[styles.formatText, { color: formatStyle.text }]}>{item.type}</Text>
+              <Text style={[styles.formatText, { color: formatStyle.text }]}>{itemType}</Text>
             </View>
-            {seasonCount > 0 && (
+            {totalEps ? (
+              <Text style={styles.metaText}>
+                {totalEps} Bölüm
+              </Text>
+            ) : seasonCount > 0 ? (
               <Text style={styles.metaText}>
                 {seasonCount} Sezon
               </Text>
-            )}
-            {movieCount > 0 && (
-              <Text style={styles.metaText}>
-                • {movieCount} Film/OVA
+            ) : null}
+            {item.rating && (
+              <Text style={[styles.metaText, { color: '#FFD700' }]}>
+                ★ {item.rating}
               </Text>
             )}
           </View>
-          {item.main_title_jp && item.main_title_jp !== item.main_title_en && (
+          {subTitle && subTitle !== titleText && (
             <Text style={styles.jpTitle} numberOfLines={1}>
-              {item.main_title_jp}
+              {subTitle}
             </Text>
           )}
         </View>

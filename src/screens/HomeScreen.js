@@ -24,6 +24,11 @@ import {
   fetchAnimesByGenre,
   checkAppUpdate,
 } from '../services/api';
+import {
+  fetchTrendingAnimes as fetchTrendingAniList,
+  fetchSeasonalAnimes,
+  fetchAnimesByGenre as fetchGenreAniList,
+} from '../services/anilistService';
 import { AuthContext } from '../context/AuthContext';
 import { useAlert } from '../context/AlertContext';
 import TouchInjector from '../modules/TouchInjector';
@@ -163,86 +168,59 @@ export default function HomeScreen() {
 
   const loadData = useCallback(async () => {
     try {
-      const [recent, trend, action, fantasy, comedy, romance] = await Promise.all([
-        fetchRecentAnimes(50),
-        fetchTrendingAnimes(50),
-        fetchAnimesByGenre('Aksiyon'),
-        fetchAnimesByGenre('Fantastik'),
-        fetchAnimesByGenre('Komedi'),
-        fetchAnimesByGenre('Romantik'),
+      // 1. Primary: Fetch from AniList GraphQL (Fast, clean, high-res)
+      let [seasonal, trend, action, fantasy, comedy, romance] = await Promise.all([
+        fetchSeasonalAnimes(null, null, 1, 20).catch(() => []),
+        fetchTrendingAniList(1, 25).catch(() => []),
+        fetchGenreAniList('Action', 1, 15).catch(() => []),
+        fetchGenreAniList('Fantasy', 1, 15).catch(() => []),
+        fetchGenreAniList('Comedy', 1, 15).catch(() => []),
+        fetchGenreAniList('Romance', 1, 15).catch(() => []),
       ]);
 
-      const getUniqueListByBaseSlug = (list, count = null) => {
-        if (!list) return [];
-        const seen = new Set();
-        const unique = [];
-        for (const item of list) {
-          if (!item) continue;
-          let slug = item.tranimeizle_slug || '';
-          
-          // Sezon, part, tv, izle gibi takıları temizleyip kök adı (base slug) bulalım
-          let baseSlug = slug
-            .replace(/-izle$/i, '')
-            .replace(/-tv$/i, '')
-            .replace(/-tv-izle$/i, '')
-            .replace(/-\d+-sezon$/i, '')
-            .replace(/-sezon-\d+$/i, '')
-            .replace(/-part-\d+$/i, '')
-            .replace(/-\d+$/i, ''); // Sonundaki sayıyı da sil (sezon sayısı olabilir)
+      // Fallback: If AniList fails or returns empty, fetch from backend MongoDB
+      if (!trend || trend.length === 0) {
+        console.log('[HomeScreen] AniList empty/failed, falling back to backend DB...');
+        const [recentDb, trendDb, actionDb, fantasyDb, comedyDb, romanceDb] = await Promise.all([
+          fetchRecentAnimes(20).catch(() => []),
+          fetchTrendingAnimes(20).catch(() => []),
+          fetchAnimesByGenre('Aksiyon').catch(() => []),
+          fetchAnimesByGenre('Fantastik').catch(() => []),
+          fetchAnimesByGenre('Komedi').catch(() => []),
+          fetchAnimesByGenre('Romantik').catch(() => []),
+        ]);
+        seasonal = recentDb;
+        trend = trendDb;
+        action = actionDb;
+        fantasy = fantasyDb;
+        comedy = comedyDb;
+        romance = romanceDb;
+      }
 
-          // Franchise key based on English/Romaji title to prevent duplicates of different seasons
-          let title = item.anime_title || item.orijinal_ad || '';
-          let cleanedTitle = title.toLowerCase()
-            .replace(/[\s:]+(?:season|sezon|part|cour|the final|final|movie|film|films|movies|ova|ona|special|specials)\s*\d*/gi, '')
-            .replace(/\b\d+(st|nd|rd|th)?\b/g, '')
-            .replace(/[^a-z0-9]/g, '')
-            .trim();
+      // Featured: top 5 from trending/seasonal
+      const pool = [...trend, ...seasonal];
+      const seenIds = new Set();
+      const uniquePool = pool.filter(item => {
+        if (!item) return false;
+        const key = item.anilist_id || item._id || item.id;
+        if (seenIds.has(key)) return false;
+        seenIds.add(key);
+        return true;
+      });
 
-          const key = (cleanedTitle && cleanedTitle.length > 3) ? cleanedTitle : (item.comparable_base_slug || baseSlug || item.id || item._id);
-
-          if (!seen.has(key)) {
-            seen.add(key);
-            unique.push(item);
-            if (count && unique.length >= count) break;
-          }
-        }
-        return unique;
-      };
-
-      // Featured: tüm animeler arasından en yüksek puanlı ilk 5 animeyi seç
-      const allAnimes = [...recent, ...trend];
-      const uniqueAllAnimes = getUniqueListByBaseSlug(allAnimes);
-      const sortedByScore = uniqueAllAnimes.sort(
-        (a, b) => (b.averageScore || 0) - (a.averageScore || 0)
-      );
-      
-      const featured = getUniqueListByBaseSlug(sortedByScore, 5);
+      const featured = uniquePool.slice(0, 5);
       setFeaturedList(featured);
-
-      // Son Eklenenler (maks 15 benzersiz)
-      const recentUnique = getUniqueListByBaseSlug(recent, 15);
-      setRecentlyAdded(recentUnique);
-
-      // Trendler (maks 20 benzersiz)
-      const trendingUnique = getUniqueListByBaseSlug(trend, 20);
-      setTrending(trendingUnique);
-
-      // Türlere göre kategorize et (doğrudan API'den gelen verileri satıra özel mükerrer filtresiyle temizleyelim)
-      const actions = getUniqueListByBaseSlug(action, 12);
-      const fantasies = getUniqueListByBaseSlug(fantasy, 12);
-      const comedies = getUniqueListByBaseSlug(comedy, 12);
-      const romances = getUniqueListByBaseSlug(romance, 12);
-
-      setActionAnimes(actions);
-      setFantasyAnimes(fantasies);
-      setComedyAnimes(comedies);
-      setRomanceAnimes(romances);
+      setRecentlyAdded(seasonal.slice(0, 15));
+      setTrending(trend.slice(0, 20));
+      setActionAnimes(action.slice(0, 12));
+      setFantasyAnimes(fantasy.slice(0, 12));
+      setComedyAnimes(comedy.slice(0, 12));
+      setRomanceAnimes(romance.slice(0, 12));
     } catch (error) {
       console.error('[HomeScreen] Failed to load data:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
-      // Gecikmeli render'ı başlatarak ilk geçişi hızlandırıyoruz
       setTimeout(() => {
         setShowDeferred(true);
       }, 150);

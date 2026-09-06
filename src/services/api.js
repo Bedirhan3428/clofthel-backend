@@ -1028,72 +1028,22 @@ export async function checkAppUpdate() {
 }
 
 /**
- * On-demand self-healing: Scrapes anime main overview page on tranimeizle.io and syncs to DB & Orchestrator
+ * On-demand cache sync from mobile client to MongoDB Atlas
  */
-export async function selfHealAnime(animeId, slug, title, url) {
+export async function syncAnimeCacheApi(payload) {
   try {
-    const response = await apiFetch(`${API_BASE_URL}/animes/self-heal`, {
+    const response = await apiFetch(`${API_BASE_URL}/animes/cache-sync`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ animeId, slug, title, url })
+      body: JSON.stringify(payload)
     });
     return await response.json();
   } catch (err) {
-    console.error('[selfHealAnime] Error:', err);
+    console.warn('[syncAnimeCacheApi] Cache sync skipped:', err.message);
     return { success: false, error: err.message };
   }
 }
 
-/**
- * Checks if anime exists in DB by slug, URL, or title
- */
-export async function checkAnimeExistsApi({ slug, title, url }) {
-  try {
-    const params = new URLSearchParams();
-    if (slug) params.append('slug', slug);
-    if (title) params.append('title', title);
-    if (url) params.append('url', url);
-    const response = await apiFetch(`${API_BASE_URL}/animes/check-exists?${params.toString()}`);
-    return await response.json();
-  } catch (err) {
-    console.error('[checkAnimeExistsApi] Error:', err);
-    return { exists: false, error: err.message };
-  }
-}
-
-/**
- * Saves client-scraped anime directly to MongoDB Atlas & Orchestrator
- */
-export async function clientAddAnimeApi({ parsedData, mode, targetAnimeId, targetSeasonNumber, totalEpisodesOverride }) {
-  try {
-    const response = await apiFetch(`${API_BASE_URL}/animes/client-add-anime`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ parsedData, mode, targetAnimeId, targetSeasonNumber, totalEpisodesOverride })
-    });
-    return await response.json();
-  } catch (err) {
-    console.error('[clientAddAnimeApi] Error:', err);
-    return { success: false, error: err.message || 'Sunucu bağlantı hatası.' };
-  }
-}
-
-/**
- * Open batch episode ingestion from client-side Scraper Browser
- */
-export async function clientIngestBatchApi(items) {
-  try {
-    const response = await apiFetch(`${API_BASE_URL}/animes/client-ingest-batch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items })
-    });
-    return await response.json();
-  } catch (err) {
-    console.error('[clientIngestBatchApi] Error:', err);
-    return { success: false, error: err.message || 'Toplu aktarım hatası.' };
-  }
-}
 
 
 

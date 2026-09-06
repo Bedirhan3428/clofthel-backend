@@ -21,6 +21,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { fetchAnimeDetail, fetchEpisodes, resetAnimeAnilistId, saveAnimeAnilistId, addToHistory, fetchEpisodeVideoUrl, cacheEpisodeVideoUrl, fetchAniListSingle } from '../services/api';
+import { resolveEpisodeStream } from '../services/lightweightResolver';
 import { API_BASE_URL } from '../constants/config';
 import TouchInjector from '../modules/TouchInjector';
 import { scraperInjectedJs } from '../modules/ScraperScript';
@@ -493,7 +494,39 @@ export default function WatchScreen({ route, navigation }) {
         setInlineTargetEp(null);
       } else if (res.code === 'NOT_CACHED' && res.episodeUrl) {
         setInlineResolveState('Bölüm aranıyor...');
-        setInlineResolveProgress(20);
+        setInlineResolveProgress(25);
+
+        // 1. Primary: Instant direct extraction without running into WebView .click blocks
+        try {
+          const directStream = await resolveEpisodeStream(res.episodeUrl);
+          if (directStream?.streamUrl) {
+            let streamFinal = directStream.streamUrl;
+            if (streamFinal.startsWith('sibnet-direct:')) {
+              streamFinal = streamFinal.replace('sibnet-direct:', '');
+            } else if (streamFinal.startsWith('sibnet:')) {
+              const sId = streamFinal.replace('sibnet:', '');
+              streamFinal = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sId}`;
+            }
+
+            // Silently cache in background
+            cacheEpisodeVideoUrl(animeId, epNum, streamFinal, null).catch(() => {});
+
+            setCurrentEpisodeNumber(epNum);
+            setCurrentEpisodeTitle(epTitle);
+            setCurrentVideoUrl(streamFinal);
+            setCurrentStartAt(0);
+
+            setIsInlineResolving(false);
+            setInlineResolveUrl(null);
+            setInlineTargetEp(null);
+            return;
+          }
+        } catch (fastErr) {
+          console.warn('[WatchScreen] Direct stream extraction error:', fastErr.message);
+        }
+
+        // 2. Fallback: Spawn inline WebView only if direct extraction didn't yield video link
+        setInlineResolveProgress(40);
         setInlineResolveUrl(res.episodeUrl);
       } else {
         showAlert("Hata", res.error || "Bölüm adresi alınamadı.");
