@@ -41,7 +41,6 @@ import {
   getCleanSearchQuery,
   detectSeasonNumber,
   extractSeasonsFromCandidates,
-  buildAnimeOverviewUrls,
   BASE_URL 
 } from '../services/lightweightResolver';
 import { fetchAnimeDetails as fetchAniListDetails } from '../services/anilistService';
@@ -493,10 +492,9 @@ export default function AnimeDetailScreen({ route, navigation }) {
       }
 
       const candidates = parseSearchResultsHtml(html);
-      addLog(`🔎 [SONUÇ] Ayrıştırılan aday sayısı: ${candidates.length}`, candidates.length > 0 ? 'success' : 'info');
+      addLog(`🔎 [SONUÇ] Arama tamamlandı, anime adresi aranıyor...`, 'info');
 
       if (candidates.length > 0) {
-        setSearchCandidates(candidates);
         allCandidatesRef.current = candidates;
         setSearchStatus('success');
 
@@ -508,12 +506,16 @@ export default function AnimeDetailScreen({ route, navigation }) {
           }
         }
 
-        // Sezon numarasına en uygun anime sayfasını otomatik seç ve SADECE onun bölümlerini yükle!
+        // Aramada çıkan anime linkine (örn. /anime/sparks-of-tomorrow-izle) DOĞRUDAN git ve html'inden bölümleri çek!
         const matchedSeasonUrl = matchCandidateForSeason(candidates, seasonNum, cleanFranchiseQuery);
-        addLog(`🎯 [SEZON EŞLEŞTİ] Sezon ${seasonNum} adresi seçildi: ${matchedSeasonUrl}`, 'success');
-        await loadEpisodesForUrl(matchedSeasonUrl);
+        if (matchedSeasonUrl) {
+          addLog(`🎯 [ANİME BULUNDU] ${matchedSeasonUrl} adresine gidiliyor...`, 'success');
+          await loadEpisodesForUrl(matchedSeasonUrl);
+        } else {
+          addLog(`⚠️ Uygun anime adresi eşleşmedi.`, 'warn');
+          setLoadingEpisodes(false);
+        }
       } else {
-        setSearchCandidates([]);
         allCandidatesRef.current = [];
         if (!blocked) {
           setSearchStatus('empty');
@@ -600,7 +602,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
         if (!cancelled) setLoading(false);
 
-        // 2. Directly load the anime's -izle overview page for the active season!
+        // 2. Perform search on Tranimeizle, get the anime link and extract its episodes!
         const currentSeason = (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))) || (seasons && seasons[0]) || null;
         const targetTitle = currentSeason?.title || currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle || '';
         const seasonNum = currentSeason?.season_number || detectSeasonNumber(targetTitle, 1);
@@ -608,22 +610,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
           setSearchQueryInput(targetTitle);
           addLog(`🚀 Sezon ${seasonNum} ("${targetTitle}") için bölümler getiriliyor...`, 'info');
           if (!cancelled) {
-            const directUrls = buildAnimeOverviewUrls(targetTitle, seasonNum);
-            const primaryIzleUrl = directUrls[0];
-            let foundEps = false;
-
-            if (primaryIzleUrl) {
-              addLog(`🔗 [DOĞRUDAN -İZLE BAĞLANTISI] Hedef adres: ${primaryIzleUrl}`, 'info');
-              const eps = await loadEpisodesForUrl(primaryIzleUrl);
-              if (eps && eps.length > 0) {
-                foundEps = true;
-              }
-            }
-
-            // If direct overview URL 404'd or didn't return episodes, search Tranimeizle as fallback
-            if (!foundEps && !cancelled) {
-              await performTranimeizleSearch(targetTitle, seasonNum);
-            }
+            await performTranimeizleSearch(targetTitle, seasonNum);
           }
         }
       } catch (err) {
@@ -681,14 +668,10 @@ export default function AnimeDetailScreen({ route, navigation }) {
       }
     }
 
-    // Direct overview URL for that season
+    // Otherwise search for that season to get its link
     const currentAnimeData = anime || passedAnime;
     const targetTitle = selSeason?.title || currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle || '';
-    const directUrls = buildAnimeOverviewUrls(targetTitle, seasonNum);
-    if (directUrls && directUrls.length > 0) {
-      addLog(`🎯 [SEZON SEÇİLDİ] Sezon ${seasonNum} adresi: ${directUrls[0]}`, 'info');
-      loadEpisodesForUrl(directUrls[0]);
-    }
+    performTranimeizleSearch(targetTitle, seasonNum);
   };
 
   const handleToggleFavorite = async () => {
@@ -1107,7 +1090,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
             </View>
             <WebView
               ref={webViewRef}
-              source={{ uri: challengeUrl || (buildAnimeOverviewUrls(anime?.title || anime?.orijinal_ad || initialTitle, (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId)))?.season_number || 1)[0]) || `${BASE_URL}/` }}
+              source={{ uri: challengeUrl || `${BASE_URL}/arama/${encodeURIComponent(searchQueryInput || getCleanSearchQuery(anime?.title || anime?.orijinal_ad || initialTitle || ''))}` }}
               style={{ flex: 1 }}
               userAgent="Mozilla/5.0 (Linux; Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"
               injectedJavaScriptBeforeContentLoaded={`
@@ -1174,7 +1157,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
                       // WebView'ı sezon sayfasına yönlendir ki bölümleri çıkarsın
                       if (webViewRef.current) {
-                        webViewRef.current.injectJavaScript(`window.location.href = "${target}"; true;`);
+                        webViewRef.current.injectJavaScript(`window.location.replace("${target}"); true;`);
                       }
                     }
                   } else if (data.type === 'episodes_extracted' && Array.isArray(data.episodes) && data.episodes.length > 0) {
