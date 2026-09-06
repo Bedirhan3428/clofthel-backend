@@ -19,9 +19,9 @@ export function tokenizeTitleClient(str) {
     .filter(t => t.length > 1 && !stopwords.includes(t));
 }
 
-const BASE_URL = 'https://www.tranimeizle.io';
+export const BASE_URL = 'https://www.tranimeizle.io';
 
-const MOBILE_HEADERS = {
+export const MOBILE_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
   'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -33,7 +33,7 @@ const MOBILE_HEADERS = {
 /**
  * Robust HTTP GET with timeout
  */
-async function fetchHtml(url, timeoutMs = 8000) {
+export async function fetchHtml(url, timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -59,11 +59,12 @@ async function fetchHtml(url, timeoutMs = 8000) {
  * Checks whether the response is a Bot Control / Challenge page or a real page
  */
 export function isBotBlocked(html, size = 0) {
-  if (!html || size < 10000) return true;
+  if (!html || html.length < 300) return true;
 
   const lower = html.toLowerCase();
   if (
     lower.includes('<title>bot kontrol') ||
+    lower.includes('<title>bağlantı doğrulaması') ||
     lower.includes('captcha-holder') ||
     lower.includes('icon-captcha') ||
     lower.includes('cf-turnstile') ||
@@ -158,7 +159,7 @@ export async function searchTranimeizleMatch(animeInfo) {
 /**
  * Extracts candidate anime overview links from search HTML
  */
-function parseSearchResultsHtml(html) {
+export function parseSearchResultsHtml(html) {
   const candidates = [];
   const seen = new Set();
 

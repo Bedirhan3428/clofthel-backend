@@ -31,7 +31,14 @@ import {
   BORDER_RADIUS,
 } from '../constants/theme';
 import { addToHistory, toggleFavorite, getProfileData, toggleAnimeInList, syncAnimeCacheApi } from '../services/api';
-import { searchTranimeizleMatch, fetchEpisodesForAnime } from '../services/lightweightResolver';
+import { 
+  searchTranimeizleMatch, 
+  fetchEpisodesForAnime, 
+  fetchHtml, 
+  parseSearchResultsHtml, 
+  isBotBlocked, 
+  BASE_URL 
+} from '../services/lightweightResolver';
 import { fetchAnimeDetails as fetchAniListDetails } from '../services/anilistService';
 import { useAlert } from '../context/AlertContext';
 import { AuthContext } from '../context/AuthContext';
@@ -108,6 +115,147 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const seasonCacheRef = useRef({});
   const isAlertOpenRef = useRef(false);
 
+  // ── Tranimeizle Canlı İstek & Arama Konsolu Durumları ────────
+  const [logs, setLogs] = useState([]);
+  const [searchStatus, setSearchStatus] = useState('idle'); // 'idle' | 'searching' | 'blocked' | 'success' | 'empty' | 'error'
+  const [searchCandidates, setSearchCandidates] = useState([]);
+  const [searchQueryInput, setSearchQueryInput] = useState('');
+  const [isLogExpanded, setIsLogExpanded] = useState(true);
+  const [selectedCandidateUrl, setSelectedCandidateUrl] = useState(null);
+  const [isChallengeModalVisible, setIsChallengeModalVisible] = useState(false);
+  const [challengeUrl, setChallengeUrl] = useState('');
+
+  const addLog = useCallback((message, type = 'info') => {
+    const now = new Date();
+    const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    const newEntry = { id: `${Date.now()}_${Math.random()}`, time, message, type };
+    setLogs(prev => [newEntry, ...prev.slice(0, 79)]);
+  }, []);
+
+  const loadEpisodesForUrl = useCallback(async (overviewUrl, candidateTitle = '') => {
+    if (!overviewUrl) return;
+    setLoadingEpisodes(true);
+    setSelectedCandidateUrl(overviewUrl);
+    addLog(`📥 [BÖLÜMLER] Sayfa yükleniyor: ${overviewUrl}`, 'info');
+
+    try {
+      const startTime = Date.now();
+      const { status, html, size, error, ok } = await fetchHtml(overviewUrl, 12000);
+      const duration = Date.now() - startTime;
+
+      if (error) {
+        addLog(`❌ [HATA] Bölüm sayfası isteği başarısız (${duration}ms): ${error}`, 'error');
+        setLoadingEpisodes(false);
+        return;
+      }
+
+      const titleMatch = html ? html.match(/<title>([^<]*)<\/title>/i) : null;
+      const pageTitle = titleMatch ? titleMatch[1].trim() : 'Başlık yok';
+      addLog(`📡 [HTTP] Durum: ${status} | Boyut: ${size} B | Süre: ${duration}ms | Başlık: "${pageTitle}"`, ok ? 'success' : 'warn');
+
+      if (isBotBlocked(html, size) || status === 403) {
+        addLog(`🛡️ [ENGEL] Bölüm sayfası Cloudflare/Bot doğrulamasına takıldı (HTTP ${status})`, 'warn');
+      }
+
+      const rawEps = await fetchEpisodesForAnime(overviewUrl);
+      if (rawEps && rawEps.length > 0) {
+        const formattedEps = rawEps.map(ep => ({
+          _id: `${activeMongoId || 'ep'}_${ep.number}`,
+          episode_number: ep.number,
+          episode_title: ep.title,
+          url: ep.url
+        }));
+        setEpisodes(formattedEps);
+        addLog(`🎉 [TAMAMLANDI] ${formattedEps.length} adet bölüm listelendi!`, 'success');
+
+        seasonCacheRef.current[activeMongoId] = {
+          ...(seasonCacheRef.current[activeMongoId] || {}),
+          episodes: formattedEps,
+          selectedCandidateUrl: overviewUrl
+        };
+      } else {
+        addLog(`⚠️ [UYARI] Bu sayfadan oynatılabilir bölüm ayrıştırılamadı.`, 'warn');
+        setEpisodes([]);
+      }
+    } catch (err) {
+      addLog(`❌ [HATA] Bölüm yüklenirken hata: ${err.message}`, 'error');
+      setEpisodes([]);
+    } finally {
+      setLoadingEpisodes(false);
+    }
+  }, [activeMongoId, addLog]);
+
+  const performTranimeizleSearch = useCallback(async (customQuery) => {
+    const currentAnimeData = anime || passedAnime;
+    const fallbackTitle = currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle || '';
+    const query = (typeof customQuery === 'string' ? customQuery : (searchQueryInput || fallbackTitle)).trim();
+
+    if (!query) {
+      addLog('⚠️ [ARAMA] Arama sorgusu boş!', 'warn');
+      return;
+    }
+
+    setSearchStatus('searching');
+    setLoadingEpisodes(true);
+    addLog(`🔍 [ARAMA] Tranimeizle araması başlatılıyor: "${query}"`, 'info');
+
+    const searchUrl = `${BASE_URL}/arama/${encodeURIComponent(query)}`;
+    addLog(`🌐 [URL] ${searchUrl}`, 'info');
+
+    try {
+      const startTime = Date.now();
+      const { status, html, size, error, ok } = await fetchHtml(searchUrl, 10000);
+      const duration = Date.now() - startTime;
+
+      if (error) {
+        setSearchStatus('error');
+        setLoadingEpisodes(false);
+        addLog(`❌ [AĞ HATASI] ${error} (${duration}ms)`, 'error');
+        return;
+      }
+
+      const titleMatch = html ? html.match(/<title>([^<]*)<\/title>/i) : null;
+      const pageTitle = titleMatch ? titleMatch[1].trim() : 'Başlık yok';
+
+      addLog(`📡 [HTTP] Durum: ${status} ${ok ? 'OK' : ''} | Boyut: ${size} B | Süre: ${duration}ms`, ok ? 'success' : 'warn');
+      addLog(`📄 [SAYFA] Başlık: "${pageTitle}"`, 'info');
+
+      const blocked = isBotBlocked(html, size) || status === 403;
+      if (blocked) {
+        setSearchStatus('blocked');
+        addLog(`🛡️ [BOT KORUMASI] Cloudflare Turnstile / Bot Kontrolü devrede! (HTTP ${status})`, 'warn');
+        if (html && (html.includes('cf-turnstile') || html.includes('turnstile') || html.includes('challenges.cloudflare.com'))) {
+          addLog(`🔒 [TURNSTILE] Sayfada Cloudflare Turnstile Javascript challenge tespit edildi.`, 'warn');
+        }
+      }
+
+      const candidates = parseSearchResultsHtml(html);
+      addLog(`🔎 [SONUÇ] Ayrıştırılan aday sayısı: ${candidates.length}`, candidates.length > 0 ? 'success' : 'info');
+
+      if (candidates.length > 0) {
+        setSearchCandidates(candidates);
+        setSearchStatus('success');
+        candidates.forEach((cand, idx) => {
+          addLog(`📌 [${idx + 1}] ${cand.title || 'Başlık'} ➔ ${cand.url}`, 'info');
+        });
+
+        addLog(`⚡ [OTOMATİK] 1. aday seçildi, bölümler yükleniyor...`, 'info');
+        await loadEpisodesForUrl(candidates[0].url, candidates[0].title);
+      } else {
+        setSearchCandidates([]);
+        if (!blocked) {
+          setSearchStatus('empty');
+          addLog(`ℹ️ [BOŞ] "${query}" aramasına uygun anime bulunamadı.`, 'info');
+        }
+        setLoadingEpisodes(false);
+      }
+    } catch (err) {
+      setSearchStatus('error');
+      setLoadingEpisodes(false);
+      addLog(`❌ [İSTİSNA] Arama hatası: ${err.message}`, 'error');
+    }
+  }, [anime, passedAnime, searchQueryInput, initialTitle, addLog, loadEpisodesForUrl]);
+
   // ── Load user status ─────────────────────────────────────────
   useEffect(() => {
     if (user && activeMongoId) {
@@ -123,7 +271,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
   }, [user, activeMongoId]);
 
   // ── Fetch Details & Episodes ─────────────────────────────────
-  // ── Fetch Details from AniList & Episodes from Lightweight Resolver ──
+  // ── Fetch Details from AniList & Immediately trigger Tranimeizle search ──
   useEffect(() => {
     let cancelled = false;
     const anilistId = anime?.anilist_id || passedAnime?.anilist_id || (typeof initialId === 'number' ? initialId : parseInt(initialId, 10));
@@ -176,37 +324,14 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
         if (!cancelled) setLoading(false);
 
-        // 2. Resolve episodes directly from Tranimeizle via lightweight resolver
+        // 2. Perform live search immediately on detail load!
         const targetTitle = currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle;
-        const matchInfo = {
-          orijinal_ad: targetTitle,
-          title_romaji: currentAnimeData?.title_romaji || targetTitle,
-          title_english: currentAnimeData?.title_english || currentAnimeData?.title_en,
-          synonyms: currentAnimeData?.synonyms,
-          seasonNumber: currentAnimeData?.season_number || 1,
-          seasonYear: currentAnimeData?.seasonYear
-        };
-
-        const resolvedUrl = await searchTranimeizleMatch(matchInfo);
-        if (resolvedUrl && !cancelled) {
-          const rawEps = await fetchEpisodesForAnime(resolvedUrl);
-          if (rawEps && rawEps.length > 0 && !cancelled) {
-            const formattedEps = rawEps.map(ep => ({
-              _id: `${activeMongoId || 'ep'}_${ep.number}`,
-              episode_number: ep.number,
-              episode_title: ep.title,
-              url: ep.url
-            }));
-            setEpisodes(formattedEps);
-            seasonCacheRef.current[activeMongoId] = {
-              anime: currentAnimeData,
-              episodes: formattedEps
-            };
-          } else if (!cancelled && !cached) {
-            setEpisodes([]);
+        if (targetTitle) {
+          setSearchQueryInput(targetTitle);
+          addLog(`🚀 Detay sayfası yüklendi: "${targetTitle}" için arama başlatılıyor...`, 'info');
+          if (!cancelled) {
+            await performTranimeizleSearch(targetTitle);
           }
-        } else if (!cancelled && !cached) {
-          setEpisodes([]);
         }
       } catch (err) {
         console.warn('[Detail] Error loading detail/episodes:', err.message);
@@ -505,6 +630,180 @@ export default function AnimeDetailScreen({ route, navigation }) {
           </View>
         )}
 
+        {/* ── Tranimeizle Canlı İstek & Log Konsolu ────────────────────── */}
+        <View style={styles.consoleWrapper}>
+          {/* Header */}
+          <View style={styles.consoleHeader}>
+            <View style={styles.consoleHeaderLeft}>
+              <Ionicons name="terminal-outline" size={18} color="#00FF66" />
+              <Text style={styles.consoleTitle}>Tranimeizle Canlı İstek</Text>
+              <View style={[
+                styles.statusBadge,
+                searchStatus === 'searching' && styles.statusBadgeSearching,
+                searchStatus === 'success' && styles.statusBadgeSuccess,
+                searchStatus === 'blocked' && styles.statusBadgeBlocked,
+                searchStatus === 'error' && styles.statusBadgeError,
+              ]}>
+                <Text style={styles.statusBadgeText}>
+                  {searchStatus === 'searching' ? 'Aranıyor...' :
+                   searchStatus === 'success' ? `${searchCandidates.length} Aday` :
+                   searchStatus === 'blocked' ? 'Bot Koruması (403)' :
+                   searchStatus === 'empty' ? 'Sonuç Yok' :
+                   searchStatus === 'error' ? 'Hata' : 'Hazır'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.consoleHeaderRight}>
+              <TouchableOpacity
+                style={styles.consoleMiniBtn}
+                onPress={() => setLogs([])}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="trash-outline" size={14} color={COLORS.textMuted} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.consoleMiniBtn}
+                onPress={() => setIsLogExpanded(!isLogExpanded)}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={isLogExpanded ? 'chevron-up' : 'chevron-down'}
+                  size={16}
+                  color={COLORS.textPrimary}
+                />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Search Query Input Bar */}
+          <View style={styles.consoleSearchBar}>
+            <Ionicons name="search" size={16} color={COLORS.textMuted} style={{ marginRight: 6 }} />
+            <TextInput
+              style={styles.consoleSearchInput}
+              value={searchQueryInput}
+              onChangeText={setSearchQueryInput}
+              placeholder="Tranimeizle'de aranacak isim..."
+              placeholderTextColor={COLORS.textMuted}
+              returnKeyType="search"
+              onSubmitEditing={() => performTranimeizleSearch(searchQueryInput)}
+            />
+            <TouchableOpacity
+              style={styles.consoleSearchBtn}
+              onPress={() => performTranimeizleSearch(searchQueryInput)}
+              disabled={searchStatus === 'searching'}
+              activeOpacity={0.7}
+            >
+              {searchStatus === 'searching' ? (
+                <ActivityIndicator size="small" color="#000" />
+              ) : (
+                <Text style={styles.consoleSearchBtnText}>Ara</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* Log Window Terminal Screen */}
+          {isLogExpanded && (
+            <View style={styles.terminalBody}>
+              <ScrollView
+                style={styles.terminalScroll}
+                nestedScrollEnabled
+                showsVerticalScrollIndicator={true}
+              >
+                {logs.length === 0 ? (
+                  <Text style={styles.terminalEmptyText}>
+                    Henüz log kaydı yok. Arama yapıldığında istek ve yanıtlar burada listelenecektir.
+                  </Text>
+                ) : (
+                  logs.map(log => {
+                    const color =
+                      log.type === 'error' ? '#FF5555' :
+                      log.type === 'warn' ? '#FFB86C' :
+                      log.type === 'success' ? '#50FA7B' :
+                      '#8BE9FD';
+                    return (
+                      <View key={log.id} style={styles.logRow}>
+                        <Text style={styles.logTimestamp}>[{log.time}]</Text>
+                        <Text style={[styles.logText, { color }]}>{log.message}</Text>
+                      </View>
+                    );
+                  })
+                )}
+              </ScrollView>
+            </View>
+          )}
+
+          {/* If Bot Blocked: Helper notice */}
+          {searchStatus === 'blocked' && (
+            <View style={styles.blockedNoticeBox}>
+              <Ionicons name="shield-alert-outline" size={20} color="#FFB86C" />
+              <View style={{ flex: 1, marginLeft: 8 }}>
+                <Text style={styles.blockedNoticeTitle}>Cloudflare Koruması Algılandı</Text>
+                <Text style={styles.blockedNoticeDesc}>
+                  Tranimeizle doğrudan HTTP isteklerini bot kontrolü (Turnstile/403) ile kısıtlamış olabilir.
+                </Text>
+              </View>
+              {WebView && (
+                <TouchableOpacity
+                  style={styles.solveChallengeBtn}
+                  onPress={() => {
+                    setChallengeUrl(`${BASE_URL}/arama/${encodeURIComponent(searchQueryInput || mainTitleEn)}`);
+                    setIsChallengeModalVisible(true);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.solveChallengeBtnText}>Doğrula</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+        </View>
+
+        {/* ── Found Candidate Cards ────────────────────────────────────── */}
+        {searchCandidates.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>
+              Tranimeizle Eşleşenleri ({searchCandidates.length})
+            </Text>
+            <Text style={styles.candidateSubTitle}>
+              Aşağıdaki anime sayfalarından birine tıklayarak bölümlerini getirebilirsiniz:
+            </Text>
+            {searchCandidates.map((cand, idx) => {
+              const isSelected = selectedCandidateUrl === cand.url;
+              return (
+                <View
+                  key={cand.url || idx}
+                  style={[styles.candidateCard, isSelected && styles.candidateCardSelected]}
+                >
+                  <View style={styles.candidateCardInfo}>
+                    <Text style={styles.candidateCardTitle} numberOfLines={2}>
+                      {cand.title || 'İsimsiz Başlık'}
+                    </Text>
+                    <Text style={styles.candidateCardUrl} numberOfLines={1}>
+                      {cand.url}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={[styles.candidateSelectBtn, isSelected && styles.candidateSelectBtnActive]}
+                    onPress={() => loadEpisodesForUrl(cand.url, cand.title)}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons
+                      name={isSelected ? "checkmark-circle" : "cloud-download-outline"}
+                      size={16}
+                      color={isSelected ? "#FFF" : "#000"}
+                      style={{ marginRight: 4 }}
+                    />
+                    <Text style={[styles.candidateSelectBtnText, isSelected && styles.candidateSelectBtnTextActive]}>
+                      {isSelected ? "Aktif" : "Bölümleri Getir"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
         {/* ── Episodes Grid ───────────────────────────── */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>
@@ -574,6 +873,48 @@ export default function AnimeDetailScreen({ route, navigation }) {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* ── Cloudflare Turnstile Solver Modal ── */}
+      {WebView && (
+        <Modal
+          visible={isChallengeModalVisible}
+          transparent={false}
+          animationType="slide"
+          onRequestClose={() => setIsChallengeModalVisible(false)}
+        >
+          <SafeAreaView style={{ flex: 1, backgroundColor: '#0D1117' }}>
+            <View style={styles.challengeModalHeader}>
+              <TouchableOpacity
+                onPress={() => setIsChallengeModalVisible(false)}
+                style={styles.challengeCloseBtn}
+              >
+                <Ionicons name="close" size={24} color="#FFF" />
+              </TouchableOpacity>
+              <Text style={styles.challengeModalTitle}>Cloudflare Doğrulaması</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setIsChallengeModalVisible(false);
+                  performTranimeizleSearch(searchQueryInput);
+                }}
+                style={styles.challengeDoneBtn}
+              >
+                <Text style={styles.challengeDoneBtnText}>Yeniden Dene</Text>
+              </TouchableOpacity>
+            </View>
+            <WebView
+              source={{ uri: challengeUrl || `${BASE_URL}/arama/${encodeURIComponent(searchQueryInput || mainTitleEn)}` }}
+              style={{ flex: 1 }}
+              userAgent="Mozilla/5.0 (Linux; Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"
+              onNavigationStateChange={(navState) => {
+                addLog(`🌐 [WEBVIEW] URL: ${navState.url}`, 'info');
+                if (navState.title && !navState.title.includes('Doğrulama') && !navState.title.includes('Just a moment')) {
+                  addLog(`✅ [WEBVIEW] Doğrulama tamamlandı: "${navState.title}"`, 'success');
+                }
+              }}
+            />
+          </SafeAreaView>
+        </Modal>
+      )}
     </SafeAreaView>
   );
 }
@@ -1261,5 +1602,250 @@ const styles = StyleSheet.create({
     color: COLORS.accent,
     fontSize: 12,
     fontWeight: FONT_WEIGHTS.semibold,
+  },
+
+  // ── Tranimeizle Canlı İstek Konsolu Stilleri ──
+  consoleWrapper: {
+    marginHorizontal: SPACING.lg,
+    marginVertical: SPACING.md,
+    backgroundColor: '#0D1117',
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: '#30363D',
+    overflow: 'hidden',
+  },
+  consoleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#161B22',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#30363D',
+  },
+  consoleHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: 8,
+  },
+  consoleTitle: {
+    color: '#E6EDF3',
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  statusBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: BORDER_RADIUS.xs,
+    backgroundColor: '#21262D',
+  },
+  statusBadgeSearching: {
+    backgroundColor: 'rgba(88, 166, 255, 0.2)',
+  },
+  statusBadgeSuccess: {
+    backgroundColor: 'rgba(80, 250, 123, 0.2)',
+  },
+  statusBadgeBlocked: {
+    backgroundColor: 'rgba(255, 184, 108, 0.2)',
+  },
+  statusBadgeError: {
+    backgroundColor: 'rgba(255, 85, 85, 0.2)',
+  },
+  statusBadgeText: {
+    color: '#E6EDF3',
+    fontSize: 10,
+    fontWeight: FONT_WEIGHTS.semibold,
+  },
+  consoleHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  consoleMiniBtn: {
+    padding: 4,
+    borderRadius: BORDER_RADIUS.xs,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  consoleSearchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#161B22',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#21262D',
+  },
+  consoleSearchInput: {
+    flex: 1,
+    color: '#FFF',
+    fontSize: 13,
+    paddingVertical: 4,
+    paddingHorizontal: 0,
+  },
+  consoleSearchBtn: {
+    backgroundColor: COLORS.accent,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: BORDER_RADIUS.sm,
+    marginLeft: 8,
+  },
+  consoleSearchBtnText: {
+    color: '#000',
+    fontSize: 12,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  terminalBody: {
+    backgroundColor: '#090D13',
+    maxHeight: 180,
+    minHeight: 80,
+    padding: SPACING.sm,
+  },
+  terminalScroll: {
+    flex: 1,
+  },
+  terminalEmptyText: {
+    color: '#6E7681',
+    fontSize: 11,
+    fontStyle: 'italic',
+    padding: 8,
+    textAlign: 'center',
+  },
+  logRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 4,
+  },
+  logTimestamp: {
+    color: '#6E7681',
+    fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginRight: 6,
+    marginTop: 1,
+  },
+  logText: {
+    flex: 1,
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    lineHeight: 16,
+  },
+  blockedNoticeBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 184, 108, 0.12)',
+    padding: SPACING.md,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 184, 108, 0.3)',
+  },
+  blockedNoticeTitle: {
+    color: '#FFB86C',
+    fontSize: 12,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  blockedNoticeDesc: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  solveChallengeBtn: {
+    backgroundColor: '#FFB86C',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: BORDER_RADIUS.sm,
+    marginLeft: 8,
+  },
+  solveChallengeBtnText: {
+    color: '#000',
+    fontSize: 11,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+
+  // ── Candidate Cards Stilleri ──
+  candidateSubTitle: {
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.caption,
+    marginBottom: SPACING.sm,
+  },
+  candidateCard: {
+    backgroundColor: '#161B22',
+    borderWidth: 1,
+    borderColor: '#30363D',
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+    marginBottom: SPACING.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  candidateCardSelected: {
+    borderColor: COLORS.accent,
+    backgroundColor: 'rgba(255, 107, 0, 0.08)',
+  },
+  candidateCardInfo: {
+    flex: 1,
+    marginRight: SPACING.md,
+  },
+  candidateCardTitle: {
+    color: COLORS.textPrimary,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.bold,
+    marginBottom: 4,
+  },
+  candidateCardUrl: {
+    color: '#8B949E',
+    fontSize: 11,
+  },
+  candidateSelectBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.accent,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  candidateSelectBtnActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+  },
+  candidateSelectBtnText: {
+    color: '#000',
+    fontSize: 11,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  candidateSelectBtnTextActive: {
+    color: COLORS.accent,
+  },
+
+  // Challenge Modal
+  challengeModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#161B22',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#30363D',
+  },
+  challengeCloseBtn: {
+    padding: 4,
+  },
+  challengeModalTitle: {
+    color: '#FFF',
+    fontSize: FONT_SIZES.body,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  challengeDoneBtn: {
+    backgroundColor: COLORS.accent,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  challengeDoneBtnText: {
+    color: '#000',
+    fontSize: 12,
+    fontWeight: FONT_WEIGHTS.bold,
   },
 });
