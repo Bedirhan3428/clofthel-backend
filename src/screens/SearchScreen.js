@@ -219,7 +219,7 @@ export default function SearchScreen({ route, navigation }) {
           </View>
           <Text style={styles.infoTitle}>Anime Ara</Text>
           <Text style={styles.infoSubtitle}>
-            3899 anime başlığı arasından anında ara ve hemen izlemeye başla!
+            On binlerce anime başlığı arasından anında ara ve hemen izlemeye başla!
           </Text>
         </View>
       ) : results.length === 0 ? (
