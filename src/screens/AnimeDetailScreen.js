@@ -996,6 +996,21 @@ export default function AnimeDetailScreen({ route, navigation }) {
                   }
                 } catch(e) {}
               }}
+              onShouldStartLoadWithRequest={(request) => {
+                const url = (request.url || '').toLowerCase();
+                const adKeywords = [
+                  'syndication', 'clickadu', 'propellerads', 'adcash', 'adsterra',
+                  'doubleclick', 'googleads', 'wargamings.net', 'maxihalisaha',
+                  'deloplen', 'highcpmgate', 'monetag', 'cp-host', 'exdynsrv',
+                  'popunder', 'betting', 'casino', 'popigram', 'bayigram',
+                  'sosyalgram', 'sosyalevin', '1xbet'
+                ];
+                if (adKeywords.some(kw => url.includes(kw))) {
+                  addLog(`🚫 [REKLAM ENGELLENDİ] ${request.url}`, 'info');
+                  return false;
+                }
+                return true;
+              }}
               onNavigationStateChange={(navState) => {
                 addLog(`🌐 [WEBVIEW] URL: ${navState.url}`, 'info');
                 if (navState.title && !navState.title.includes('Doğrulama') && !navState.title.includes('Just a moment')) {

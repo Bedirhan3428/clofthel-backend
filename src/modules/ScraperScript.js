@@ -1,6 +1,7 @@
 /**
  * Shared Scraper Script for resolving tranimeizle.io video streams.
  * Includes canvas-based pixel comparison captcha solver and hover/click event simulation.
+ * Includes Touch-Unblocking Shield: Neutralizes IconCaptcha hoverDetection/clickDelay and destroys ad clickjackers.
  */
 export const scraperInjectedJs = `
     try {
@@ -19,56 +20,16 @@ export const scraperInjectedJs = `
           
           // window.open override ederek yeni sekmede reklam açılmasını engelliyoruz
           window.open = function(url) {
-            sendToNative({ type: 'log', message: 'window.open engellendi (Reklam): ' + url });
+            sendToNative({ type: 'log', message: '🚫 window.open (Reklam) engellendi: ' + url });
             return null;
           };
         } catch(e) {}
         // --------------------------------------------------------
 
-        function getCleanUrl(bgStyle) {
-          if (!bgStyle || bgStyle === 'none') return '';
-          var match = bgStyle.match(/url\\(['"]?([^'"]+?)['"]?\\)/i);
-          return match ? match[1] : '';
-        }
-
-        function simulateIconCaptchaClick(el) {
-          try {
-            var rect = el.getBoundingClientRect();
-            var x = rect.left + (rect.width / 2);
-            var y = rect.top + (rect.height / 2);
-            
-            var mouseOverEvent = new MouseEvent('mouseover', {
-              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
-            });
-            el.dispatchEvent(mouseOverEvent);
-
-            var mouseEnterEvent = new MouseEvent('mouseenter', {
-              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
-            });
-            el.dispatchEvent(mouseEnterEvent);
-
-            var mouseDownEvent = new MouseEvent('mousedown', {
-              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
-            });
-            el.dispatchEvent(mouseDownEvent);
-
-            var mouseUpEvent = new MouseEvent('mouseup', {
-              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
-            });
-            el.dispatchEvent(mouseUpEvent);
-
-            var clickEvent = new MouseEvent('click', {
-              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
-            });
-            el.dispatchEvent(clickEvent);
-          } catch(err) {
-            sendToNative({ type: 'log', message: 'Event tetikleme hatasi: ' + err.message });
-          }
-        }
-
         var messageQueue = [];
         
         var debugDiv = document.createElement('div');
+        debugDiv.id = '__scraper_debug';
         debugDiv.style.position = 'fixed';
         debugDiv.style.top = '0';
         debugDiv.style.left = '0';
@@ -134,6 +95,362 @@ export const scraperInjectedJs = `
           };
         } catch (e) {
           logToScreen("Console override error: " + e.message);
+        }
+
+        // =========================================================================
+        // 🛡️ DOKUNUŞ KİLİDİ AÇICI (TOUCH UNBLOCKER) & REKLAM İMHA KALKANI
+        // =========================================================================
+
+        // 1. Anti-Ad & High-Priority UI CSS Enjeksiyonu
+        try {
+          var injectTouchUnblockStyle = function() {
+            if (document.getElementById('__touch_unblock_style')) return;
+            var css = [
+              'ins, [class*="kesem"], [id*="ad-container"], [class*="video-ad"], [class*="banner"], [class*="sponsor"], iframe[src*="ad"], iframe[src*="track"], iframe[src="about:blank"], div[style*="z-index: 214748364"]:not(#__scraper_debug), div[style*="z-index: 999999"]:not(#__scraper_debug), div[style*="z-index: 99999"]:not(#__scraper_debug) {',
+              '  display: none !important;',
+              '  pointer-events: none !important;',
+              '  width: 0 !important;',
+              '  height: 0 !important;',
+              '  opacity: 0 !important;',
+              '  visibility: hidden !important;',
+              '}',
+              '.captcha-holder, .captcha-modal, .captcha-modal__header, .captcha-modal__icons, .captcha-image, .captcha-modal__icons > div, button, a, input, select, .flx-block, .sourceBtn, .fansubBtn, .video-sources, #sourceList, .play-btn {',
+              '  pointer-events: auto !important;',
+              '  cursor: pointer !important;',
+              '  user-select: auto !important;',
+              '  touch-action: manipulation !important;',
+              '  position: relative !important;',
+              '  z-index: 2147483640 !important;',
+              '}',
+              '.captcha-image {',
+              '  cursor: pointer !important;',
+              '  min-width: 44px !important;',
+              '  min-height: 44px !important;',
+              '  display: inline-block !important;',
+              '}'
+            ].join('\n');
+            var styleEl = document.createElement('style');
+            styleEl.id = '__touch_unblock_style';
+            styleEl.type = 'text/css';
+            styleEl.appendChild(document.createTextNode(css));
+            (document.head || document.documentElement).appendChild(styleEl);
+          };
+          if (document.head || document.documentElement) {
+            injectTouchUnblockStyle();
+          } else {
+            document.addEventListener('DOMContentLoaded', injectTouchUnblockStyle);
+          }
+        } catch(e) {}
+
+        // 2. Reklam Scriptlerinin Tıklamayı Çalmasını Önleme (stopImmediatePropagation Koruması)
+        try {
+          var origStopImmediate = Event.prototype.stopImmediatePropagation;
+          Event.prototype.stopImmediatePropagation = function() {
+            var t = this.target;
+            if (t && t.closest && (
+              t.closest('.captcha-holder') || 
+              t.closest('.captcha-image') || 
+              t.closest('.flx-block') || 
+              t.closest('.sourceBtn') || 
+              t.closest('a') || 
+              t.closest('button')
+            )) {
+              return;
+            }
+            return origStopImmediate.apply(this, arguments);
+          };
+
+          var origStopPropagation = Event.prototype.stopPropagation;
+          Event.prototype.stopPropagation = function() {
+            var t = this.target;
+            if (t && t.closest && (
+              t.closest('.captcha-holder') || 
+              t.closest('.captcha-image') || 
+              t.closest('.flx-block') || 
+              t.closest('.sourceBtn') || 
+              t.closest('a') || 
+              t.closest('button')
+            )) {
+              return;
+            }
+            return origStopPropagation.apply(this, arguments);
+          };
+        } catch(e) {}
+
+        // 3. Şeffaf Reklam Katmanlarını Gerçek Zamanlı İmha Eden MutationObserver
+        try {
+          var checkAndKillOverlay = function(node) {
+            if (!node || node.nodeType !== 1) return;
+            if (node.id === '__scraper_debug' || (debugDiv && (node === debugDiv || (node.contains && node.contains(debugDiv))))) return;
+            var tag = node.tagName;
+            if (tag === 'HTML' || tag === 'BODY' || tag === 'STYLE' || tag === 'SCRIPT') return;
+
+            var s = window.getComputedStyle(node);
+            if (
+              (s.position === 'fixed' || s.position === 'absolute') &&
+              parseInt(s.zIndex || '0') > 50 &&
+              (parseFloat(s.width || '0') >= window.innerWidth * 0.7 || node.offsetWidth >= window.innerWidth * 0.7) &&
+              (parseFloat(s.height || '0') >= window.innerHeight * 0.7 || node.offsetHeight >= window.innerHeight * 0.7) &&
+              (s.opacity === '0' || parseFloat(s.opacity || '1') < 0.1 || s.backgroundColor === 'transparent' || s.backgroundColor === 'rgba(0, 0, 0, 0)')
+            ) {
+              if (!node.querySelector('.captcha-holder, .video-player, video, #sourceList')) {
+                node.style.pointerEvents = 'none';
+                node.style.display = 'none';
+                if (node.parentNode) node.parentNode.removeChild(node);
+                sendToNative({ type: 'log', message: '🛡️ Şeffaf reklam perdesi imha edildi: ' + tag });
+              }
+            }
+          };
+
+          var overlayObserver = new MutationObserver(function(mutations) {
+            for (var m = 0; m < mutations.length; m++) {
+              var added = mutations[m].addedNodes;
+              for (var a = 0; a < added.length; a++) {
+                checkAndKillOverlay(added[a]);
+              }
+            }
+          });
+
+          if (document.documentElement) {
+            overlayObserver.observe(document.documentElement, { childList: true, subtree: true });
+          } else {
+            document.addEventListener('DOMContentLoaded', function() {
+              overlayObserver.observe(document.documentElement, { childList: true, subtree: true });
+            });
+          }
+        } catch(e) {}
+
+        // 4. JQUERY & ICONCAPTCHA HOOK — DOKUNUŞ KİLİDİNİ KALDIRMA
+        try {
+          var hookJQueryForCaptcha = function(jq) {
+            if (!jq || !jq.fn || jq.fn.__iconCaptchaHooked) return;
+            jq.fn.__iconCaptchaHooked = true;
+            sendToNative({ type: 'log', message: '🔓 jQuery tespit edildi, IconCaptcha dokunuş kilidi kaldırılıyor...' });
+
+            var origExtend = jq.fn.extend;
+            jq.fn.extend = function(obj) {
+              if (obj && obj.iconCaptcha) {
+                var origIconCaptcha = obj.iconCaptcha;
+                obj.iconCaptcha = function(options) {
+                  options = options || {};
+                  options.hoverDetection = false;
+                  options.captchaHoverDetection = false;
+                  options.clickDelay = 0;
+                  options.captchaClickDelay = 0;
+                  options.requestIconsDelay = 0;
+                  options.enableLoadingAnimation = false;
+                  sendToNative({ type: 'log', message: '🎯 IconCaptcha dokunuş kilidi kaldırıldı (hoverDetection=false, clickDelay=0)!' });
+                  return origIconCaptcha.call(this, options);
+                };
+              }
+              return origExtend.apply(this, arguments);
+            };
+
+            if (jq.fn.iconCaptcha) {
+              var origIconCaptcha = jq.fn.iconCaptcha;
+              jq.fn.iconCaptcha = function(options) {
+                options = options || {};
+                options.hoverDetection = false;
+                options.captchaHoverDetection = false;
+                options.clickDelay = 0;
+                options.captchaClickDelay = 0;
+                options.requestIconsDelay = 0;
+                options.enableLoadingAnimation = false;
+                sendToNative({ type: 'log', message: '🎯 IconCaptcha dokunuş kilidi kaldırıldı (hoverDetection=false, clickDelay=0)!' });
+                return origIconCaptcha.call(this, options);
+              };
+            }
+
+            // jQuery click listener sarmalama (pageX & pageY koordinat garantisi)
+            var origOn = jq.fn.on;
+            jq.fn.on = function(types, selector, data, fn) {
+              if (typeof selector === 'string' && selector.indexOf('captcha-image') !== -1) {
+                var handler = fn || data;
+                if (typeof handler === 'function') {
+                  var wrappedHandler = function(event) {
+                    if (event) {
+                      var el = event.target || this;
+                      var offset = jq(el).offset() || { left: 10, top: 10 };
+                      if (!event.pageX || isNaN(event.pageX)) event.pageX = offset.left + 20;
+                      if (!event.pageY || isNaN(event.pageY)) event.pageY = offset.top + 20;
+                    }
+                    return handler.apply(this, arguments);
+                  };
+                  if (fn) {
+                    return origOn.call(this, types, selector, data, wrappedHandler);
+                  } else {
+                    return origOn.call(this, types, selector, wrappedHandler);
+                  }
+                }
+              }
+              return origOn.apply(this, arguments);
+            };
+          };
+
+          if (window.jQuery) hookJQueryForCaptcha(window.jQuery);
+          var _jqRef = window.jQuery;
+          Object.defineProperty(window, 'jQuery', {
+            configurable: true,
+            enumerable: true,
+            get: function() { return _jqRef; },
+            set: function(val) {
+              _jqRef = val;
+              hookJQueryForCaptcha(_jqRef);
+            }
+          });
+
+          if (window.$) hookJQueryForCaptcha(window.$);
+          var _dollarRef = window.$;
+          Object.defineProperty(window, '$', {
+            configurable: true,
+            enumerable: true,
+            get: function() { return _dollarRef; },
+            set: function(val) {
+              _dollarRef = val;
+              hookJQueryForCaptcha(_dollarRef);
+            }
+          });
+        } catch(e) {}
+
+        // Doğrudan API Onaylayıcı Yardımcı Fonksiyon
+        function submitCaptchaDirectly(hash, cid) {
+          cid = cid || 0;
+          if (!hash) return;
+          sendToNative({ type: 'log', message: '⚡ Captcha API doğrudan onaylanıyor (Hash: ' + hash.substring(0, 8) + '...)' });
+
+          if (window.jQuery) {
+            window.jQuery('input[name="captcha-hf"]').val(hash);
+            window.jQuery('input[name="captcha-idhf"]').val(cid);
+            window.jQuery.ajax({
+              url: '/api/Captcha/',
+              type: 'POST',
+              data: { cID: cid, pC: hash, rT: 2 },
+              success: function() {
+                sendToNative({ type: 'log', message: '🎉 Captcha API onayı başarılı! Sayfa yönlendiriliyor...' });
+                var $holder = window.jQuery('.captcha-holder');
+                $holder.addClass('captcha-success');
+                $holder.find('.captcha-modal__icons').html(
+                  '<div class="captcha-modal__icons-title">İyi seyirler!</div>' +
+                  '<div class="captcha-modal__icons-subtitle">Doğrulamanız için teşekkürler.</div>'
+                );
+                $holder.trigger('success', [{ captcha_id: cid }]);
+                $holder.trigger('success.iconCaptcha', [cid]);
+              },
+              error: function(err) {
+                sendToNative({ type: 'log', message: 'Captcha API yanıtı: ' + (err.statusText || 'Tamamlandı') });
+              }
+            });
+          } else {
+            var fd = new URLSearchParams();
+            fd.append('cID', cid);
+            fd.append('pC', hash);
+            fd.append('rT', '2');
+            fetch('/api/Captcha/', {
+              method: 'POST',
+              body: fd,
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }
+            }).then(function(res) {
+              if (res.ok) {
+                sendToNative({ type: 'log', message: '🎉 Captcha API onayı (Fetch) başarılı!' });
+                var holder = document.querySelector('.captcha-holder');
+                if (holder) {
+                  holder.classList.add('captcha-success');
+                  var icons = holder.querySelector('.captcha-modal__icons');
+                  if (icons) {
+                    icons.innerHTML = '<div class="captcha-modal__icons-title">İyi seyirler!</div><div class="captcha-modal__icons-subtitle">Doğrulamanız için teşekkürler.</div>';
+                  }
+                }
+              }
+            }).catch(function(e) {});
+          }
+        }
+
+        // 5. Kalıcı Hover Kalp Atışı (Heartbeat) & Doğrudan Dokunuş Yakalama
+        try {
+          setInterval(function() {
+            var holders = document.querySelectorAll('.captcha-holder');
+            for (var i = 0; i < holders.length; i++) {
+              var h = holders[i];
+              try {
+                h.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+                if (window.jQuery) window.jQuery(h).trigger('mouseenter');
+              } catch(e) {}
+            }
+          }, 100);
+
+          var handleDirectCaptchaTap = function(e) {
+            var target = e.target;
+            var imgEl = target ? (target.classList && target.classList.contains('captcha-image') ? target : target.closest && target.closest('.captcha-image')) : null;
+            if (!imgEl) return;
+
+            var hash = imgEl.getAttribute('icon-hash');
+            var holder = imgEl.closest('.captcha-holder');
+            var cid = holder ? (holder.getAttribute('data-captcha-id') || '0') : '0';
+
+            sendToNative({ type: 'log', message: '👆 Dokunuş algılandı (Hash: ' + (hash ? hash.substring(0, 8) + '...' : 'Görsel') + ')' });
+
+            if (holder) {
+              try {
+                holder.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+                if (window.jQuery) window.jQuery(holder).trigger('mouseenter');
+              } catch(e) {}
+            }
+
+            // 250ms içinde IconCaptcha normal yoldan onay alamazsa, doğrudan API ile onayla!
+            setTimeout(function() {
+              if (!holder) return;
+              var isSuccess = holder.classList.contains('captcha-success') || (holder.querySelector && holder.querySelector('.captcha-success'));
+              if (!isSuccess && hash) {
+                submitCaptchaDirectly(hash, cid);
+              }
+            }, 250);
+          };
+
+          document.addEventListener('click', handleDirectCaptchaTap, true);
+          document.addEventListener('touchend', handleDirectCaptchaTap, true);
+        } catch(e) {}
+
+        // =========================================================================
+
+        function getCleanUrl(bgStyle) {
+          if (!bgStyle || bgStyle === 'none') return '';
+          var match = bgStyle.match(/url\\(['"]?([^'"]+?)['"]?\\)/i);
+          return match ? match[1] : '';
+        }
+
+        function simulateIconCaptchaClick(el) {
+          try {
+            var rect = el.getBoundingClientRect();
+            var x = rect.left + (rect.width / 2);
+            var y = rect.top + (rect.height / 2);
+            
+            var mouseOverEvent = new MouseEvent('mouseover', {
+              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+            });
+            el.dispatchEvent(mouseOverEvent);
+
+            var mouseEnterEvent = new MouseEvent('mouseenter', {
+              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+            });
+            el.dispatchEvent(mouseEnterEvent);
+
+            var mouseDownEvent = new MouseEvent('mousedown', {
+              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+            });
+            el.dispatchEvent(mouseDownEvent);
+
+            var mouseUpEvent = new MouseEvent('mouseup', {
+              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+            });
+            el.dispatchEvent(mouseUpEvent);
+
+            var clickEvent = new MouseEvent('click', {
+              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+            });
+            el.dispatchEvent(clickEvent);
+          } catch(err) {
+            sendToNative({ type: 'log', message: 'Event tetikleme hatasi: ' + err.message });
+          }
         }
 
         function detectCurrentFansub() {
@@ -275,7 +592,7 @@ export const scraperInjectedJs = `
                  return true;
               } else {
                  var playBtn = document.querySelector('.vjs-big-play-button') || document.querySelector('.vjs-play-control') || document.querySelector('.vjs-poster');
-                 if (playBtn) requestNativeTouch(playBtn);
+                 if (playBtn) clickElement(playBtn);
                  
                  if (!window.__sibnetRetryDone) {
                    window.__sibnetRetryDone = true;
@@ -286,7 +603,7 @@ export const scraperInjectedJs = `
                        sendResolved('sibnet-direct:' + vid.currentSrc);
                      } else {
                        var bodyHtml = document.documentElement.innerHTML;
-                       var mp4Match = bodyHtml.match(/https?:\\/\\/[^"'\s]+\\.mp4[^"'\s]*/i);
+                       var mp4Match = bodyHtml.match(/https?:\\/\\/[^"'\\s]+\\.mp4[^"'\\s]*/i);
                        if (mp4Match) {
                          sendToNative({ type: 'log', message: 'MP4 link HTML icerisinde bulundu!' });
                          sendResolved('sibnet-direct:' + mp4Match[0]);
@@ -332,55 +649,10 @@ export const scraperInjectedJs = `
               ev.initMouseEvent("click", true, true, window, 1, 0, 0, 0, 0, false, false, false, false, 0, null);
               el.dispatchEvent(ev);
             }
-            sendToNative({ type: 'log', message: 'Elemente JS ile tıklandı (Reklamsız hızlı geçiş).' });
+            sendToNative({ type: 'log', message: 'Elemente JS ile tıklandı.' });
           } catch (e) {
             sendToNative({ type: 'log', message: 'JS tıklama hatası: ' + e.message });
           }
-        }
-
-        function requestNativeTouch(el) {
-          try {
-            if (el.scrollIntoView) {
-              el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
-            }
-          } catch(e){}
-
-          setTimeout(function() {
-            try {
-              if (typeof simulateIconCaptchaClick === 'function') {
-                simulateIconCaptchaClick(el);
-              }
-              
-              var rect = el.getBoundingClientRect();
-              var x = rect.left + (rect.width / 2);
-              var y = rect.top + (rect.height / 2);
-              
-              if (x === 0 || y === 0 || rect.width === 0) {
-                 sendToNative({ type: 'log', message: 'Element gorunmez veya 0x0.' });
-                 return;
-              }
-              
-              // CSS piksel koordinatlarını tam fiziksel piksele çeviriyoruz
-              var physicalX = x * window.devicePixelRatio;
-              var physicalY = y * window.devicePixelRatio;
-
-              sendToNative({ 
-                type: 'log', 
-                message: 'Donanımsal (Native) Tıklama gönderiliyor: X:' + Math.round(x) + ' Y:' + Math.round(y) + ' (Fiziksel X:' + Math.round(physicalX) + ' Y:' + Math.round(physicalY) + ' DPR:' + window.devicePixelRatio + ')' 
-              });
-              sendToNative({ 
-                type: 'native_touch', 
-                x: physicalX, 
-                y: physicalY, 
-                cssX: Math.round(x), 
-                cssY: Math.round(y), 
-                dpr: window.devicePixelRatio,
-                url: window.location.href
-              });
-            } catch(e) {
-              sendToNative({ type: 'log', message: 'Native touch hatasi: ' + e.message });
-            }
-          }, 100);
         }
 
         function isUnrelatedElement(el, sourceListEl) {
@@ -489,7 +761,7 @@ export const scraperInjectedJs = `
               var isNetworkChallenge = window.location.pathname.includes('/_aitr/network-challenge') || document.querySelector('form[action*="network-challenge"]');
               if (isNetworkChallenge && !window.__challenge_notified) {
                 window.__challenge_notified = true;
-                sendToNative({ type: 'log', message: '⚠️ Network Challenge (Görüntülü/Soru Koruması) tespit edildi!' });
+                sendToNative({ type: 'log', message: '⚠️ Network Challenge tespit edildi!' });
 
                 var questionImg = document.querySelector('img.question');
                 var questionText = questionImg ? (questionImg.getAttribute('alt') || 'Görseldeki sorunun cevabını seçin') : 'Bağlantınızı doğrulayın';
@@ -526,11 +798,11 @@ export const scraperInjectedJs = `
               var turnstileInput = document.querySelector('input[name="cf-turnstile-response"]') || document.querySelector('input[id*="cf-chl-widget"]');
               if (turnstileInput && turnstileInput.value && !window.__turnstile_submitted) {
                 window.__turnstile_submitted = true;
-                sendToNative({ type: 'log', message: '✅ Turnstile Token alındı! Submit butonuna JNI dokunuşu gönderiliyor...' });
+                sendToNative({ type: 'log', message: '✅ Turnstile Token alındı! Submit butonu tetikleniyor...' });
 
                 var submitBtn = document.querySelector('button[type="submit"]') || document.querySelector('form[action*="network-challenge"] button');
                 if (submitBtn) {
-                  requestNativeTouch(submitBtn);
+                  clickElement(submitBtn);
                 }
               }
             } catch(chErr) {
@@ -588,13 +860,12 @@ export const scraperInjectedJs = `
 
             if (captchaImgs.length === 5 && !captchaChecked) {
               captchaChecked = true;
-              sendToNative({ type: 'log', message: '🛡️ IconCaptcha tespit edildi (5 görsel). Bayt boyutu karşılaştırması başlatılıyor...' });
+              sendToNative({ type: 'log', message: '🛡️ IconCaptcha tespit edildi (5 görsel). Farklı olan analiz ediliyor...' });
               sendToNative({ type: 'captcha_detected', message: 'Bot koruması bulundu.' });
 
               (function() {
                 var captchaHolder = document.querySelector('.captcha-holder') || document.body;
 
-                // 1. IconCaptcha'nın hoverDetection kontrolünü aşmak için mouseenter tetikle
                 try {
                   captchaHolder.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
                   if (window.jQuery) {
@@ -602,11 +873,10 @@ export const scraperInjectedJs = `
                   }
                 } catch(e) {}
 
-                // 2. 5 görselin URL ve hashlerini topla
                 var iconData = captchaImgs.map(function(el, idx) {
                   var hash = el.getAttribute('icon-hash') || '';
                   var bg = el.style.backgroundImage || window.getComputedStyle(el).backgroundImage || '';
-                  var match = bg.match(/url\(['"]?([^'"]+?)['"]?\)/i);
+                  var match = bg.match(/url\\(['"]?([^'"]+?)['"]?\\)/i);
                   var src = match ? match[1] : '';
                   if (!src && hash) {
                     src = '/api/Captcha/?cid=0&hash=' + hash;
@@ -614,7 +884,6 @@ export const scraperInjectedJs = `
                   return { element: el, hash: hash, src: src, index: idx };
                 });
 
-                // 3. Görsellerin bayt boyutlarını fetch ile aynı oturumda çek ve karşılaştır
                 var fetchPromises = iconData.map(function(item) {
                   if (!item.src) return Promise.resolve({ element: item.element, hash: item.hash, size: 0, index: item.index });
                   return fetch(item.src, { credentials: 'same-origin' })
@@ -633,7 +902,6 @@ export const scraperInjectedJs = `
                     message: '📊 Görsel boyutları: ' + results.map(function(r) { return '#' + (r.index + 1) + ': ' + r.size + 'B'; }).join(' | ') 
                   });
 
-                  // Frekans haritası: 4 aynı boyutta görsel, 1 farklı boyutta görsel (outlier)
                   var sizeFreq = {};
                   results.forEach(function(r) {
                     sizeFreq[r.size] = (sizeFreq[r.size] || 0) + 1;
@@ -645,10 +913,10 @@ export const scraperInjectedJs = `
 
                   sendToNative({ 
                     type: 'log', 
-                    message: '🎯 Farklı olan görsel bulundu: #' + (outlier.index + 1) + ' (Boyut: ' + outlier.size + 'B)' 
+                    message: '🎯 Farklı olan görsel: #' + (outlier.index + 1) + ' (Hash: ' + (outlier.hash ? outlier.hash.substring(0, 8) : 'yok') + '... Boyut: ' + outlier.size + 'B)' 
                   });
 
-                  // clickDelay süresini (en az 1200ms) bekle
+                  // Dokunuş kilidi kaldırıldığı için uzun süre beklemeden hızlıca onayla
                   setTimeout(function() {
                     var targetEl = outlier.element;
                     var rect = targetEl.getBoundingClientRect();
@@ -659,7 +927,7 @@ export const scraperInjectedJs = `
 
                     sendToNative({ 
                       type: 'log', 
-                      message: '🖱️ Doğru görsele koordinatlı event zinciri gönderiliyor (X:' + Math.round(x) + ', Y:' + Math.round(y) + ')...' 
+                      message: '⚡ Otomatik çözüm tetikleniyor...' 
                     });
 
                     // A) Container üzerinde mouseenter tazele
@@ -670,14 +938,14 @@ export const scraperInjectedJs = `
                       }
                     } catch(e) {}
 
-                    // B) jQuery Event ile tıkla (IconCaptcha'nın kendi click eventine tam uyumlu)
+                    // B) jQuery Event ile tıkla
                     if (window.jQuery) {
                       try {
                         var $target = window.jQuery(targetEl);
                         var offset = $target.offset() || { left: x, top: y };
                         var jqEvent = window.jQuery.Event('click', {
-                          pageX: offset.left + 15,
-                          pageY: offset.top + 15,
+                          pageX: offset.left + 20,
+                          pageY: offset.top + 20,
                           target: targetEl
                         });
                         $target.trigger(jqEvent);
@@ -685,7 +953,7 @@ export const scraperInjectedJs = `
                       } catch(jqErr) {}
                     }
 
-                    // C) Gerçek DOM MouseEvent zinciri (sıradan .click() değil!)
+                    // C) Gerçek DOM MouseEvent zinciri
                     var events = ['mouseover', 'mouseenter', 'mousemove', 'mousedown', 'mouseup', 'click'];
                     events.forEach(function(evType) {
                       try {
@@ -704,9 +972,9 @@ export const scraperInjectedJs = `
                       } catch(e) {}
                     });
 
-                    // D) Donanımsal Dokunuş (Android JNI Touch)
-                    if (typeof requestNativeTouch === 'function') {
-                      requestNativeTouch(targetEl);
+                    // D) Doğrudan API Onayı (JNI yerine garantili ve anlık HTTP doğrulaması)
+                    if (typeof submitCaptchaDirectly === 'function' && outlier.hash) {
+                      submitCaptchaDirectly(outlier.hash, 0);
                     }
 
                     // E) Sonuç kontrolü
@@ -717,9 +985,9 @@ export const scraperInjectedJs = `
                       } else {
                         captchaChecked = false;
                       }
-                    }, 2500);
+                    }, 1500);
 
-                  }, 1200);
+                  }, 300);
 
                 }).catch(function(err) {
                   sendToNative({ type: 'log', message: '❌ Görsel boyutu analiz hatası: ' + err.message });

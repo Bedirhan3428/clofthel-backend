@@ -195,8 +195,21 @@ export default function NetworkChallengeResolver({
             onMessage={handleWebViewMessage}
             javaScriptEnabled={true}
             domStorageEnabled={true}
-            mixedContentMode="always"
-            mediaPlaybackRequiresUserAction={false}
+            onShouldStartLoadWithRequest={(request) => {
+              const url = (request.url || '').toLowerCase();
+              const adKeywords = [
+                'syndication', 'clickadu', 'propellerads', 'adcash', 'adsterra',
+                'doubleclick', 'googleads', 'wargamings.net', 'maxihalisaha',
+                'deloplen', 'highcpmgate', 'monetag', 'cp-host', 'exdynsrv',
+                'popunder', 'betting', 'casino', 'popigram', 'bayigram',
+                'sosyalgram', 'sosyalevin', '1xbet'
+              ];
+              if (adKeywords.some(kw => url.includes(kw))) {
+                console.log('[ChallengeResolver Ad Blocked]', request.url);
+                return false;
+              }
+              return true;
+            }}
             style={{ flex: 1, width: '100%', height: '100%' }}
           />
         ) : null}
