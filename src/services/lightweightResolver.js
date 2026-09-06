@@ -304,6 +304,50 @@ export function detectSeasonNumber(title, fallback = 1) {
 }
 
 /**
+ * Generates direct candidate overview -izle URLs directly from anime title and season
+ */
+export function buildAnimeOverviewUrls(title, seasonNumber = 1) {
+  if (!title) return [];
+  const targetSeason = parseInt(seasonNumber, 10) || 1;
+
+  const clean = title
+    .replace(/\b(?:season|sezon)\s*\d+\b/gi, '')
+    .replace(/\b\d+\s*\.?\s*(?:season|sezon)\b/gi, '')
+    .replace(/\b(?:1st|2nd|3rd|4th|5th)\s*season\b/gi, '')
+    .replace(/\b(?:part|kisim|cour)\s*\d+\b/gi, '')
+    .replace(/\b(?:the\s+)?final\s*season\b/gi, '')
+    .replace(/\b(?:II|III|IV|V|VI)\b/g, '')
+    .replace(/[\(\[\{].*?[\)\]\}]/g, '')
+    .trim();
+
+  const toSlug = (str) =>
+    str
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '-');
+
+  const baseSlug = toSlug(clean);
+  const seasonSuffix = targetSeason > 1 ? `-${targetSeason}-sezon` : '';
+
+  const urls = [
+    `${BASE_URL}/${baseSlug}${seasonSuffix}-izle`,
+    `${BASE_URL}/${baseSlug}${seasonSuffix}`,
+  ];
+
+  const shortTitle = clean.split(/[:\-–—]/)[0].trim();
+  if (shortTitle && shortTitle !== clean && shortTitle.length >= 3) {
+    const shortSlug = toSlug(shortTitle);
+    urls.push(`${BASE_URL}/${shortSlug}${seasonSuffix}-izle`);
+    urls.push(`${BASE_URL}/${shortSlug}${seasonSuffix}`);
+  }
+
+  return urls;
+}
+
+/**
  * Intelligently matches candidates against a specific season number
  * e.g. Season 1 gets the base anime page, Season 2 gets 2. Sezon, Season 3 gets 3. Sezon
  */
@@ -434,34 +478,43 @@ export async function fetchEpisodesForAnime(animeOverviewUrl) {
   const seenUrls = new Set();
 
   // Pattern 0: .animeDetail-items li episode cards (Tranimeizle detail list)
-  const liRegex = /<li[^>]*>[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/li>/gi;
-  let match;
-  while ((match = liRegex.exec(html)) !== null) {
-    let href = match[1].trim();
+  const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gi;
+  let liMatch;
+  while ((liMatch = liRegex.exec(html)) !== null) {
+    const liContent = liMatch[1];
+    const aMatch = liContent.match(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+    if (!aMatch) continue;
+
+    let href = aMatch[1].trim();
     if (href.startsWith('/')) href = `${BASE_URL}${href}`;
-    if (!seenUrls.has(href) && (href.includes('-bolum') || href.includes('-bolum-izle'))) {
+    if (!seenUrls.has(href) && (href.includes('-bolum') || href.includes('-bolum-izle') || href.includes('/bolum/'))) {
       seenUrls.add(href);
-      const content = match[2];
+      const content = aMatch[2];
 
       // Thumbnail
-      const imgMatch = content.match(/<img[^>]+src="([^"]+)"/i);
+      const imgMatch = content.match(/<img[^>]+src="([^"]+)"/i) || liContent.match(/<img[^>]+src="([^"]+)"/i);
       const thumb = imgMatch ? imgMatch[1] : '';
 
       // Title
-      const titleSpanMatch = content.match(/<div class="etitle"[^>]*>[\s\S]*?<span>([^<]+)<\/span>/i);
-      const altMatch = content.match(/alt="([^"]+)"/i);
+      const titleSpanMatch = content.match(/<div class="etitle"[^>]*>[\s\S]*?<span>([^<]+)<\/span>/i) ||
+                             content.match(/<span[^>]*>([^<]*bolum[^<]*)<\/span>/i);
+      const altMatch = content.match(/alt="([^"]+)"/i) || liContent.match(/alt="([^"]+)"/i);
       let title = titleSpanMatch ? titleSpanMatch[1].trim() : (altMatch ? altMatch[1].trim() : '');
 
       // Release date
       const dateMatch = content.match(/<small[^>]*class="[^"]*author[^"]*"[^>]*>([\s\S]*?)<\/small>/i) ||
-                        content.match(/<small[^>]*>([\s\S]*?)<\/small>/i);
+                        content.match(/<small[^>]*>([\s\S]*?)<\/small>/i) ||
+                        liContent.match(/<small[^>]*class="[^"]*author[^"]*"[^>]*>([\s\S]*?)<\/small>/i);
       let releaseDate = '';
       if (dateMatch) {
         releaseDate = dateMatch[1].replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
       }
 
       // Episode number from href or title
-      const epMatch = href.match(/[-_](\d+)[-_]bolum/i) || title.match(/(\d+)\.\s*Bölüm/i);
+      const epMatch = href.match(/[-_](\d+)[-_]bolum/i) ||
+                      href.match(/bolum[-_](\d+)/i) ||
+                      title.match(/(\d+)\.\s*Bölüm/i) ||
+                      title.match(/Bölüm\s*(\d+)/i);
       const epNum = epMatch ? parseInt(epMatch[1], 10) : (episodes.length + 1);
 
       episodes.push({
