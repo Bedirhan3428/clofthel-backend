@@ -169,4 +169,31 @@ router.post('/report', async (req, res) => {
   }
 });
 
+const { solveIconCaptchaFromHtml } = require('../utils/iconCaptchaSolver');
+
+/**
+ * POST /api/v1/challenge/solve-icon-captcha
+ * Pure Node.js IconCaptcha solver:
+ * Uses Cheerio to parse the 5 icons, compares byte lengths via HTTP,
+ * finds the unique outlier icon, and dispatches the /api/Captcha/ HTTP validation request.
+ * Zero JNI, zero hardware touch simulation, completes in milliseconds.
+ */
+router.post('/solve-icon-captcha', async (req, res) => {
+  try {
+    const { html, cookies, baseUrl } = req.body;
+    if (!html) {
+      return res.status(400).json({ success: false, error: 'html alanı zorunludur.' });
+    }
+
+    const result = await solveIconCaptchaFromHtml(html, cookies, baseUrl);
+    if (!result.success) {
+      return res.status(422).json(result);
+    }
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
