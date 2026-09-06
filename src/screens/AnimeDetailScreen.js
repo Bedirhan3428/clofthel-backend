@@ -41,6 +41,7 @@ import {
   getCleanSearchQuery,
   detectSeasonNumber,
   extractSeasonsFromCandidates,
+  buildAnimeOverviewUrls,
   BASE_URL 
 } from '../services/lightweightResolver';
 import { fetchAnimeDetails as fetchAniListDetails } from '../services/anilistService';
@@ -159,7 +160,7 @@ const webViewEpisodeExtractorJs = `
         return;
       }
 
-      // 2. SEARCH PAGE HANDLING (/arama/...) - DO NOT LIST, DIRECTLY GO TO BEST MATCH!
+      // 2. SEARCH PAGE HANDLING (/arama/...) - DO NOT LIST, IMMEDIATELY REDIRECT TO BEST MATCH!
       if (currentPath.indexOf('/arama') !== -1 || currentUrl.indexOf('/arama/') !== -1) {
         var allLinks = document.querySelectorAll('a[href], .flx-block[data-href]');
         var cands = [];
@@ -193,72 +194,63 @@ const webViewEpisodeExtractorJs = `
           }
         }
 
-        if (cands.length > 0) {
-          if (!window.__candidates_sent) {
-            window.__candidates_sent = true;
-            postMsg({
-              type: 'candidates_extracted',
-              candidates: cands
-            });
-          }
+        if (cands.length > 0 && !window.__auto_navigated) {
+          var targetSeason = window.__TARGET_SEASON || 1;
+          var baseTitle = (window.__TARGET_TITLE || '').toLowerCase();
+          var bestScore = -9999;
+          var bestUrl = null;
 
-          if (!window.__auto_navigated) {
-            var targetSeason = window.__TARGET_SEASON || 1;
-            var baseTitle = (window.__TARGET_TITLE || '').toLowerCase();
-            var bestScore = -9999;
-            var bestUrl = null;
+          for (var k = 0; k < cands.length; k++) {
+            var cand = cands[k];
+            var raw = (cand.title + ' ' + cand.url).toLowerCase();
+            var score = 0;
 
-            for (var k = 0; k < cands.length; k++) {
-              var cand = cands[k];
-              var raw = (cand.title + ' ' + cand.url).toLowerCase();
-              var score = 0;
+            var candSeason = 1;
+            var sMatch = raw.match(/(\d+)\s*\.?\s*sezon/i) || raw.match(/sezon\s*(\d+)/i);
+            if (sMatch) {
+              candSeason = parseInt(sMatch[1], 10);
+            } else if (raw.indexOf('2nd-season') !== -1 || raw.indexOf('2nd season') !== -1 || raw.indexOf('-2-sezon') !== -1) {
+              candSeason = 2;
+            } else if (raw.indexOf('3rd-season') !== -1 || raw.indexOf('3rd season') !== -1 || raw.indexOf('-3-sezon') !== -1) {
+              candSeason = 3;
+            } else if (raw.indexOf('4th-season') !== -1 || raw.indexOf('4th season') !== -1 || raw.indexOf('-4-sezon') !== -1) {
+              candSeason = 4;
+            }
 
-              var candSeason = 1;
-              var sMatch = raw.match(/(\d+)\s*\.?\s*sezon/i) || raw.match(/sezon\s*(\d+)/i);
-              if (sMatch) {
-                candSeason = parseInt(sMatch[1], 10);
-              } else if (raw.indexOf('2nd-season') !== -1 || raw.indexOf('2nd season') !== -1 || raw.indexOf('-2-sezon') !== -1) {
-                candSeason = 2;
-              } else if (raw.indexOf('3rd-season') !== -1 || raw.indexOf('3rd season') !== -1 || raw.indexOf('-3-sezon') !== -1) {
-                candSeason = 3;
-              } else if (raw.indexOf('4th-season') !== -1 || raw.indexOf('4th season') !== -1 || raw.indexOf('-4-sezon') !== -1) {
-                candSeason = 4;
-              }
+            if (candSeason === targetSeason) {
+              score += 100;
+            } else {
+              score -= 50;
+            }
 
-              if (candSeason === targetSeason) {
-                score += 100;
-              } else {
-                score -= 50;
-              }
+            if (raw.indexOf('movie') !== -1 || raw.indexOf('film') !== -1 || raw.indexOf('ova') !== -1) {
+              score -= 30;
+            }
 
-              if (raw.indexOf('movie') !== -1 || raw.indexOf('film') !== -1 || raw.indexOf('ova') !== -1) {
-                score -= 30;
-              }
-
-              if (baseTitle) {
-                var tokens = baseTitle.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/);
-                for (var t = 0; t < tokens.length; t++) {
-                  if (tokens[t].length > 2 && raw.indexOf(tokens[t]) !== -1) {
-                    score += 15;
-                  }
+            if (baseTitle) {
+              var tokens = baseTitle.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/);
+              for (var t = 0; t < tokens.length; t++) {
+                if (tokens[t].length > 2 && raw.indexOf(tokens[t]) !== -1) {
+                  score += 15;
                 }
               }
-
-              if (score > bestScore) {
-                bestScore = score;
-                bestUrl = cand.url;
-              }
             }
 
-            if (bestUrl) {
-              window.__auto_navigated = true;
-              postMsg({
-                type: 'log',
-                message: '🎯 [OTOMATİK GEÇİŞ] En çok uyuşan anime sayfasına gidiliyor: ' + bestUrl
-              });
-              window.location.href = bestUrl;
-              return;
+            if (score > bestScore) {
+              bestScore = score;
+              bestUrl = cand.url;
             }
+          }
+
+          if (bestUrl) {
+            window.__auto_navigated = true;
+            var fullBest = bestUrl.indexOf('http') === 0 ? bestUrl : window.location.origin + (bestUrl.indexOf('/') === 0 ? '' : '/') + bestUrl;
+            postMsg({
+              type: 'log',
+              message: '🎯 [OTOMATİK GEÇİŞ] Arama sonuçları listelenmeden doğrudan animeye gidiliyor: ' + fullBest
+            });
+            window.location.replace(fullBest);
+            return;
           }
         }
       }
@@ -431,108 +423,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
     }
   }, [activeMongoId, addLog]);
 
-  const performTranimeizleSearch = useCallback(async (customQuery, targetSeasonNum) => {
-    const currentAnimeData = anime || passedAnime;
-    const fallbackTitle = currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle || '';
-    const rawQuery = (typeof customQuery === 'string' ? customQuery : (searchQueryInput || fallbackTitle)).trim();
-    const cleanFranchiseQuery = getCleanSearchQuery(rawQuery);
 
-    const currentSeason = (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))) || (seasons && seasons[0]) || null;
-    const seasonNum = targetSeasonNum !== undefined ? targetSeasonNum : (currentSeason?.season_number || detectSeasonNumber(rawQuery, 1));
-
-    if (!cleanFranchiseQuery) {
-      addLog('⚠️ [ARAMA] Arama sorgusu boş!', 'warn');
-      return;
-    }
-
-    setSearchStatus('searching');
-    setLoadingEpisodes(true);
-    addLog(`🔍 [ARAMA] Sezon ${seasonNum} için Tranimeizle taranıyor: "${cleanFranchiseQuery}"`, 'info');
-
-    const searchUrl = `${BASE_URL}/arama/${encodeURIComponent(cleanFranchiseQuery)}`;
-    setChallengeUrl(searchUrl);
-    addLog(`🌐 [URL] ${searchUrl}`, 'info');
-
-    try {
-      const startTime = Date.now();
-      const { status, html, size, error, ok } = await fetchHtml(searchUrl, 10000);
-      const duration = Date.now() - startTime;
-
-      if (error) {
-        setSearchStatus('error');
-        setLoadingEpisodes(false);
-        addLog(`❌ [AĞ HATASI] ${error} (${duration}ms)`, 'error');
-        if (WebView) {
-          addLog(`🛡️ Ağ hatası nedeniyle WebView üzerinden deneniyor...`, 'warn');
-          setChallengeUrl(searchUrl);
-          setIsChallengeModalVisible(true);
-        }
-        return;
-      }
-
-      const titleMatch = html ? html.match(/<title>([^<]*)<\/title>/i) : null;
-      const pageTitle = titleMatch ? titleMatch[1].trim() : 'Başlık yok';
-
-      addLog(`📡 [HTTP] Durum: ${status} ${ok ? 'OK' : ''} | Boyut: ${size} B | Süre: ${duration}ms`, ok ? 'success' : 'warn');
-      addLog(`📄 [SAYFA] Başlık: "${pageTitle}"`, 'info');
-
-      const blocked = isBotBlocked(html, size) || status === 403;
-      if (blocked) {
-        setSearchStatus('blocked');
-        addLog(`🛡️ [BOT KORUMASI] Cloudflare Turnstile / Bot Kontrolü devrede! (HTTP ${status})`, 'warn');
-        if (html && (html.includes('cf-turnstile') || html.includes('turnstile') || html.includes('challenges.cloudflare.com'))) {
-          addLog(`🔒 [TURNSTILE] Sayfada Cloudflare Turnstile Javascript challenge tespit edildi.`, 'warn');
-        }
-        if (WebView) {
-          addLog(`🛡️ Doğrudan HTTP engelli (403). WebView köprüsü açılıyor...`, 'warn');
-          setChallengeUrl(searchUrl);
-          setIsChallengeModalVisible(true);
-        }
-        return;
-      }
-
-      const candidates = parseSearchResultsHtml(html);
-      addLog(`🔎 [SONUÇ] Arama tamamlandı, anime adresi aranıyor...`, 'info');
-
-      if (candidates.length > 0) {
-        allCandidatesRef.current = candidates;
-        setSearchStatus('success');
-
-        // Otomatik sezon butonları (eğer mevcut sezon listesi 1 veya boşsa)
-        if (!seasons || seasons.length <= 1) {
-          const derived = extractSeasonsFromCandidates(candidates, activeMongoId);
-          if (derived.length > 1) {
-            setSeasons(derived);
-          }
-        }
-
-        // Aramada çıkan anime linkine (örn. /anime/sparks-of-tomorrow-izle) DOĞRUDAN git ve html'inden bölümleri çek!
-        const matchedSeasonUrl = matchCandidateForSeason(candidates, seasonNum, cleanFranchiseQuery);
-        if (matchedSeasonUrl) {
-          addLog(`🎯 [ANİME BULUNDU] ${matchedSeasonUrl} adresine gidiliyor...`, 'success');
-          await loadEpisodesForUrl(matchedSeasonUrl);
-        } else {
-          addLog(`⚠️ Uygun anime adresi eşleşmedi.`, 'warn');
-          setLoadingEpisodes(false);
-        }
-      } else {
-        allCandidatesRef.current = [];
-        if (!blocked) {
-          setSearchStatus('empty');
-          addLog(`ℹ️ [BOŞ] "${cleanFranchiseQuery}" aramasına uygun anime bulunamadı.`, 'info');
-        }
-        setLoadingEpisodes(false);
-      }
-    } catch (err) {
-      setSearchStatus('error');
-      setLoadingEpisodes(false);
-      addLog(`❌ [İSTİSNA] Arama hatası: ${err.message}`, 'error');
-      if (WebView) {
-        setChallengeUrl(searchUrl);
-        setIsChallengeModalVisible(true);
-      }
-    }
-  }, [anime, passedAnime, searchQueryInput, initialTitle, seasons, activeMongoId, addLog, loadEpisodesForUrl]);
 
   // ── Load user status ─────────────────────────────────────────
   useEffect(() => {
@@ -610,7 +501,12 @@ export default function AnimeDetailScreen({ route, navigation }) {
           setSearchQueryInput(targetTitle);
           addLog(`🚀 Sezon ${seasonNum} ("${targetTitle}") için bölümler getiriliyor...`, 'info');
           if (!cancelled) {
-            await performTranimeizleSearch(targetTitle, seasonNum);
+            const overviewUrls = buildAnimeOverviewUrls(targetTitle, seasonNum);
+            const directAnimeUrl = overviewUrls[0];
+            addLog(`🔗 [ANİME BAĞLANTISI] ${directAnimeUrl}`, 'info');
+            setSelectedCandidateUrl(directAnimeUrl);
+            setChallengeUrl(directAnimeUrl);
+            await loadEpisodesForUrl(directAnimeUrl);
           }
         }
       } catch (err) {
@@ -668,10 +564,15 @@ export default function AnimeDetailScreen({ route, navigation }) {
       }
     }
 
-    // Otherwise search for that season to get its link
+    // Direct overview URL for that season
     const currentAnimeData = anime || passedAnime;
     const targetTitle = selSeason?.title || currentAnimeData?.orijinal_ad || currentAnimeData?.title || currentAnimeData?.title_romaji || initialTitle || '';
-    performTranimeizleSearch(targetTitle, seasonNum);
+    const overviewUrls = buildAnimeOverviewUrls(targetTitle, seasonNum);
+    const seasonUrl = overviewUrls[0];
+    addLog(`🎯 [SEZON SEÇİLDİ] Sezon ${seasonNum} adresi: ${seasonUrl}`, 'info');
+    setSelectedCandidateUrl(seasonUrl);
+    setChallengeUrl(seasonUrl);
+    loadEpisodesForUrl(seasonUrl);
   };
 
   const handleToggleFavorite = async () => {
@@ -1090,7 +991,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
             </View>
             <WebView
               ref={webViewRef}
-              source={{ uri: challengeUrl || `${BASE_URL}/arama/${encodeURIComponent(searchQueryInput || getCleanSearchQuery(anime?.title || anime?.orijinal_ad || initialTitle || ''))}` }}
+              source={{ uri: challengeUrl || (buildAnimeOverviewUrls(anime?.title || anime?.orijinal_ad || initialTitle, (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId)))?.season_number || 1)[0]) || `${BASE_URL}/` }}
               style={{ flex: 1 }}
               userAgent="Mozilla/5.0 (Linux; Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"
               injectedJavaScriptBeforeContentLoaded={`

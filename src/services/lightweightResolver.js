@@ -333,6 +333,8 @@ export function buildAnimeOverviewUrls(title, seasonNumber = 1) {
   const seasonSuffix = targetSeason > 1 ? `-${targetSeason}-sezon` : '';
 
   const urls = [
+    `${BASE_URL}/anime/${baseSlug}${seasonSuffix}-izle`,
+    `${BASE_URL}/anime/${baseSlug}${seasonSuffix}`,
     `${BASE_URL}/${baseSlug}${seasonSuffix}-izle`,
     `${BASE_URL}/${baseSlug}${seasonSuffix}`,
   ];
@@ -340,6 +342,8 @@ export function buildAnimeOverviewUrls(title, seasonNumber = 1) {
   const shortTitle = clean.split(/[:\-–—]/)[0].trim();
   if (shortTitle && shortTitle !== clean && shortTitle.length >= 3) {
     const shortSlug = toSlug(shortTitle);
+    urls.push(`${BASE_URL}/anime/${shortSlug}${seasonSuffix}-izle`);
+    urls.push(`${BASE_URL}/anime/${shortSlug}${seasonSuffix}`);
     urls.push(`${BASE_URL}/${shortSlug}${seasonSuffix}-izle`);
     urls.push(`${BASE_URL}/${shortSlug}${seasonSuffix}`);
   }

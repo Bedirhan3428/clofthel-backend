@@ -149,6 +149,28 @@ export default function SearchScreen({ route, navigation }) {
     );
   }, [navigation]);
 
+  const handleSearchSubmit = useCallback(async () => {
+    const trimmed = query.trim();
+    if (!trimmed || trimmed.length < 2) return;
+
+    if (results && results.length > 0) {
+      navigation.navigate('AnimeDetail', { anime: results[0] });
+      return;
+    }
+
+    setIsSearching(true);
+    try {
+      const matches = await searchAniList(trimmed, 1, 10);
+      if (matches && matches.length > 0) {
+        navigation.navigate('AnimeDetail', { anime: matches[0] });
+      }
+    } catch (err) {
+      console.warn('[SearchScreen] Submit search error:', err.message);
+    } finally {
+      setIsSearching(false);
+    }
+  }, [query, results, navigation]);
+
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.bgPrimary} />
@@ -167,24 +189,27 @@ export default function SearchScreen({ route, navigation }) {
           <Ionicons name="search" size={18} color={COLORS.textSecondary} style={styles.searchIcon} />
           <TextInput
             style={styles.input}
-            placeholder="AniList'te anime ara..."
+            placeholder="Anime ara ve git..."
             placeholderTextColor={COLORS.textMuted}
             value={query}
             onChangeText={setQuery}
             autoFocus
             clearButtonMode="while-editing"
             returnKeyType="search"
-            onSubmitEditing={() => {
-              if (results && results.length > 0) {
-                navigation.navigate('AnimeDetail', { anime: results[0] });
-              }
-            }}
+            onSubmitEditing={handleSearchSubmit}
           />
           {query.trim().length > 0 && (
             <TouchableOpacity onPress={() => setQuery('')} style={styles.clearButton}>
               <Ionicons name="close-circle" size={16} color={COLORS.textSecondary} />
             </TouchableOpacity>
           )}
+          <TouchableOpacity
+            onPress={handleSearchSubmit}
+            style={styles.submitArrowButton}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="arrow-forward" size={18} color={COLORS.accent} />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -275,6 +300,10 @@ const styles = StyleSheet.create({
   },
   clearButton: {
     padding: 4,
+  },
+  submitArrowButton: {
+    padding: 4,
+    marginLeft: 6,
   },
   listContent: {
     padding: SPACING.lg,
