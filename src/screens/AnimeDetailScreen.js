@@ -40,6 +40,7 @@ import {
   BASE_URL 
 } from '../services/lightweightResolver';
 import { fetchAnimeDetails as fetchAniListDetails } from '../services/anilistService';
+import { scraperInjectedJs } from '../modules/ScraperScript';
 import { useAlert } from '../context/AlertContext';
 import { AuthContext } from '../context/AuthContext';
 
@@ -905,10 +906,26 @@ export default function AnimeDetailScreen({ route, navigation }) {
               source={{ uri: challengeUrl || `${BASE_URL}/arama/${encodeURIComponent(searchQueryInput || mainTitleEn)}` }}
               style={{ flex: 1 }}
               userAgent="Mozilla/5.0 (Linux; Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"
+              injectedJavaScriptBeforeContentLoaded={scraperInjectedJs}
+              injectedJavaScript={scraperInjectedJs}
+              javaScriptEnabled={true}
+              domStorageEnabled={true}
+              onMessage={(event) => {
+                try {
+                  const data = JSON.parse(event.nativeEvent.data);
+                  if (data.type === 'log') {
+                    addLog(data.message, 'info');
+                  } else if (data.type === 'captcha_detected') {
+                    addLog('🛡️ Bot koruması algılandı, otomatik çözülüyor...', 'warn');
+                  } else if (data.type === 'resolved') {
+                    addLog('🎉 Doğrulama başarılı!', 'success');
+                  }
+                } catch(e) {}
+              }}
               onNavigationStateChange={(navState) => {
                 addLog(`🌐 [WEBVIEW] URL: ${navState.url}`, 'info');
                 if (navState.title && !navState.title.includes('Doğrulama') && !navState.title.includes('Just a moment')) {
-                  addLog(`✅ [WEBVIEW] Doğrulama tamamlandı: "${navState.title}"`, 'success');
+                  addLog(`✅ [WEBVIEW] Sayfa: "${navState.title}"`, 'success');
                 }
               }}
             />

@@ -588,121 +588,143 @@ export const scraperInjectedJs = `
 
             if (captchaImgs.length === 5 && !captchaChecked) {
               captchaChecked = true;
-              var detectionTime = Date.now();
-              sendToNative({ type: 'log', message: 'Captcha tespit edildi. Piksel analizi (Canvas) baslatiliyor...' });
+              sendToNative({ type: 'log', message: '🛡️ IconCaptcha tespit edildi (5 görsel). Bayt boyutu karşılaştırması başlatılıyor...' });
               sendToNative({ type: 'captcha_detected', message: 'Bot koruması bulundu.' });
 
               (function() {
-                var imgs = captchaImgs;
-                var loadedImages = [];
-                var loadedCount = 0;
+                var captchaHolder = document.querySelector('.captcha-holder') || document.body;
 
-                function analyzePixels() {
-                  try {
-                    var width = 40;
-                    var height = 40;
-                    var pixelData = [];
-
-                    for (var i = 0; i < imgs.length; i++) {
-                      var canvas = document.createElement('canvas');
-                      canvas.width = width;
-                      canvas.height = height;
-                      var ctx = canvas.getContext('2d');
-                      ctx.drawImage(loadedImages[i], 0, 0, width, height);
-                      var imgData = ctx.getImageData(0, 0, width, height).data;
-                      pixelData.push(imgData);
-                    }
-
-                    var diffSums = [0, 0, 0, 0, 0];
-                    for (var i = 0; i < 5; i++) {
-                      for (var j = i + 1; j < 5; j++) {
-                        var diff = 0;
-                        var data1 = pixelData[i];
-                        var data2 = pixelData[j];
-                        for (var k = 0; k < data1.length; k += 4) {
-                          diff += Math.abs(data1[k] - data2[k]);       // R
-                          diff += Math.abs(data1[k+1] - data2[k+1]);   // G
-                          diff += Math.abs(data1[k+2] - data2[k+2]);   // B
-                        }
-                        diffSums[i] += diff;
-                        diffSums[j] += diff;
-                      }
-                    }
-
-                    var maxDiff = -1;
-                    var outlierIndex = 0;
-                    for (var i = 0; i < 5; i++) {
-                      if (diffSums[i] > maxDiff) {
-                        maxDiff = diffSums[i];
-                        outlierIndex = i;
-                      }
-                    }
-
-                    sendToNative({ type: 'log', message: 'Gorsel piksel farklari: ' + diffSums.join(', ') });
-                    sendToNative({ type: 'log', message: 'En farkli gorsel bulundu (#' + (outlierIndex + 1) + ')' });
-
-                    var targetEl = imgs[outlierIndex];
-                    var timeElapsed = Date.now() - detectionTime;
-                    var remainingDelay = Math.max(0, 2500 - timeElapsed);
-
-                    setTimeout(function() {
-                      sendToNative({ type: 'log', message: 'Donanımsal (Native) Tıklama gönderiliyor...' });
-                      requestNativeTouch(targetEl);
-
-                      // 3.5 saniye bekle, çözülmezse manuel butonu göster ve bildirim at
-                      setTimeout(function() {
-                        if (!_resolved) {
-                          sendToNative({ type: 'captcha_failed', message: 'Otomatik bot koruması 1. denemede geçilemedi. Manuel geçiş yapılabilir.' });
-                          var reloadCount = parseInt(sessionStorage.getItem('captcha_reloads') || '0');
-                          if (reloadCount < 1) {
-                            sessionStorage.setItem('captcha_reloads', reloadCount + 1);
-                            sendToNative({ type: 'log', message: '1. Deneme basarisiz. Yenileniyor...' });
-                            window.location.reload();
-                          } else {
-                            sendToNative({ type: 'log', message: 'Tüm otomatik denemeler tamamlandı. Lütfen manuel geçiş butonunu kullanın veya captcha ekranına dokunun.' });
-                            captchaChecked = false;
-                          }
-                        } else {
-                          captchaChecked = false;
-                        }
-                      }, 3500);
-
-                    }, remainingDelay);
-                  } catch(e) {
-                    sendToNative({ type: 'log', message: 'Piksel analiz hatasi: ' + e.message });
-                    sendToNative({ type: 'captcha_failed', message: 'Piksel analiz hatası oluştu.' });
-                    captchaChecked = false;
+                // 1. IconCaptcha'nın hoverDetection kontrolünü aşmak için mouseenter tetikle
+                try {
+                  captchaHolder.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+                  if (window.jQuery) {
+                    window.jQuery(captchaHolder).trigger('mouseenter');
                   }
-                }
+                } catch(e) {}
 
-                for (var k = 0; k < imgs.length; k++) {
-                  (function(index) {
-                    var imgEl = imgs[index];
-                    var bgStyle = imgEl.style.backgroundImage || window.getComputedStyle(imgEl).backgroundImage || '';
-                    var srcUrl = getCleanUrl(bgStyle) || imgEl.src || imgEl.getAttribute('src') || '';
+                // 2. 5 görselin URL ve hashlerini topla
+                var iconData = captchaImgs.map(function(el, idx) {
+                  var hash = el.getAttribute('icon-hash') || '';
+                  var bg = el.style.backgroundImage || window.getComputedStyle(el).backgroundImage || '';
+                  var match = bg.match(/url\(['"]?([^'"]+?)['"]?\)/i);
+                  var src = match ? match[1] : '';
+                  if (!src && hash) {
+                    src = '/api/Captcha/?cid=0&hash=' + hash;
+                  }
+                  return { element: el, hash: hash, src: src, index: idx };
+                });
 
-                    if (srcUrl) {
-                      var absoluteUrl = new URL(srcUrl, window.location.href).href;
-                      var tempImg = new Image();
-                      tempImg.crossOrigin = "anonymous";
-                      tempImg.onload = function() {
-                        loadedCount++;
-                        if (loadedCount === 5) {
-                          analyzePixels();
-                        }
-                      };
-                      tempImg.onerror = function() {
-                        sendToNative({ type: 'log', message: 'Gorsel ' + (index + 1) + ' canvas yukleme hatasi.' });
-                        captchaChecked = false;
-                      };
-                      loadedImages[index] = tempImg;
-                      tempImg.src = absoluteUrl;
-                    } else {
-                      sendToNative({ type: 'log', message: 'Gorsel ' + (index + 1) + ' URL bulunamadi.' });
-                      captchaChecked = false;
+                // 3. Görsellerin bayt boyutlarını fetch ile aynı oturumda çek ve karşılaştır
+                var fetchPromises = iconData.map(function(item) {
+                  if (!item.src) return Promise.resolve({ element: item.element, hash: item.hash, size: 0, index: item.index });
+                  return fetch(item.src, { credentials: 'same-origin' })
+                    .then(function(res) { return res.arrayBuffer(); })
+                    .then(function(buf) {
+                      return { element: item.element, hash: item.hash, size: buf.byteLength, index: item.index };
+                    })
+                    .catch(function(err) {
+                      return { element: item.element, hash: item.hash, size: 0, index: item.index };
+                    });
+                });
+
+                Promise.all(fetchPromises).then(function(results) {
+                  sendToNative({ 
+                    type: 'log', 
+                    message: '📊 Görsel boyutları: ' + results.map(function(r) { return '#' + (r.index + 1) + ': ' + r.size + 'B'; }).join(' | ') 
+                  });
+
+                  // Frekans haritası: 4 aynı boyutta görsel, 1 farklı boyutta görsel (outlier)
+                  var sizeFreq = {};
+                  results.forEach(function(r) {
+                    sizeFreq[r.size] = (sizeFreq[r.size] || 0) + 1;
+                  });
+
+                  var outlier = results.find(function(r) {
+                    return sizeFreq[r.size] === 1;
+                  }) || results[0];
+
+                  sendToNative({ 
+                    type: 'log', 
+                    message: '🎯 Farklı olan görsel bulundu: #' + (outlier.index + 1) + ' (Boyut: ' + outlier.size + 'B)' 
+                  });
+
+                  // clickDelay süresini (en az 1200ms) bekle
+                  setTimeout(function() {
+                    var targetEl = outlier.element;
+                    var rect = targetEl.getBoundingClientRect();
+                    var x = rect.left + (rect.width / 2);
+                    var y = rect.top + (rect.height / 2);
+                    var pageX = (window.pageXOffset || document.documentElement.scrollLeft || 0) + x;
+                    var pageY = (window.pageYOffset || document.documentElement.scrollTop || 0) + y;
+
+                    sendToNative({ 
+                      type: 'log', 
+                      message: '🖱️ Doğru görsele koordinatlı event zinciri gönderiliyor (X:' + Math.round(x) + ', Y:' + Math.round(y) + ')...' 
+                    });
+
+                    // A) Container üzerinde mouseenter tazele
+                    try {
+                      captchaHolder.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+                      if (window.jQuery) {
+                        window.jQuery(captchaHolder).trigger('mouseenter');
+                      }
+                    } catch(e) {}
+
+                    // B) jQuery Event ile tıkla (IconCaptcha'nın kendi click eventine tam uyumlu)
+                    if (window.jQuery) {
+                      try {
+                        var $target = window.jQuery(targetEl);
+                        var offset = $target.offset() || { left: x, top: y };
+                        var jqEvent = window.jQuery.Event('click', {
+                          pageX: offset.left + 15,
+                          pageY: offset.top + 15,
+                          target: targetEl
+                        });
+                        $target.trigger(jqEvent);
+                        sendToNative({ type: 'log', message: '✅ jQuery IconCaptcha click eventi tetiklendi.' });
+                      } catch(jqErr) {}
                     }
-                  })(k);
-                }
+
+                    // C) Gerçek DOM MouseEvent zinciri (sıradan .click() değil!)
+                    var events = ['mouseover', 'mouseenter', 'mousemove', 'mousedown', 'mouseup', 'click'];
+                    events.forEach(function(evType) {
+                      try {
+                        var ev = new MouseEvent(evType, {
+                          bubbles: true,
+                          cancelable: true,
+                          view: window,
+                          clientX: x,
+                          clientY: y,
+                          screenX: x,
+                          screenY: y,
+                          pageX: pageX,
+                          pageY: pageY
+                        });
+                        targetEl.dispatchEvent(ev);
+                      } catch(e) {}
+                    });
+
+                    // D) Donanımsal Dokunuş (Android JNI Touch)
+                    if (typeof requestNativeTouch === 'function') {
+                      requestNativeTouch(targetEl);
+                    }
+
+                    // E) Sonuç kontrolü
+                    setTimeout(function() {
+                      var successEl = document.querySelector('.captcha-success');
+                      if (successEl) {
+                        sendToNative({ type: 'log', message: '🎉 IconCaptcha başarıyla geçildi!' });
+                      } else {
+                        captchaChecked = false;
+                      }
+                    }, 2500);
+
+                  }, 1200);
+
+                }).catch(function(err) {
+                  sendToNative({ type: 'log', message: '❌ Görsel boyutu analiz hatası: ' + err.message });
+                  captchaChecked = false;
+                });
               })();
               return;
             }
