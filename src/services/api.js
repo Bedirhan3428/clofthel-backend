@@ -63,6 +63,15 @@ const ANIME_QUERY = `
         season
         seasonYear
         description(asHtml: false)
+        startDate {
+          year
+          month
+          day
+        }
+        nextAiringEpisode {
+          episode
+          airingAt
+        }
       }
     }
   }
@@ -88,6 +97,15 @@ const SINGLE_ANIME_QUERY = `
       season
       seasonYear
       description(asHtml: false)
+      startDate {
+        year
+        month
+        day
+      }
+      nextAiringEpisode {
+        episode
+        airingAt
+      }
       streamingEpisodes {
         title
         url

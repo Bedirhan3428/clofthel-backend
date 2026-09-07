@@ -15,6 +15,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Image } from 'expo-image';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS } from '../constants/theme';
 import { searchAnimes as searchAniList } from '../services/anilistService';
+import { detectSeasonNumber, detectPartNumber } from '../services/lightweightResolver';
 
 // ── Format badge colors ────────────────────────────────────────
 const FORMAT_COLORS = {
@@ -42,7 +43,7 @@ export default function SearchScreen({ route, navigation }) {
     }
   }, [route?.params?.initialQuery]);
 
-  // ── Pure AniList GraphQL Search ──────────────────────────────
+  // ── Pure AniList GraphQL Search with Zero-Tolerance Season Priority ──
   useEffect(() => {
     const trimmed = query.trim();
     if (!trimmed || trimmed.length < 2) {
@@ -61,11 +62,58 @@ export default function SearchScreen({ route, navigation }) {
 
     const timer = setTimeout(async () => {
       try {
-        const aniListMatches = await searchAniList(trimmed, 1, 30);
+        const detectedSeason = detectSeasonNumber(trimmed, 0);
+        const detectedPart = detectPartNumber(trimmed, 0);
+        const isTargetFinal = /(?:final\s*(?:season|sezon)|the\s*final|son\s*sezon|\(final\))/i.test(trimmed);
+        const cleanQuery = trimmed
+          .replace(/\b(\d+)\s*\.?\s*(?:sezon|season)\b/gi, '')
+          .replace(/\b(?:sezon|season)\s*(\d+)\b/gi, '')
+          .replace(/\b(?:1st|2nd|3rd|4th|5th)\s*(?:sezon|season)\b/gi, '')
+          .replace(/\b(?:part|cour|kısım|kisim)\s*(\d+)\b/gi, '')
+          .replace(/\b(\d+)\s*\.?\s*(?:part|cour|kısım|kisim)\b/gi, '')
+          .replace(/\b(?:the\s+)?final\s*(?:season|sezon)?\b/gi, '')
+          .trim();
+
+        let aniListMatches = await searchAniList(trimmed, 1, 30);
         if (cancelled) return;
 
+        // Turkish "X. Sezon" or "X. Kısım" return 0 results on AniList -> fallback to clean query
+        if ((!aniListMatches || aniListMatches.length === 0) && cleanQuery && cleanQuery !== trimmed && cleanQuery.length >= 2) {
+          aniListMatches = await searchAniList(cleanQuery, 1, 30);
+          if (cancelled) return;
+        }
+
         if (Array.isArray(aniListMatches)) {
-          setResults(aniListMatches);
+          // KULLANICI KESİN KURALI: Film ve TV dışında hiçbir OVA, ONA, Special, Recap listelenmez!
+          const cleanMatches = aniListMatches.filter(item => {
+            if (!item) return false;
+            const fmt = (item.format || '').toUpperCase();
+            if (!['TV', 'MOVIE'].includes(fmt)) return false;
+            const fullTitle = `${item.title || ''} ${item.title_romaji || ''} ${item.title_english || ''} ${item.title_native || ''}`.toLowerCase();
+            if (/(?:özel|ozel|özet|offline|chibi|omake|picture drama|audio drama|drama cd|side story|tokubetsu|soushuuhen|parody|parodi|petit|puchi|bonus|extras|short anime|kısa anime|kisa anime|\b(?:ova|oad|ona|sp|special|specials|recap)\b)/i.test(fullTitle)) {
+              return false;
+            }
+            return true;
+          });
+
+          let sorted = cleanMatches;
+          if (detectedSeason > 0 || detectedPart > 0 || isTargetFinal) {
+            const matching = cleanMatches.filter(item => {
+              const fullT = `${item.title || ''} ${item.title_romaji || ''} ${item.title_english || ''}`;
+              const s = detectSeasonNumber(fullT, 1);
+              const p = detectPartNumber(fullT, 1);
+              const itemFinal = /(?:final\s*(?:season|sezon)|the\s*final|son\s*sezon|\(final\)|\bfinal\b)/i.test(fullT);
+              const seasonMatch = detectedSeason > 0 ? s === detectedSeason : true;
+              const partMatch = detectedPart > 0 ? p === detectedPart : true;
+              const finalMatch = isTargetFinal ? itemFinal : true;
+              return seasonMatch && partMatch && finalMatch;
+            });
+            const others = cleanMatches.filter(item => !matching.includes(item));
+            if (matching.length > 0) {
+              sorted = [...matching, ...others];
+            }
+          }
+          setResults(sorted);
         } else {
           setResults([]);
         }
@@ -160,9 +208,28 @@ export default function SearchScreen({ route, navigation }) {
 
     setIsSearching(true);
     try {
-      const matches = await searchAniList(trimmed, 1, 10);
+      const detectedSeason = detectSeasonNumber(trimmed, 0);
+      const cleanQuery = trimmed
+        .replace(/\b(\d+)\s*\.?\s*(?:sezon|season)\b/gi, '')
+        .replace(/\b(?:sezon|season)\s*(\d+)\b/gi, '')
+        .replace(/\b(?:1st|2nd|3rd|4th|5th)\s*(?:sezon|season)\b/gi, '')
+        .trim();
+
+      let matches = await searchAniList(trimmed, 1, 10);
+      if ((!matches || matches.length === 0) && cleanQuery && cleanQuery !== trimmed && cleanQuery.length >= 2) {
+        matches = await searchAniList(cleanQuery, 1, 10);
+      }
+
       if (matches && matches.length > 0) {
-        navigation.navigate('AnimeDetail', { anime: matches[0] });
+        let best = matches[0];
+        if (detectedSeason > 0) {
+          const matchSeason = matches.find(item => {
+            const s = detectSeasonNumber(item.title || item.title_romaji || item.title_english, 1);
+            return s === detectedSeason;
+          });
+          if (matchSeason) best = matchSeason;
+        }
+        navigation.navigate('AnimeDetail', { anime: best });
       }
     } catch (err) {
       console.warn('[SearchScreen] Submit search error:', err.message);
