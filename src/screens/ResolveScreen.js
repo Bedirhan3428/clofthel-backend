@@ -16,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { resolveEpisodeStream, searchTranimeizleMatch, fetchEpisodesForAnime } from '../services/lightweightResolver';
+import { cacheEpisodeVideoUrl } from '../services/api';
 import TouchInjector from '../modules/TouchInjector';
 import { API_BASE_URL } from '../constants/config';
 import { scraperInjectedJs } from '../modules/ScraperScript';
@@ -41,8 +42,13 @@ export default function ResolveScreen({ route, navigation }) {
     anilistId, 
     fansubs, 
     startAt,
-    episodeUrl: passedEpisodeUrl 
-  } = route.params;
+    episodeUrl: passedEpisodeUrl,
+    episodes: passedEpisodes = [],
+    seasons: passedSeasons = [],
+    anime: passedAnime = null
+  } = route.params || {};
+
+  const [episodesList, setEpisodesList] = useState(passedEpisodes || []);
 
   const [loading, setLoading] = useState(true);
   const [resolvingState, setResolvingState] = useState('Kaynak taranıyor...');
@@ -52,6 +58,7 @@ export default function ResolveScreen({ route, navigation }) {
   const [showWebView, setShowWebView] = useState(false);
 
   const webViewRef = useRef(null);
+  const hasNavigatedRef = useRef(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const animatedProgress = useRef(new Animated.Value(10)).current;
   const [displayedPercent, setDisplayedPercent] = useState(10);
@@ -147,6 +154,16 @@ export default function ResolveScreen({ route, navigation }) {
         });
         if (matchUrl) {
           const eps = await fetchEpisodesForAnime(matchUrl);
+          if (eps && eps.length > 0) {
+            const formatted = eps.map(e => ({
+              episode_number: e.number,
+              episode_title: e.title || `${e.number}. Bölüm`,
+              url: e.url,
+              thumbnail: null,
+              release_date: null
+            }));
+            setEpisodesList(formatted);
+          }
           const found = eps.find(e => e.number === parseInt(episodeNumber, 10));
           if (found) {
             targetEpUrl = found.url;
@@ -165,6 +182,8 @@ export default function ResolveScreen({ route, navigation }) {
       setProgressPercent(40);
       const streamRes = await resolveEpisodeStream(targetEpUrl);
       if (streamRes && streamRes.streamUrl) {
+        if (hasNavigatedRef.current) return;
+        hasNavigatedRef.current = true;
         setProgressPercent(100);
         let finalUrl = streamRes.streamUrl;
         if (finalUrl.startsWith('sibnet-direct:')) {
@@ -174,6 +193,13 @@ export default function ResolveScreen({ route, navigation }) {
           finalUrl = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sibnetId}`;
         }
 
+        console.log('🚀 [ResolveScreen Direct] Video stream found! Navigating to WatchScreen:', finalUrl);
+
+        const finalEps = (episodesList && episodesList.length > 0) ? episodesList : (passedEpisodes && passedEpisodes.length > 0 ? passedEpisodes : (route.params?.episodes || []));
+        const finalAnilistId = anilistId || passedAnime?.anilist_id || passedAnime?.id || route.params?.anilistId || null;
+        const finalSeasons = passedSeasons && passedSeasons.length > 0 ? passedSeasons : (route.params?.seasons || []);
+        const finalAnime = passedAnime || route.params?.anime || null;
+
         // Direct handoff to Watch player!
         navigation.replace('Watch', {
           animeId,
@@ -181,11 +207,13 @@ export default function ResolveScreen({ route, navigation }) {
           episodeTitle,
           animeTitle,
           videoUrl: finalUrl,
-          fansub: null,
+          fansub: streamRes.fansub || null,
           fansubs: fansubs || [],
-          anilistId: anilistId || null,
+          anilistId: finalAnilistId,
           startAt: startAt || 0,
-          episodes: route.params?.episodes || []
+          episodes: finalEps,
+          seasons: finalSeasons,
+          anime: finalAnime
         });
         return;
       }
@@ -237,6 +265,11 @@ export default function ResolveScreen({ route, navigation }) {
           finalUrl = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sibnetId}`;
         }
         
+        const finalEps = (episodesList && episodesList.length > 0) ? episodesList : (passedEpisodes && passedEpisodes.length > 0 ? passedEpisodes : (route.params?.episodes || []));
+        const finalAnilistId = anilistId || passedAnime?.anilist_id || passedAnime?.id || route.params?.anilistId || null;
+        const finalSeasons = passedSeasons && passedSeasons.length > 0 ? passedSeasons : (route.params?.seasons || []);
+        const finalAnime = passedAnime || route.params?.anime || null;
+
         // Replace with Watch player screen
         navigation.replace('Watch', {
           animeId,
@@ -246,9 +279,11 @@ export default function ResolveScreen({ route, navigation }) {
           videoUrl: finalUrl,
           fansub: data.fansub || null,
           fansubs: fansubs || [],
-          anilistId: anilistId || null,
+          anilistId: finalAnilistId,
           startAt: startAt || 0,
-          episodes: route.params?.episodes || []
+          episodes: finalEps,
+          seasons: finalSeasons,
+          anime: finalAnime
         });
       } else if (data.type === 'noSource' || data.type === 'error') {
         setErrorMsg(data.message || 'Anime bulunamadı.');
@@ -327,27 +362,72 @@ export default function ResolveScreen({ route, navigation }) {
             <NetworkChallengeResolver
               targetUrl={episodeUrl}
               visible={true}
-              onResolved={async (data) => {
-                let finalUrl = data.videoUrl;
+              onResolved={(data) => {
+                if (hasNavigatedRef.current) return;
+                let finalUrl = data?.videoUrl;
+                if (!finalUrl) {
+                  console.warn('[ResolveScreen] onResolved called without videoUrl:', data);
+                  return;
+                }
+                hasNavigatedRef.current = true;
                 const detectedFansub = data.fansub || null;
-                await cacheEpisodeVideoUrl(animeId, episodeNumber, finalUrl, detectedFansub);
+                console.log('🚀 [ResolveScreen onResolved] Video stream found! Navigating to WatchScreen:', finalUrl, 'Fansub:', detectedFansub);
+
                 if (finalUrl.startsWith('sibnet-direct:')) {
                   finalUrl = finalUrl.replace('sibnet-direct:', '');
                 } else if (finalUrl.startsWith('sibnet:')) {
                   const sibnetId = finalUrl.replace('sibnet:', '');
                   finalUrl = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sibnetId}`;
                 }
-                navigation.replace('Watch', {
-                  animeId,
-                  episodeNumber,
-                  episodeTitle,
-                  animeTitle,
-                  videoUrl: finalUrl,
-                  fansub: detectedFansub,
-                  fansubs: fansubs || [],
-                  anilistId: anilistId || null,
-                  startAt: startAt || 0
-                });
+
+                // Background async cache (non-blocking)
+                if (animeId && typeof cacheEpisodeVideoUrl === 'function') {
+                  try {
+                    cacheEpisodeVideoUrl(animeId, episodeNumber, finalUrl, detectedFansub).catch((err) => {
+                      console.warn('[ResolveScreen] Background cache error:', err?.message);
+                    });
+                  } catch (cacheErr) {
+                    console.warn('[ResolveScreen] Cache call error:', cacheErr?.message);
+                  }
+                }
+
+                const finalEps = (episodesList && episodesList.length > 0) ? episodesList : (passedEpisodes && passedEpisodes.length > 0 ? passedEpisodes : (route.params?.episodes || []));
+                const finalAnilistId = anilistId || passedAnime?.anilist_id || passedAnime?.id || route.params?.anilistId || null;
+                const finalSeasons = passedSeasons && passedSeasons.length > 0 ? passedSeasons : (route.params?.seasons || []);
+                const finalAnime = passedAnime || route.params?.anime || null;
+
+                try {
+                  navigation.replace('Watch', {
+                    animeId,
+                    episodeNumber,
+                    episodeTitle,
+                    animeTitle,
+                    videoUrl: finalUrl,
+                    fansub: detectedFansub,
+                    fansubs: fansubs || [],
+                    anilistId: finalAnilistId,
+                    startAt: startAt || 0,
+                    episodes: finalEps,
+                    seasons: finalSeasons,
+                    anime: finalAnime
+                  });
+                } catch (navErr) {
+                  console.warn('[ResolveScreen] navigation.replace fallback to navigate:', navErr?.message);
+                  navigation.navigate('Watch', {
+                    animeId,
+                    episodeNumber,
+                    episodeTitle,
+                    animeTitle,
+                    videoUrl: finalUrl,
+                    fansub: detectedFansub,
+                    fansubs: fansubs || [],
+                    anilistId: finalAnilistId,
+                    startAt: startAt || 0,
+                    episodes: finalEps,
+                    seasons: finalSeasons,
+                    anime: finalAnime
+                  });
+                }
               }}
               onError={(err) => {
                 setErrorMsg(err || 'Video adresi alınamadı.');

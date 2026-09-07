@@ -836,10 +836,14 @@ export const scraperInjectedJs = `
 
         function detectCurrentFansub() {
           try {
-            var activeBtn = document.querySelector('.fansubBtn.active, .sourceBtn.active, .selected-fansub, .selected-source, .source.active, .btn-primary');
+            var activeBtn = document.querySelector('.fansubSelector.active, .fansubSelector[style*="background"], .fansubBtn.active, .sourceBtn.active, .selected-fansub, .selected-source, .source.active, .btn-primary');
             if (activeBtn) {
-              var txt = (activeBtn.textContent || activeBtn.innerText || '').trim();
+              var txt = (activeBtn.getAttribute('data-fad') || activeBtn.textContent || activeBtn.innerText || '').trim();
               if (txt) return txt;
+            }
+            var anyFs = document.querySelector('.fansubSelector[data-fad]');
+            if (anyFs) {
+              return anyFs.getAttribute('data-fad') || anyFs.textContent.trim();
             }
             if (clickedBtnText) return clickedBtnText;
             
@@ -1436,6 +1440,42 @@ export const scraperInjectedJs = `
 
             if (clickedBtnText && (now - lastClickTime < 5000)) shouldClick = false;
             if (isPlayerLoaded()) shouldClick = false;
+
+            // Fansub Selection based on user priorities
+            var fansubSelectors = document.querySelectorAll('.fansubSelector, [data-fad]');
+            if (fansubSelectors && fansubSelectors.length > 0 && !window.__fansub_clicked) {
+              var priorities = window.__FANSUB_PRIORITY || ['TRanimeizle', 'seicode', 'BabaPro Fansub'];
+              var targetFansubBtn = null;
+              var chosenFsName = '';
+
+              for (var p = 0; p < priorities.length; p++) {
+                var pName = (priorities[p] || '').toLowerCase().trim();
+                for (var f = 0; f < fansubSelectors.length; f++) {
+                  var fEl = fansubSelectors[f];
+                  var fName = (fEl.getAttribute('data-fad') || fEl.textContent || '').toLowerCase().trim();
+                  if (fName && (fName === pName || fName.indexOf(pName) !== -1 || pName.indexOf(fName) !== -1)) {
+                    targetFansubBtn = fEl;
+                    chosenFsName = fEl.getAttribute('data-fad') || fEl.textContent.trim();
+                    break;
+                  }
+                }
+                if (targetFansubBtn) break;
+              }
+
+              if (!targetFansubBtn) {
+                targetFansubBtn = document.querySelector('.fansubSelector.active') || fansubSelectors[0];
+                chosenFsName = targetFansubBtn ? (targetFansubBtn.getAttribute('data-fad') || targetFansubBtn.textContent.trim()) : '';
+              }
+
+              if (targetFansubBtn) {
+                var hasActiveBg = targetFansubBtn.classList.contains('active') || (targetFansubBtn.getAttribute('style') || '').indexOf('#eb0254') !== -1;
+                if (!hasActiveBg && !window.__fansub_clicked) {
+                  window.__fansub_clicked = true;
+                  sendToNative({ type: 'log', message: 'Fansub seçiliyor: ' + chosenFsName });
+                  clickElement(targetFansubBtn);
+                }
+              }
+            }
 
             if (shouldClick && sourceButtons.length > 0) {
               var aitrVipBtn = null;

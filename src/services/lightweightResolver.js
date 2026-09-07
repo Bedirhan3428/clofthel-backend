@@ -1511,6 +1511,15 @@ export async function resolveEpisodeStream(episodeUrl) {
     return null;
   }
 
+  // Detect fansub from HTML if available
+  let detectedFansub = null;
+  const fansubMatch = html.match(/class=["'][^"']*fansubSelector[^"']*active[^"']*["'][^>]*data-fad=["']([^"']+)["']/i) ||
+                      html.match(/class=["'][^"']*fansubSelector[^"']*["'][^>]*data-fad=["']([^"']+)["']/i) ||
+                      html.match(/id=["']fansubInfoLink["'][^>]*>([^<]+)<\/a>/i);
+  if (fansubMatch) {
+    detectedFansub = fansubMatch[1].trim();
+  }
+
   // 1. Check for /explorer/ URLs in iframes, scripts, or data attributes
   const explorerMatch = html.match(/(https?:\/\/[^\/"'\s]+)?\/explorer\/[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+[^\s"']*/i);
   if (explorerMatch) {
@@ -1523,6 +1532,7 @@ export async function resolveEpisodeStream(episodeUrl) {
         streamUrl: m3u8Url,
         format: 'hls',
         sourceType: 'tranimeizle_native',
+        fansub: detectedFansub,
       };
     }
   }
@@ -1536,6 +1546,7 @@ export async function resolveEpisodeStream(episodeUrl) {
       sibnetId,
       format: 'sibnet',
       sourceType: 'sibnet',
+      fansub: detectedFansub,
     };
   }
 
@@ -1547,13 +1558,19 @@ export async function resolveEpisodeStream(episodeUrl) {
       const fullUrl = iframeSrc.startsWith('http') ? iframeSrc : `${BASE_URL}${iframeSrc}`;
       const m3u8 = transformExplorerToM3u8(fullUrl);
       if (m3u8) {
-        return { streamUrl: m3u8, format: 'hls', sourceType: 'tranimeizle_native' };
+        return {
+          streamUrl: m3u8,
+          format: 'hls',
+          sourceType: 'tranimeizle_native',
+          fansub: detectedFansub,
+        };
       }
     }
     return {
       streamUrl: iframeSrc,
       format: 'iframe',
       sourceType: 'external_iframe',
+      fansub: detectedFansub,
     };
   }
 

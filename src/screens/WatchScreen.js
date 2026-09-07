@@ -20,16 +20,17 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
-import { addToHistory } from '../services/api';
-import { fetchAnimeDetails as fetchAniListDetails } from '../services/anilistService';
+import { addToHistory, cacheEpisodeVideoUrl } from '../services/api';
+import { fetchAnimeDetails as fetchAniListDetails, searchAnimes, fetchFullSeasonChain } from '../services/anilistService';
 import { resolveEpisodeStream } from '../services/lightweightResolver';
 import { API_BASE_URL } from '../constants/config';
 import TouchInjector from '../modules/TouchInjector';
+import NetworkChallengeResolver from '../components/NetworkChallengeResolver';
 import { scraperInjectedJs } from '../modules/ScraperScript';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { UltraClarityView } from '../../modules/ultra-clarity/src';
 import { getQualitySettings, saveQualitySettings } from '../utils/qualitySettings';
-import { getPlayerPreferences } from '../utils/preferences';
+import { getPlayerPreferences, DEFAULT_PREFERENCES } from '../utils/preferences';
 import { useAlert } from '../context/AlertContext';
 import { syncFansubOffsetsWithBackend, fetchAniSkipTimes } from '../services/aniSkipService';
 
@@ -45,6 +46,88 @@ if (Platform.OS !== 'web') {
 const IS_WEB = Platform.OS === 'web';
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
+const cleanEpTitle = (title) => {
+  if (!title) return '';
+  return String(title).split('\n')[0].replace(/\s*İzle.*$/i, '').trim();
+};
+
+const detectSeasonFromTitle = (raw) => {
+  if (!raw) return 1;
+  if (/youkoso|classroom\s*of\s*the\s*elite/i.test(raw)) {
+    if (/4th\s*season|4\.\s*sezon|\bseason\s*4\b|\bsezon\s*4\b/i.test(raw)) return 4;
+    if (/2-nensei|2\.\s*s[ıi]n[ıi]f|2nd\s*year|second\s*year/i.test(raw)) return 4;
+    if (/3rd\s*season|3\.\s*sezon|\bseason\s*3\b|\bsezon\s*3\b/i.test(raw)) return 3;
+    if (/2nd\s*season|2\.\s*sezon|\bseason\s*2\b|\bsezon\s*2\b/i.test(raw)) return 2;
+    if (/1st\s*season|1\.\s*sezon|\bseason\s*1\b|\bsezon\s*1\b/i.test(raw)) return 1;
+  }
+  const m = raw.match(/(\d+)\s*\.?\s*(?:st|nd|rd|th)?\s*(?:sezon|season)/i) ||
+            raw.match(/[-_](\d+)(?:st|nd|rd|th)?[-_](?:sezon|season)/i) ||
+            raw.match(/(?:sezon|season)\s*(\d+)/i);
+  if (m) return parseInt(m[1], 10);
+  if (/\b(?:iv|4th)\b/i.test(raw)) return 4;
+  if (/\b(?:iii|3rd)\b/i.test(raw)) return 3;
+  if (/\b(?:ii|2nd)\b/i.test(raw)) return 2;
+  return 1;
+};
+
+const resolveAniListMedia = async ({ anilistId, animeId, animeTitle, episodeTitle, initialAnime }) => {
+  let detail = null;
+
+  // 1. Check numeric AniList ID
+  let targetId = anilistId || (initialAnime?.id && typeof initialAnime.id === 'number' ? initialAnime.id : initialAnime?.anilist_id);
+  if (!targetId && animeId && !isNaN(Number(animeId)) && Number(animeId) > 1000 && !/^[a-fA-F0-9]{24}$/.test(String(animeId))) {
+    targetId = Number(animeId);
+  }
+
+  if (targetId) {
+    try {
+      detail = await fetchAniListDetails(targetId);
+    } catch (e) {}
+  }
+
+  // 2. If no detail yet, search AniList with title
+  if (!detail) {
+    const rawSearch = animeTitle || episodeTitle || initialAnime?.title || initialAnime?.orijinal_ad || '';
+    if (rawSearch) {
+      const epClean = rawSearch.replace(/\s*\d+\.\s*bölüm.*$/i, '').replace(/\s*izle.*$/i, '').trim();
+      const seasonNum = detectSeasonFromTitle(epClean);
+      const convertedEng = epClean.replace(/(\d+)\.\s*sezon/gi, 'Season $1').replace(/sezon/gi, 'Season').trim();
+      const numberEng = epClean.replace(/(\d+)\.\s*sezon/gi, '$1').trim();
+      const baseTitle = epClean.replace(/\s*\d+\.\s*sezon.*$/i, '').replace(/\s*season\s*\d+.*$/i, '').trim();
+
+      console.log(`[WatchScreen] AniList aranıyor: "${convertedEng}" (Hedef Sezon: ${seasonNum})`);
+      
+      let candidate = null;
+      let results = await searchAnimes(convertedEng, 1, 5);
+      if (results && results.length > 0) candidate = results[0];
+
+      if (!candidate) {
+        results = await searchAnimes(numberEng, 1, 5);
+        if (results && results.length > 0) candidate = results[0];
+      }
+
+      if (!candidate || (seasonNum > 1 && detectSeasonFromTitle(candidate.title_english || candidate.title) !== seasonNum)) {
+        results = await searchAnimes(baseTitle, 1, 10);
+        if (results && results.length > 0) {
+          const matchingSeason = results.find(r => detectSeasonFromTitle(r.title_english || r.title) === seasonNum);
+          if (matchingSeason) candidate = matchingSeason;
+          else if (!candidate) candidate = results[0];
+        }
+      }
+
+      if (candidate?.id) {
+        try {
+          detail = await fetchAniListDetails(candidate.id) || candidate;
+        } catch (e) {
+          detail = candidate;
+        }
+      }
+    }
+  }
+
+  return detail;
+};
+
 export default function WatchScreen({ route, navigation }) {
   const { 
     animeId, 
@@ -55,8 +138,10 @@ export default function WatchScreen({ route, navigation }) {
     fansubs: initialFansubs,
     anilistId: initialAnilistId,
     startAt,
-    episodes: initialEpisodes 
-  } = route.params;
+    episodes: initialEpisodes,
+    seasons: initialSeasons,
+    anime: initialAnime
+  } = route.params || {};
   const { showAlert } = useAlert();
 
   const [currentEpisodeNumber, setCurrentEpisodeNumber] = useState(initialEpisodeNumber);
@@ -93,14 +178,26 @@ export default function WatchScreen({ route, navigation }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [clarityMode, setClarityMode] = useState('off');
 
-  const [episodes, setEpisodes] = useState(initialEpisodes || []);
-  const [seasons, setSeasons] = useState([]);
-  const [currentAnime, setCurrentAnime] = useState(null);
+  const [episodes, setEpisodes] = useState(initialEpisodes || route.params?.episodes || []);
+  const [seasons, setSeasons] = useState(initialSeasons || route.params?.seasons || []);
+  const [currentAnime, setCurrentAnime] = useState(initialAnime || route.params?.anime || null);
   const [isFixingAnilist, setIsFixingAnilist] = useState(false);
-  const [playerPrefs, setPlayerPrefs] = useState(null);
+  const [playerPrefs, setPlayerPrefs] = useState(DEFAULT_PREFERENCES);
   const [aniSkipData, setAniSkipData] = useState(null);
   const [showSkipIntro, setShowSkipIntro] = useState(false);
   const [fansubOffsetSeconds, setFansubOffsetSeconds] = useState(0);
+
+  useEffect(() => {
+    if (route.params?.episodes && route.params.episodes.length > 0) {
+      setEpisodes(route.params.episodes);
+    }
+  }, [route.params?.episodes]);
+
+  useEffect(() => {
+    if (route.params?.seasons && route.params.seasons.length > 0) {
+      setSeasons(route.params.seasons);
+    }
+  }, [route.params?.seasons]);
 
   useEffect(() => {
     syncFansubOffsetsWithBackend().catch(() => {});
@@ -111,13 +208,29 @@ export default function WatchScreen({ route, navigation }) {
     let isMounted = true;
     const loadDetail = async () => {
       try {
-        const id = initialAnilistId || (typeof animeId === 'number' ? animeId : parseInt(animeId, 10));
-        if (id && !isNaN(id)) {
-          const detail = await fetchAniListDetails(id);
-          if (detail && isMounted) {
-            setCurrentAnime(detail);
-            if (detail.id || detail.anilist_id) {
-              setCurrentAnilistId(detail.id || detail.anilist_id);
+        console.log('[WatchScreen] AniList bilgileri sorgulanıyor...');
+        const anilistDetail = await resolveAniListMedia({
+          anilistId: currentAnilistId || initialAnilistId || route.params?.anilistId,
+          animeId,
+          animeTitle: route.params?.animeTitle,
+          episodeTitle: initialEpisodeTitle || currentEpisodeTitle,
+          initialAnime
+        });
+
+        if (anilistDetail && isMounted) {
+          console.log(`[WatchScreen] AniList detayları yüklendi: ${anilistDetail.title_english || anilistDetail.title} (ID: ${anilistDetail.id})`);
+          setCurrentAnime(anilistDetail);
+          setCurrentAnilistId(anilistDetail.id || anilistDetail.anilist_id);
+
+          // If seasons not provided, automatically fetch the full franchise season chain from AniList
+          if (!seasons || seasons.length === 0) {
+            try {
+              const chain = await fetchFullSeasonChain(anilistDetail);
+              if (chain && chain.length > 0 && isMounted) {
+                setSeasons(chain);
+              }
+            } catch (chainErr) {
+              console.log('[WatchScreen] Season chain walk error:', chainErr.message);
             }
           }
         }
@@ -127,7 +240,7 @@ export default function WatchScreen({ route, navigation }) {
     };
     loadDetail();
     return () => { isMounted = false; };
-  }, [animeId, initialAnilistId]);
+  }, [animeId, initialAnilistId, route.params?.animeTitle]);
 
   // 2. Resolve AniList ID and load AniSkip times with fansub intro offset
   useEffect(() => {
@@ -318,6 +431,9 @@ export default function WatchScreen({ route, navigation }) {
       if (epObj?.url) {
         const res = await resolveEpisodeStream(epObj.url);
         if (res?.streamUrl) {
+          if (animeId && typeof cacheEpisodeVideoUrl === 'function') {
+            cacheEpisodeVideoUrl(animeId, epNum, res.streamUrl, res.fansub || null).catch(() => {});
+          }
           return true;
         }
       }
@@ -424,6 +540,8 @@ export default function WatchScreen({ route, navigation }) {
   };
 
   const handleTransitionToEpisode = async (epNum) => {
+    if (epNum === currentEpisodeNumber && !isInlineResolving) return;
+
     // 1. Cancel background pre-resolution if running
     setBackgroundResolveUrl(null);
     setBackgroundTargetEp(null);
@@ -433,28 +551,38 @@ export default function WatchScreen({ route, navigation }) {
     
     // 3. Set inline resolving state
     setIsInlineResolving(true);
-    setInlineResolveProgress(10);
+    setInlineResolveProgress(15);
     setInlineResolveState('Bölüm kontrol ediliyor...');
     setInlineTargetEp(epNum);
     
     // Try to find the episode title from episodes array
-    const epObj = episodes.find(e => e.episode_number === epNum);
-    const epTitle = epObj ? epObj.episode_title : `${epNum}. Bölüm`;
-    const targetUrl = epObj?.url;
+    let epObj = episodes.find(e => e.episode_number === epNum);
+    let epTitle = epObj ? epObj.episode_title : `${epNum}. Bölüm`;
+    let targetUrl = epObj?.url;
+
+    // Fallback: If targetUrl is missing, try generating from existing episode URL
+    if (!targetUrl && episodes.length > 0) {
+      const sampleUrl = episodes.find(e => e.url)?.url;
+      if (sampleUrl) {
+        targetUrl = sampleUrl.replace(/(\d+)-bolum-izle/i, `${epNum}-bolum-izle`);
+      }
+    }
 
     if (!targetUrl) {
-      showAlert("Hata", "Bölüm adresi bulunamadı.");
+      showAlert("Hata", `${epNum}. bölüm izleme adresi bulunamadı.`);
       setIsInlineResolving(false);
       setInlineResolveUrl(null);
       setInlineTargetEp(null);
       return;
     }
 
+    console.log(`🎬 [WatchScreen] Bölüm ${epNum} geçişi başlatılıyor -> URL: ${targetUrl}`);
+
     try {
       setInlineResolveState('Akış taranıyor...');
-      setInlineResolveProgress(30);
+      setInlineResolveProgress(35);
 
-      // 1. Primary: Instant direct extraction without running into WebView .click blocks
+      // 1. Fast Path: Direct stream extraction (takes ~50-150ms)
       try {
         const directStream = await resolveEpisodeStream(targetUrl);
         if (directStream?.streamUrl) {
@@ -466,9 +594,19 @@ export default function WatchScreen({ route, navigation }) {
             streamFinal = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sId}`;
           }
 
+          console.log(`⚡ [WatchScreen Fast Path] Direct stream found for Ep ${epNum}:`, streamFinal);
+
+          // Background async cache
+          if (animeId && typeof cacheEpisodeVideoUrl === 'function') {
+            try {
+              cacheEpisodeVideoUrl(animeId, epNum, streamFinal, directStream.fansub || null).catch(() => {});
+            } catch (e) {}
+          }
+
           setCurrentEpisodeNumber(epNum);
-          setCurrentEpisodeTitle(epTitle);
+          setCurrentEpisodeTitle(cleanEpTitle(epTitle));
           setCurrentVideoUrl(streamFinal);
+          setCurrentEpisodeFansub(directStream.fansub || null);
           setCurrentStartAt(0);
 
           setIsInlineResolving(false);
@@ -477,11 +615,12 @@ export default function WatchScreen({ route, navigation }) {
           return;
         }
       } catch (fastErr) {
-        console.warn('[WatchScreen] Direct stream extraction error:', fastErr.message);
+        console.warn('[WatchScreen Fast Path] Direct extract missed:', fastErr.message);
       }
 
-      // 2. Fallback: Spawn inline WebView only if direct extraction didn't yield video link
+      // 2. Full Resolver Path: Launch NetworkChallengeResolver with Section 4
       setInlineResolveProgress(50);
+      setInlineResolveState('Video oynatıcı hazırlanıyor...');
       setInlineResolveUrl(targetUrl);
     } catch (err) {
       console.warn('[WatchScreen inline resolve] failed:', err);
@@ -573,26 +712,34 @@ export default function WatchScreen({ route, navigation }) {
   const handleFixAnilist = async () => {
     setIsFixingAnilist(true);
     try {
-      const success = await resetAnimeAnilistId(animeId);
-      if (success) {
-        const detail = await fetchAnimeDetail(animeId);
-        if (detail) {
-          setCurrentAnime(detail);
-          if (detail.seasons) setSeasons(detail.seasons);
-          
-          if (detail.anilist_id) {
-            await saveAnimeAnilistId(animeId, detail.anilist_id, detail.coverImage, detail.bannerImage, detail.orijinal_ad, detail.format);
+      const anilistDetail = await resolveAniListMedia({
+        anilistId: null, // force fresh search
+        animeId,
+        animeTitle: route.params?.animeTitle || currentAnime?.title,
+        episodeTitle: currentEpisodeTitle,
+        initialAnime: null
+      });
+
+      if (anilistDetail) {
+        setCurrentAnime(anilistDetail);
+        setCurrentAnilistId(anilistDetail.id || anilistDetail.anilist_id);
+
+        try {
+          const chain = await fetchFullSeasonChain(anilistDetail);
+          if (chain && chain.length > 0) {
+            setSeasons(chain);
           }
+        } catch (chainErr) {
+          console.log('[WatchScreen] Season chain fetch error:', chainErr.message);
         }
-        const epsData = await fetchEpisodes(animeId);
-        if (epsData) setEpisodes(epsData);
-        
-        showAlert("Başarılı", "Anime bilgileri AniList üzerinden düzeltildi ve veritabanına kaydedildi.");
+
+        showAlert("Başarılı", `AniList verileri güncellendi: ${anilistDetail.title_english || anilistDetail.title}`);
       } else {
-        showAlert("Hata", "Veriler sıfırlanamadı.");
+        showAlert("Bilgi", "AniList eşleşmesi bulunamadı.");
       }
     } catch (e) {
-      showAlert("Hata", "Bir sorun oluştu.");
+      console.warn('[WatchScreen] Fix AniList error:', e);
+      showAlert("Hata", "AniList verileri güncellenirken sorun oluştu.");
     } finally {
       setIsFixingAnilist(false);
     }
@@ -744,22 +891,8 @@ export default function WatchScreen({ route, navigation }) {
 
           {isInlineResolving && (
             <View style={styles.inlineLoadingOverlay}>
-              <ActivityIndicator size="large" color={COLORS.accent} style={{ marginBottom: 12 }} />
-              <Text style={styles.inlineLoadingState}>{inlineResolveState}</Text>
-              <Text style={styles.inlineLoadingPercent}>%{inlineResolveProgress}</Text>
-              <View style={styles.inlineProgressBarContainer}>
-                <View style={[styles.inlineProgressBar, { width: `${inlineResolveProgress}%` }]} />
-              </View>
-              <TouchableOpacity
-                style={styles.inlineCancelButton}
-                onPress={() => {
-                  setIsInlineResolving(false);
-                  setInlineResolveUrl(null);
-                  setInlineTargetEp(null);
-                }}
-              >
-                <Text style={styles.inlineCancelText}>İptal Et</Text>
-              </TouchableOpacity>
+              <ActivityIndicator size="large" color={COLORS.accent} style={{ marginBottom: 10 }} />
+              <Text style={styles.inlineLoadingState}>Bölüm Hazırlanıyor...</Text>
             </View>
           )}
 
@@ -796,13 +929,16 @@ export default function WatchScreen({ route, navigation }) {
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <View style={{ flex: 1, paddingRight: 10 }}>
                   <Text style={styles.detailsTitle}>
-                    {currentEpisodeTitle && currentEpisodeTitle !== `${currentEpisodeNumber}. Bölüm` 
-                      ? `${currentEpisodeNumber}. Bölüm - ${currentEpisodeTitle}`
-                      : `${currentEpisodeNumber}. Bölüm`}
+                    {cleanEpTitle(currentEpisodeTitle) || `${currentEpisodeNumber}. Bölüm`}
                   </Text>
                   <Text style={styles.detailsSubTitle}>
-                    {currentAnime?.title || route.params.animeTitle || 'Anime'}
+                    {currentAnime?.title_english || currentAnime?.title || currentAnime?.title_romaji || route.params?.animeTitle || 'Anime'}
                   </Text>
+                  {currentAnime?.title_romaji && currentAnime?.title_romaji !== (currentAnime?.title_english || currentAnime?.title) ? (
+                    <Text style={styles.detailsOriginalTitle} numberOfLines={1}>
+                      {currentAnime.title_romaji}
+                    </Text>
+                  ) : null}
                 </View>
                 <TouchableOpacity 
                   style={styles.fixAnilistButton} 
@@ -813,11 +949,51 @@ export default function WatchScreen({ route, navigation }) {
                     <ActivityIndicator size="small" color="#FFF" />
                   ) : (
                     <>
-                      <Ionicons name="sync-outline" size={16} color="#FFF" style={{ marginRight: 4 }} />
-                      <Text style={styles.fixAnilistText}>Verileri Düzelt</Text>
+                      <Ionicons name="sync-outline" size={15} color="#FFF" style={{ marginRight: 4 }} />
+                      <Text style={styles.fixAnilistText}>Yenile</Text>
                     </>
                   )}
                 </TouchableOpacity>
+              </View>
+
+              {/* Quick Meta Badges Row */}
+              <View style={styles.metaBadgesRow}>
+                {currentAnime?.rating ? (
+                  <View style={styles.metaBadge}>
+                    <Ionicons name="star" size={13} color="#FFD700" style={{ marginRight: 4 }} />
+                    <Text style={styles.metaBadgeText}>{currentAnime.rating} / 10</Text>
+                  </View>
+                ) : (currentAnime?.averageScore ? (
+                  <View style={styles.metaBadge}>
+                    <Ionicons name="star" size={13} color="#FFD700" style={{ marginRight: 4 }} />
+                    <Text style={styles.metaBadgeText}>{(currentAnime.averageScore / 10).toFixed(1)} / 10</Text>
+                  </View>
+                ) : null)}
+
+                <View style={styles.metaBadge}>
+                  <Text style={styles.metaBadgeText}>{currentAnime?.format || 'TV'}</Text>
+                </View>
+
+                {currentAnime?.status && (
+                  <View style={[styles.metaBadge, currentAnime.status === 'RELEASING' ? styles.metaBadgeSuccess : null]}>
+                    <Text style={styles.metaBadgeText}>
+                      {currentAnime.status === 'FINISHED' ? 'Tamamlandı' : currentAnime.status === 'RELEASING' ? 'Devam Ediyor' : currentAnime.status === 'NOT_YET_RELEASED' ? 'Yakında' : currentAnime.status}
+                    </Text>
+                  </View>
+                )}
+
+                {(currentAnime?.totalEpisodes || episodes.length > 0) && (
+                  <View style={styles.metaBadge}>
+                    <Ionicons name="layers-outline" size={13} color={COLORS.textSecondary} style={{ marginRight: 4 }} />
+                    <Text style={styles.metaBadgeText}>{currentAnime?.totalEpisodes || episodes.length} Bölüm</Text>
+                  </View>
+                )}
+
+                {currentAnilistId && (
+                  <View style={styles.metaBadgeAnilist}>
+                    <Text style={styles.metaBadgeAnilistText}>AniList #{currentAnilistId}</Text>
+                  </View>
+                )}
               </View>
             </View>
 
@@ -846,21 +1022,39 @@ export default function WatchScreen({ route, navigation }) {
 
             <View style={styles.detailsDivider} />
             
-            {/* Premium Diverse Features/Info Cards */}
+            {/* AniList Feature Info Cards */}
             <View style={styles.featureGrid}>
               <View style={styles.featureCard}>
-                <Ionicons name="film-outline" size={22} color={COLORS.accent} style={styles.featureCardIcon} />
-                <Text style={styles.featureCardTitle}>Tür</Text>
-                <Text style={styles.featureCardText}>
-                  {currentAnime?.enrichedGenres?.length ? currentAnime.enrichedGenres.join(', ') : (route.params.genres ? route.params.genres.join(', ') : 'Belirtilmemiş')}
+                <Ionicons name="film-outline" size={20} color={COLORS.accent} style={styles.featureCardIcon} />
+                <Text style={styles.featureCardTitle}>Türler</Text>
+                <Text style={styles.featureCardText} numberOfLines={2}>
+                  {currentAnime?.genres?.length ? currentAnime.genres.join(', ') : (currentAnime?.enrichedGenres?.length ? currentAnime.enrichedGenres.join(', ') : (route.params?.genres ? route.params.genres.join(', ') : 'Belirtilmemiş'))}
                 </Text>
               </View>
 
               <View style={styles.featureCard}>
-                <Ionicons name="calendar-outline" size={22} color={COLORS.accent} style={styles.featureCardIcon} />
-                <Text style={styles.featureCardTitle}>Yayın Yılı</Text>
-                <Text style={styles.featureCardText}>
-                  {currentAnime?.seasonYear || route.params.year || 'Belirtilmemiş'}
+                <Ionicons name="calendar-outline" size={20} color={COLORS.accent} style={styles.featureCardIcon} />
+                <Text style={styles.featureCardTitle}>Yayın Sezonu</Text>
+                <Text style={styles.featureCardText} numberOfLines={2}>
+                  {currentAnime?.season ? `${currentAnime.season} ` : ''}{currentAnime?.seasonYear || currentAnime?.startYear || route.params?.year || 'Belirtilmemiş'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.featureGrid}>
+              <View style={styles.featureCard}>
+                <Ionicons name="business-outline" size={20} color={COLORS.accent} style={styles.featureCardIcon} />
+                <Text style={styles.featureCardTitle}>Stüdyo</Text>
+                <Text style={styles.featureCardText} numberOfLines={2}>
+                  {currentAnime?.studios?.length ? currentAnime.studios.slice(0, 2).join(', ') : 'Belirtilmemiş'}
+                </Text>
+              </View>
+
+              <View style={styles.featureCard}>
+                <Ionicons name="star-outline" size={20} color={COLORS.accent} style={styles.featureCardIcon} />
+                <Text style={styles.featureCardTitle}>AniList Puanı</Text>
+                <Text style={styles.featureCardText} numberOfLines={2}>
+                  {currentAnime?.rating ? `⭐ ${currentAnime.rating} / 10` : (currentAnime?.averageScore ? `⭐ ${(currentAnime.averageScore / 10).toFixed(1)} / 10` : 'Belirtilmemiş')}
                 </Text>
               </View>
             </View>
@@ -868,10 +1062,10 @@ export default function WatchScreen({ route, navigation }) {
             <View style={styles.infoInfoBox}>
               <View style={styles.infoTitleRow}>
                 <Ionicons name="book-outline" size={20} color={COLORS.accent} style={{ marginRight: 6 }} />
-                <Text style={styles.infoTitleText}>Konusu</Text>
+                <Text style={styles.infoTitleText}>Konusu (AniList)</Text>
               </View>
               <Text style={styles.infoBodyText}>
-                {currentAnime?.description || route.params.description || 'Bu animenin konusu henüz eklenmemiş. Bölümü izleyerek maceraya hemen ortak olabilirsiniz.'}
+                {currentAnime?.description || currentAnime?.synopsis || route.params?.description || 'Bu animenin konusu henüz eklenmemiş. Bölümü izleyerek maceraya hemen ortak olabilirsiniz.'}
               </Text>
             </View>
 
@@ -900,12 +1094,12 @@ export default function WatchScreen({ route, navigation }) {
                     }}
                   >
                     <Image 
-                      source={{ uri: currentAnime?.bannerImage || currentAnime?.coverImage || 'https://via.placeholder.com/150' }} 
+                      source={{ uri: ep.thumbnail || currentAnime?.bannerImage || currentAnime?.coverImage || 'https://via.placeholder.com/150' }} 
                       style={styles.episodeImage} 
                     />
                     <View style={styles.episodeOverlay}>
                       <Text style={[styles.episodeCardTitle, isActive && styles.episodeCardTitleActive]} numberOfLines={2}>
-                        {ep.episode_title}
+                        {cleanEpTitle(ep.episode_title) || `${ep.episode_number}. Bölüm`}
                       </Text>
                       {isActive && <Ionicons name="play-circle" size={20} color={COLORS.accent} style={{ marginTop: 4 }} />}
                     </View>
@@ -1092,8 +1286,8 @@ export default function WatchScreen({ route, navigation }) {
           <WebView
             ref={bgWebViewRef}
             source={{ uri: backgroundResolveUrl }}
-            injectedJavaScriptBeforeContentLoaded={scraperInjectedJs}
-            injectedJavaScript={scraperInjectedJs}
+            injectedJavaScriptBeforeContentLoaded={`window.__FANSUB_PRIORITY = ${JSON.stringify(playerPrefs?.fansubPriority || ['TRanimeizle', 'seicode', 'BabaPro Fansub'])}; true;\n${scraperInjectedJs}`}
+            injectedJavaScript={`window.__FANSUB_PRIORITY = ${JSON.stringify(playerPrefs?.fansubPriority || ['TRanimeizle', 'seicode', 'BabaPro Fansub'])}; true;\n${scraperInjectedJs}`}
             onMessage={handleBackgroundWebViewMessage}
             javaScriptEnabled={true}
             domStorageEnabled={true}
@@ -1107,23 +1301,73 @@ export default function WatchScreen({ route, navigation }) {
           />
         </View>
       )}
-      {/* Inline Resolve WebView - for in-player episode transitions */}
-      {Platform.OS !== 'web' && WebView && inlineResolveUrl && (
-        <View style={{ width: 1, height: 1, position: 'absolute', opacity: 0.01, pointerEvents: 'none' }}>
-          <WebView
-            ref={inlineWebViewRef}
-            source={{ uri: inlineResolveUrl }}
-            injectedJavaScriptBeforeContentLoaded={scraperInjectedJs}
-            injectedJavaScript={scraperInjectedJs}
-            onMessage={handleInlineWebViewMessage}
-            javaScriptEnabled={true}
-            domStorageEnabled={true}
-            mixedContentMode="always"
-            mediaPlaybackRequiresUserAction={false}
-            setSupportMultipleWindows={false}
-            onShouldStartLoadWithRequest={(request) => {
-              const url = request.url;
-              return url.includes('tranimeizle.io') || url.includes('Captcha') || url.includes('challenge') || url.startsWith('about:blank') || url.startsWith('data:');
+      {/* Arka Planda Sessizce Çalışan Video Akış Çözücü */}
+      {isInlineResolving && inlineResolveUrl && (
+        <View
+          style={{
+            position: 'absolute',
+            top: -9999,
+            left: -9999,
+            width: SCREEN_WIDTH,
+            height: 400,
+            opacity: 0,
+            pointerEvents: 'none',
+            zIndex: -9999,
+          }}
+        >
+          <NetworkChallengeResolver
+            targetUrl={inlineResolveUrl}
+            visible={true}
+            silent={true}
+            fansubPriority={playerPrefs?.fansubPriority}
+            onResolved={(data) => {
+              let finalUrl = data?.videoUrl;
+              if (!finalUrl) {
+                console.warn('[WatchScreen Arka Plan Çözücü] videoUrl bulunamadı:', data);
+                return;
+              }
+
+              if (finalUrl.startsWith('sibnet-direct:')) {
+                finalUrl = finalUrl.replace('sibnet-direct:', '');
+              } else if (finalUrl.startsWith('sibnet:')) {
+                const sId = finalUrl.replace('sibnet:', '');
+                finalUrl = `${API_BASE_URL}/animes/sibnet-proxy?sibnetId=${sId}`;
+              }
+
+              const detectedFansub = data.fansub || null;
+              const epObj = episodes.find(e => e.episode_number === inlineTargetEp);
+              const epTitle = epObj ? epObj.episode_title : `${inlineTargetEp}. Bölüm`;
+
+              console.log(`🚀 [WatchScreen Arka Plan Çözücü] Bölüm ${inlineTargetEp} akışı bulundu:`, finalUrl, 'Fansub:', detectedFansub);
+
+              // Backend cache'e kaydet
+              if (animeId && typeof cacheEpisodeVideoUrl === 'function') {
+                try {
+                  cacheEpisodeVideoUrl(animeId, inlineTargetEp, finalUrl, detectedFansub).catch(() => {});
+                } catch (e) {}
+              }
+
+              setCurrentEpisodeNumber(inlineTargetEp);
+              setCurrentEpisodeTitle(cleanEpTitle(epTitle));
+              setCurrentVideoUrl(finalUrl);
+              setCurrentEpisodeFansub(detectedFansub);
+              setCurrentStartAt(0);
+
+              setIsInlineResolving(false);
+              setInlineResolveUrl(null);
+              setInlineTargetEp(null);
+            }}
+            onError={(err) => {
+              console.warn(`[WatchScreen Arka Plan Çözücü Hatası] Ep ${inlineTargetEp}:`, err);
+              showAlert('Hata', err || 'Bölüm yüklenemedi.');
+              setIsInlineResolving(false);
+              setInlineResolveUrl(null);
+              setInlineTargetEp(null);
+            }}
+            onClose={() => {
+              setIsInlineResolving(false);
+              setInlineResolveUrl(null);
+              setInlineTargetEp(null);
             }}
           />
         </View>
@@ -1454,7 +1698,7 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
             </filter>
           </defs>
         </svg>
-        <video id="player" playsinline></video>
+        <video id="player" playsinline preload="auto"></video>
         <div class="loading-overlay" id="loading-overlay">
           <div class="spinner"></div>
           <div class="loading-text">Yükleniyor...</div>
@@ -1569,6 +1813,7 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
         function initPlayer() {
           const defaultSpeed = ${prefs.defaultSpeed};
           if (isMp4) {
+            video.preload = 'auto';
             video.src = videoUrl;
             video.addEventListener('loadedmetadata', function() {
               if (${startAt} > 0) video.currentTime = ${startAt};
@@ -1579,18 +1824,24 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
             sendToParent({ type: 'qualitySelected', index: -1, label: 'Otomatik' });
             sendToParent({ type: 'speedSelected', speed: defaultSpeed, label: defaultSpeed === 1.0 ? 'Normal (1.0x)' : defaultSpeed + 'x' });
           } else if (Hls.isSupported()) {
-            const hlsOptions = ${activeClarity === 'ai-native'} ? {
-              maxMaxBufferLength: 180,
-              maxBufferLength: 60,
-              maxBufferSize: 200 * 1024 * 1024,
-              capLevelToPlayerSize: false,
-              lowLatencyMode: false,
-              maxStarvationDelay: 4,
-              maxLoadingDelay: 4
-            } : {
-              maxMaxBufferLength: 30,
-              capLevelToPlayerSize: true,
-              lowLatencyMode: true
+            const hlsOptions = {
+              maxBufferLength: 120,               // İlk 2 dakikayı (120 sn) hızla indir ve bellekte tut
+              maxMaxBufferLength: 300,            // Maksimum önbellek sınırı: 5 dakika (300 saniye)
+              maxBufferSize: 250 * 1024 * 1024,   // 250 MB tampon bellek alanı
+              backBufferLength: 90,               // Geçmiş 90 saniyeyi bellekte tut (Geri sarmada 0ms donmasız oynatma)
+              maxBufferHole: 0.5,                 // Küçük zaman boşluklarını otomatik atlayıp donmayı önle
+              lowLatencyMode: false,              // Tam bant genişliği ile agresif parça indirme
+              startFragPrefetch: true,            // İlk parçanın bitmesini beklemeden sıradaki parçaları anında çek
+              progressive: true,                  // Aşamalı parça akışı
+              appendErrorMaxRetry: 5,             // Olası parça ekleme hatalarında 5 kez dene
+              nudgeOffset: 0.1,                   // Takılma kurtarma payı
+              nudgeMaxRetry: 5,                   // Takılma durumunda 5 deneme
+              fragLoadingTimeOut: 20000,
+              manifestLoadingTimeOut: 15000,
+              levelLoadingTimeOut: 15000,
+              fragLoadingMaxRetry: 6,
+              levelLoadingMaxRetry: 6,
+              capLevelToPlayerSize: ${activeClarity === 'ai-native' ? 'false' : 'true'}
             };
             const hls = new Hls(hlsOptions);
             hlsInstance = hls;
@@ -1609,7 +1860,10 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
               if (${startAt} > 0) {
                 video.currentTime = ${startAt};
               }
-              video.play().catch(e => console.log('Autoplay blocked:', e));
+              video.play().catch(e => {
+                console.log('Autoplay error, retrying:', e);
+                video.play().catch(() => {});
+              });
             });
             
             hls.on(Hls.Events.ERROR, function(event, data) {
@@ -2221,9 +2475,13 @@ function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, clarityMode, star
       originWhitelist={['*']}
       javaScriptEnabled={true}
       domStorageEnabled={true}
+      cacheEnabled={true}
+      cacheMode="LOAD_DEFAULT"
       allowsFullscreenVideo={true}
       mediaPlaybackRequiresUserAction={false}
       allowsInlineMediaPlayback={true}
+      mixedContentMode="always"
+      androidLayerType="hardware"
       scrollEnabled={false}
       bounces={false}
       style={styles.videoPlayer}
@@ -2353,7 +2611,67 @@ const styles = StyleSheet.create({
     color: COLORS.accent,
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.semibold,
-    marginBottom: SPACING.md,
+    marginBottom: 2,
+  },
+  detailsOriginalTitle: {
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.small,
+    marginTop: 2,
+    fontStyle: 'italic',
+  },
+  fixAnilistButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  fixAnilistText: {
+    color: '#FFF',
+    fontSize: FONT_SIZES.small - 1,
+    fontWeight: FONT_WEIGHTS.medium,
+  },
+  metaBadgesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+  },
+  metaBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.bgSecondary,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  metaBadgeSuccess: {
+    borderColor: 'rgba(46, 213, 115, 0.3)',
+    backgroundColor: 'rgba(46, 213, 115, 0.08)',
+  },
+  metaBadgeText: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    fontWeight: FONT_WEIGHTS.semibold,
+  },
+  metaBadgeAnilist: {
+    backgroundColor: 'rgba(0, 173, 237, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 173, 237, 0.3)',
+  },
+  metaBadgeAnilistText: {
+    color: '#00ADED',
+    fontSize: 11,
+    fontWeight: FONT_WEIGHTS.bold,
   },
   detailsDivider: {
     height: 1,

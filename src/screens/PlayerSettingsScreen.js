@@ -190,6 +190,60 @@ export default function PlayerSettingsScreen({ navigation }) {
           </View>
         </View>
 
+        {/* Fansub Priority Section */}
+        <Text style={styles.sectionTitle}>Fansub Öncelik Sıralaması</Text>
+        <Text style={[styles.settingDescription, { marginBottom: SPACING.md, paddingHorizontal: 2 }]}>
+          Bölüm açılırken ilk 3 önceliğinize göre fansub aranır ve otomatik seçilir. Hiçbiri yoksa sitedeki varsayılan fansub seçilir.
+        </Text>
+
+        {[0, 1, 2].map((slotIndex) => {
+          const currentPriority = (preferences.fansubPriority && preferences.fansubPriority[slotIndex]) || DEFAULT_PREFERENCES.fansubPriority[slotIndex] || 'TRanimeizle';
+          const availableFansubs = [
+            'TRanimeizle',
+            'seicode',
+            'BabaPro Fansub',
+            'TAÇE',
+            'FGL Çeviri',
+            'Anisekai',
+            'Tempura',
+            'Aoi Fansub',
+            'Animeou',
+            'Puzzle'
+          ];
+
+          return (
+            <View key={slotIndex} style={styles.settingCard}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.xs }}>
+                <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: COLORS.accent, justifyContent: 'center', alignItems: 'center', marginRight: 8 }}>
+                  <Text style={{ color: '#FFF', fontSize: 12, fontWeight: 'bold' }}>{slotIndex + 1}</Text>
+                </View>
+                <Text style={styles.settingLabel}>{slotIndex + 1}. Öncelikli Fansub</Text>
+              </View>
+              <Text style={[styles.settingDescription, { marginBottom: SPACING.sm }]}>
+                Seçili: <Text style={{ color: COLORS.accent, fontWeight: 'bold' }}>{currentPriority}</Text>
+              </Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 4 }}>
+                {availableFansubs.map((fs) => {
+                  const isSelected = currentPriority.toLowerCase() === fs.toLowerCase();
+                  return (
+                    <TouchableOpacity
+                      key={fs}
+                      style={[styles.pillButton, isSelected && styles.pillButtonActive]}
+                      onPress={() => {
+                        const newPriority = [...(preferences.fansubPriority || DEFAULT_PREFERENCES.fansubPriority)];
+                        newPriority[slotIndex] = fs;
+                        updatePreference('fansubPriority', newPriority);
+                      }}
+                    >
+                      <Text style={[styles.pillText, isSelected && styles.pillTextActive]}>{fs}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          );
+        })}
+
         <View style={{ height: 40 }} />
       </ScrollView>
     </SafeAreaView>

@@ -9,6 +9,7 @@ export const DEFAULT_PREFERENCES = {
   buttonSize: 'medium',
   defaultSpeed: 1.0,
   clarityMode: 'off',
+  fansubPriority: ['TRanimeizle', 'seicode', 'BabaPro Fansub'],
 };
 
 export const getPlayerPreferences = async () => {

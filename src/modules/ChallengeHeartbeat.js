@@ -715,6 +715,255 @@ export const challengeHeartbeatJs = `
     }
 
     // =========================================================================
+    // 🎬 BÖLÜM 4: BÖLÜM İZLEME SAYFASI & VİDEO AKIŞI ÇÖZÜCÜ
+    // (.youtube-wrapper, .videoSource, #sourceList, .fansubSelector)
+    // =========================================================================
+    var isEpisodeWatchPage = (
+      path.indexOf('-bolum') !== -1 ||
+      path.indexOf('/bolum/') !== -1 ||
+      path.indexOf('bolum-izle') !== -1 ||
+      !!document.querySelector('.videoSource, #sourceList, .fansubSelector, #videoPlayer, .sourceBtn')
+    );
+
+    if (isEpisodeWatchPage && path.indexOf('/arama') === -1) {
+      // 1. Ağ İsteklerini (Fetch & XHR) Dinleme Kancası (Sayfa Ömründe 1 Kez Kurulur)
+      if (!window.__network_stream_hooked) {
+        window.__network_stream_hooked = true;
+
+        function checkUrlForStream(rawUrl) {
+          if (window.__stream_resolved) return;
+          if (!rawUrl || typeof rawUrl !== 'string') return;
+
+          // 1.1. AitrVip / Optraco Explorer URL: /explorer/UUID/HASH
+          var expMatch = rawUrl.match(/(https?:\\/\\/[^\\/"'\\s]+)?\\/explorer\\/([a-zA-Z0-9_-]+)\\/([a-zA-Z0-9_-]+)[^\\s"']*/i);
+          if (expMatch) {
+            var origin = expMatch[1] || 'https://optraco.top';
+            var uuid = expMatch[2];
+            var hash = expMatch[3];
+            var m3u8Url = origin + '/plateau/' + uuid + '/' + hash + '.m3u8';
+            log('🎯 [AitrVip] Explorer akışı yakalandı! M3U8: ' + m3u8Url, 'success');
+            triggerResolvedStream(m3u8Url, 'aitrvip');
+            return;
+          }
+
+          // 1.2. Doğrudan M3U8 URL
+          if (rawUrl.indexOf('.m3u8') !== -1 && rawUrl.indexOf('blob:') !== 0) {
+            var m3u8Clean = rawUrl.split('"')[0].split("'")[0].split(' ')[0].trim();
+            if (m3u8Clean.indexOf('http') === 0) {
+              log('🎯 Doğrudan M3U8 yakalandı: ' + m3u8Clean, 'success');
+              triggerResolvedStream(m3u8Clean, 'm3u8_direct');
+              return;
+            }
+          }
+
+          // 1.3. Sibnet MP4 URL: dv*.sibnet.ru/*/*.mp4
+          if ((rawUrl.indexOf('sibnet.ru') !== -1 && rawUrl.indexOf('.mp4') !== -1) ||
+              (rawUrl.indexOf('.mp4') !== -1 && (rawUrl.indexOf('dv') !== -1 || rawUrl.indexOf('sibnet') !== -1))) {
+            var mp4Clean = rawUrl.split('"')[0].split("'")[0].split(' ')[0].trim();
+            if (mp4Clean.indexOf('http') === 0) {
+              log('🎯 [Sibnet] MP4 akışı yakalandı: ' + mp4Clean, 'success');
+              triggerResolvedStream(mp4Clean, 'sibnet');
+              return;
+            }
+          }
+        }
+
+        window.__checkUrlForStream = checkUrlForStream;
+
+        // Monkeypatch window.fetch
+        try {
+          var _origFetch = window.fetch;
+          window.fetch = function() {
+            var arg0 = arguments[0];
+            var reqUrl = (typeof arg0 === 'string') ? arg0 : (arg0 && arg0.url ? arg0.url : '');
+            if (reqUrl) checkUrlForStream(reqUrl);
+
+            return _origFetch.apply(this, arguments).then(function(response) {
+              try {
+                if (response && response.url) checkUrlForStream(response.url);
+                if (response && !window.__stream_resolved && (reqUrl.indexOf('tranimeizle') !== -1 || reqUrl.indexOf('ajax') !== -1 || reqUrl.indexOf('source') !== -1 || reqUrl.indexOf('player') !== -1 || reqUrl.indexOf('explorer') !== -1)) {
+                  response.clone().text().then(function(bodyText) {
+                    if (bodyText) checkUrlForStream(bodyText);
+                  }).catch(function() {});
+                }
+              } catch(e) {}
+              return response;
+            });
+          };
+        } catch(e) {}
+
+        // Monkeypatch XMLHttpRequest
+        try {
+          var _origXhrOpen = XMLHttpRequest.prototype.open;
+          var _origXhrSend = XMLHttpRequest.prototype.send;
+          XMLHttpRequest.prototype.open = function(method, url) {
+            this.__reqUrl = url;
+            if (typeof url === 'string') checkUrlForStream(url);
+            return _origXhrOpen.apply(this, arguments);
+          };
+          XMLHttpRequest.prototype.send = function() {
+            var self = this;
+            this.addEventListener('load', function() {
+              try {
+                if (self.responseURL) checkUrlForStream(self.responseURL);
+                if (typeof self.responseText === 'string' && (self.responseText.indexOf('explorer') !== -1 || self.responseText.indexOf('.m3u8') !== -1 || self.responseText.indexOf('.mp4') !== -1)) {
+                  checkUrlForStream(self.responseText);
+                }
+              } catch(e) {}
+            });
+            return _origXhrSend.apply(this, arguments);
+          };
+        } catch(e) {}
+      }
+
+      function triggerResolvedStream(videoUrl, sourceType) {
+        if (window.__stream_resolved) return;
+        window.__stream_resolved = true;
+
+        var finalFansub = window.__selectedFansubName || null;
+        if (!finalFansub) {
+          var activeFansubEl = document.querySelector('.fansubSelector.active, .btn-default.fansubSelector[style*="background"], .playlist-title [data-fad]');
+          if (activeFansubEl) {
+            finalFansub = activeFansubEl.getAttribute('data-fad') || activeFansubEl.textContent.trim();
+          }
+        }
+
+        log('🎉 Video akışı hazır: ' + (finalFansub ? ('Fansub: ' + finalFansub + ' | ') : '') + sourceType, 'success');
+        postMsg({
+          type: 'resolved',
+          videoUrl: videoUrl,
+          fansub: finalFansub,
+          sourceType: sourceType || 'unknown'
+        });
+      }
+
+      // 2. Reklam Perdesini & Engelleri Temizle
+      try {
+        var adOverlays = document.querySelectorAll('.df-ovrly-lnk-p1, [class*="ovrly"], .video-ad-container');
+        for (var oi = 0; oi < adOverlays.length; oi++) {
+          var oEl = adOverlays[oi];
+          if (oEl && oEl.parentNode) {
+            oEl.parentNode.removeChild(oEl);
+          }
+        }
+      } catch(e) {}
+
+      // 3. Mevcut DOM İçeriğini Tara (Iframe\\'ler, VideoPlayer, Scriptler)
+      if (window.__checkUrlForStream) {
+        var iframes = document.querySelectorAll('iframe');
+        for (var ifi = 0; ifi < iframes.length; ifi++) {
+          var ifr = iframes[ifi];
+          var src = ifr.getAttribute('src') || ifr.src || ifr.getAttribute('data-src') || '';
+          if (src) window.__checkUrlForStream(src);
+        }
+
+        var vpEl = document.getElementById('videoPlayer') || document.querySelector('.videoSource-video-player');
+        if (vpEl && vpEl.innerHTML) {
+          if (vpEl.innerHTML.indexOf('/explorer/') !== -1 || vpEl.innerHTML.indexOf('.m3u8') !== -1 || vpEl.innerHTML.indexOf('.mp4') !== -1) {
+            window.__checkUrlForStream(vpEl.innerHTML);
+          }
+        }
+
+        var vids = document.querySelectorAll('video');
+        for (var vi = 0; vi < vids.length; vi++) {
+          var vid = vids[vi];
+          var vSrc = vid.currentSrc || vid.src || vid.getAttribute('src') || '';
+          if (vSrc) window.__checkUrlForStream(vSrc);
+        }
+      }
+
+      if (window.__stream_resolved) return;
+
+      // 4. Fansub Seçimi (Ayarlardaki 3 Öncelik Sırasına Göre)
+      var fansubSelectors = document.querySelectorAll('.fansubSelector, [data-fad]');
+      if (fansubSelectors && fansubSelectors.length > 0 && !window.__fansub_clicked) {
+        var priorities = window.__FANSUB_PRIORITY || ['TRanimeizle', 'seicode', 'BabaPro Fansub'];
+        var targetFansubBtn = null;
+        var chosenFsName = '';
+
+        for (var p = 0; p < priorities.length; p++) {
+          var pName = normText(priorities[p]);
+          for (var f = 0; f < fansubSelectors.length; f++) {
+            var fEl = fansubSelectors[f];
+            var fName = normText(fEl.getAttribute('data-fad') || fEl.textContent || '');
+            if (fName && (fName === pName || fName.indexOf(pName) !== -1 || pName.indexOf(fName) !== -1)) {
+              targetFansubBtn = fEl;
+              chosenFsName = fEl.getAttribute('data-fad') || fEl.textContent.trim();
+              log('🎯 Fansub #' + (p + 1) + ' önceliği bulundu: ' + chosenFsName, 'info');
+              break;
+            }
+          }
+          if (targetFansubBtn) break;
+        }
+
+        if (!targetFansubBtn) {
+          targetFansubBtn = document.querySelector('.fansubSelector.active') || fansubSelectors[0];
+          chosenFsName = targetFansubBtn ? (targetFansubBtn.getAttribute('data-fad') || targetFansubBtn.textContent.trim()) : '';
+          log('ℹ️ Öncelikli fansub bulunamadı, sitedeki varsayılan seçildi: ' + (chosenFsName || 'TRanimeizle'), 'info');
+        }
+
+        window.__selectedFansubName = chosenFsName;
+
+        if (targetFansubBtn) {
+          var hasActiveBg = targetFansubBtn.classList.contains('active') || (targetFansubBtn.getAttribute('style') || '').indexOf('#eb0254') !== -1;
+          if (!hasActiveBg && !window.__fansub_clicked) {
+            window.__fansub_clicked = true;
+            log('👆 Fansub tıklanıyor: ' + chosenFsName, 'info');
+            try {
+              targetFansubBtn.click();
+              if (window.jQuery) window.jQuery(targetFansubBtn).trigger('click');
+            } catch(e) {}
+          }
+        }
+      }
+
+      // 5. Kaynak Seçimi (#sourceList .sourceBtn: AitrVip Öncelikli -> Sibnet Yedek)
+      var sourceBtns = document.querySelectorAll('#sourceList li.sourceBtn, #sourceList li, .videoSource-items li');
+      if (sourceBtns && sourceBtns.length > 0) {
+        var aitrBtn = null;
+        var sibnetBtn = null;
+
+        for (var si = 0; si < sourceBtns.length; si++) {
+          var sEl = sourceBtns[si];
+          var sText = normText(sEl.textContent || sEl.innerText || '');
+          if (sText.indexOf('aitrvip') !== -1 || sText.indexOf('aitr') !== -1) {
+            if (!aitrBtn) aitrBtn = sEl;
+          } else if (sText.indexOf('sibnet') !== -1) {
+            if (!sibnetBtn) sibnetBtn = sEl;
+          }
+        }
+
+        var targetSourceBtn = aitrBtn || sibnetBtn;
+        var targetSourceName = aitrBtn ? 'AitrVip' : (sibnetBtn ? 'Sibnet' : '');
+
+        if (targetSourceBtn && !window.__source_clicked) {
+          window.__source_clicked = true;
+          window.__active_source_type = aitrBtn ? 'aitrvip' : 'sibnet';
+          log('🎬 Öncelikli kaynak seçiliyor: ' + targetSourceName, 'info');
+          try {
+            targetSourceBtn.click();
+            if (window.jQuery) window.jQuery(targetSourceBtn).trigger('click');
+          } catch(e) {}
+        }
+      }
+
+      // 6. Sibnet Oynatıcı Play Tetikleyicisi
+      if (window.__active_source_type === 'sibnet' || document.querySelector('iframe[src*="sibnet"]')) {
+        var playBtn = document.querySelector('.vjs-big-play-button, .vjs-play-control, .vjs-poster, #videoPlayer video, video');
+        if (playBtn && !window.__sibnet_play_clicked) {
+          window.__sibnet_play_clicked = true;
+          log('▶️ Sibnet oynatıcı başlatılıyor...', 'info');
+          try {
+            playBtn.click();
+            if (playBtn.play) playBtn.play();
+          } catch(e) {}
+        }
+      }
+
+      return;
+    }
+
+    // =========================================================================
     // 📺 BÖLÜM 3: ANİME DETAY SAYFASI & ÇOKLU SAYFALAMA / BÖLÜM ÇIKARICI
     // =========================================================================
     var isAnimeDetailPage = (
@@ -723,7 +972,7 @@ export const challengeHeartbeatJs = `
       !!document.querySelector('.animeDetail-items, .episode-li, .playlist-title, #episodes, .flx-block[data-href*="bolum"], a[href*="-bolum"]')
     );
 
-    if (isAnimeDetailPage && path.indexOf('/arama') === -1) {
+    if (isAnimeDetailPage && path.indexOf('/arama') === -1 && !isEpisodeWatchPage) {
       window.__all_extracted_episodes = window.__all_extracted_episodes || {};
       var targetFormat = window.__TARGET_FORMAT || 'TV';
 
@@ -931,41 +1180,44 @@ export const challengeHeartbeatJs = `
         }
       }
 
-      // 5. Akıllı Örüntü Tamamlama (10 veya 12'de kesilen 24-25 bölümlük Haikyuu vb. için)
-      var currentCount = Object.keys(window.__all_extracted_episodes).length;
-      if (targetTotal > currentCount && currentCount > 0) {
-        var sampleEp = null;
-        for (var k in window.__all_extracted_episodes) {
-          var candEp = window.__all_extracted_episodes[k];
-          if (candEp && candEp.url && candEp.url.match(/[-_](\\d+)[-_]bolum/i)) {
-            sampleEp = candEp;
-            break;
-          }
-        }
-        if (sampleEp) {
-          var uMatch = sampleEp.url.match(/^(https?:\\/\\/[^\\/]+.*\\/|.*?)([a-zA-Z0-9_-]+[-_])(\\d+)([-_]bolum(?:-izle)?.*)$/i) ||
-                       sampleEp.url.match(/^(.*\\/)([a-zA-Z0-9_-]+[-_])(\\d+)([-_]bolum.*)$/i) ||
-                       sampleEp.url.match(/^(.*[-_])(\\d+)([-_]bolum.*)$/i);
-          if (uMatch) {
-            var fullPfx = uMatch[1] + (uMatch[2] || '');
-            var sfx = uMatch[4] || uMatch[3];
-            var tPfx = window.__TARGET_TITLE ? (window.__TARGET_TITLE + ' ') : '';
-            var tSfx = '. Bölüm';
-            if (sampleEp.title) {
-              var tMat = sampleEp.title.match(/^(.*?)(\\d+)(\\.?\\s*Bölüm.*)$/i);
-              if (tMat) { tPfx = tMat[1]; tSfx = tMat[3]; }
+      // 5. Akıllı Örüntü Tamamlama (YALNIZCA TAMAMLANMIŞ SEZONLAR İÇİN)
+      // KULLANICI KESİN KURALI: Devam eden sezonlarda (RELEASING / Çıkmamış) ASLA bölüm türetilmez!
+      if (!window.__IS_RELEASING && !window.__NEXT_AIRING_EP) {
+        var currentCount = Object.keys(window.__all_extracted_episodes).length;
+        if (targetTotal > currentCount && currentCount > 0) {
+          var sampleEp = null;
+          for (var k in window.__all_extracted_episodes) {
+            var candEp = window.__all_extracted_episodes[k];
+            if (candEp && candEp.url && candEp.url.match(/[-_](\\d+)[-_]bolum/i)) {
+              sampleEp = candEp;
+              break;
             }
-            var smpThumb = sampleEp.thumbnail || '';
-            for (var fillN = 1; fillN <= targetTotal; fillN++) {
-              if (!window.__all_extracted_episodes[fillN]) {
-                window.__all_extracted_episodes[fillN] = {
-                  number: fillN,
-                  title: tPfx ? (tPfx + fillN + tSfx) : (fillN + '. Bölüm'),
-                  url: fullPfx + fillN + sfx,
-                  thumbnail: smpThumb,
-                  release_date: '',
-                  is_deduced: true
-                };
+          }
+          if (sampleEp) {
+            var uMatch = sampleEp.url.match(/^(https?:\\/\\/[^\\/]+.*\\/|.*?)([a-zA-Z0-9_-]+[-_])(\\d+)([-_]bolum(?:-izle)?.*)$/i) ||
+                         sampleEp.url.match(/^(.*\\/)([a-zA-Z0-9_-]+[-_])(\\d+)([-_]bolum.*)$/i) ||
+                         sampleEp.url.match(/^(.*[-_])(\\d+)([-_]bolum.*)$/i);
+            if (uMatch) {
+              var fullPfx = uMatch[1] + (uMatch[2] || '');
+              var sfx = uMatch[4] || uMatch[3];
+              var tPfx = window.__TARGET_TITLE ? (window.__TARGET_TITLE + ' ') : '';
+              var tSfx = '. Bölüm';
+              if (sampleEp.title) {
+                var tMat = sampleEp.title.match(/^(.*?)(\\d+)(\\.?\\s*Bölüm.*)$/i);
+                if (tMat) { tPfx = tMat[1]; tSfx = tMat[3]; }
+              }
+              var smpThumb = sampleEp.thumbnail || '';
+              for (var fillN = 1; fillN <= targetTotal; fillN++) {
+                if (!window.__all_extracted_episodes[fillN]) {
+                  window.__all_extracted_episodes[fillN] = {
+                    number: fillN,
+                    title: tPfx ? (tPfx + fillN + tSfx) : (fillN + '. Bölüm'),
+                    url: fullPfx + fillN + sfx,
+                    thumbnail: smpThumb,
+                    release_date: '',
+                    is_deduced: true
+                  };
+                }
               }
             }
           }
@@ -976,7 +1228,13 @@ export const challengeHeartbeatJs = `
       var eps = [];
       for (var numKey in window.__all_extracted_episodes) {
         if (window.__all_extracted_episodes.hasOwnProperty(numKey)) {
-          eps.push(window.__all_extracted_episodes[numKey]);
+          var itemEp = window.__all_extracted_episodes[numKey];
+          // Devam eden sezonlarda türetilmiş ve çıkmamış bölümleri ele
+          if (window.__IS_RELEASING || window.__NEXT_AIRING_EP) {
+            if (itemEp.is_deduced) continue;
+            if (window.__NEXT_AIRING_EP && itemEp.number >= window.__NEXT_AIRING_EP) continue;
+          }
+          eps.push(itemEp);
         }
       }
 

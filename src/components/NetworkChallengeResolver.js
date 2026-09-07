@@ -18,6 +18,7 @@ import { API_BASE_URL } from '../constants/config';
 import TouchInjector from '../modules/TouchInjector';
 import { scraperInjectedJs } from '../modules/ScraperScript';
 import { challengeHeartbeatJs } from '../modules/ChallengeHeartbeat';
+import { getPlayerPreferences, DEFAULT_PREFERENCES } from '../utils/preferences';
 
 let WebView = null;
 if (Platform.OS !== 'web') {
@@ -34,6 +35,8 @@ export default function NetworkChallengeResolver({
   onResolved,
   onError,
   onClose,
+  fansubPriority,
+  silent = false,
 }) {
   const [resolvingState, setResolvingState] = useState('Sayfa yükleniyor...');
   const [progressPercent, setProgressPercent] = useState(10);
@@ -46,23 +49,42 @@ export default function NetworkChallengeResolver({
   const [statusMessage, setStatusMessage] = useState(null);
   const [logs, setLogs] = useState([]);
   const [isLogExpanded, setIsLogExpanded] = useState(true);
+  const [activeFansubs, setActiveFansubs] = useState(fansubPriority || DEFAULT_PREFERENCES.fansubPriority);
 
   const webViewRef = useRef(null);
   const animatedProgress = useRef(new Animated.Value(10)).current;
 
+  useEffect(() => {
+    if (fansubPriority && Array.isArray(fansubPriority) && fansubPriority.length > 0) {
+      setActiveFansubs(fansubPriority);
+    } else {
+      getPlayerPreferences().then(prefs => {
+        if (prefs && prefs.fansubPriority && Array.isArray(prefs.fansubPriority) && prefs.fansubPriority.length > 0) {
+          setActiveFansubs(prefs.fansubPriority);
+        }
+      }).catch(() => {});
+    }
+  }, [fansubPriority]);
+
+  const getFullScript = () => {
+    const pJson = JSON.stringify(activeFansubs || DEFAULT_PREFERENCES.fansubPriority);
+    return `window.__FANSUB_PRIORITY = ${pJson}; true;\n${challengeHeartbeatJs}`;
+  };
+
   // ── Canlı Bot Kalp Atışı & Dokunmatik Kalkan ──
   useEffect(() => {
     if (!visible) return;
+    const script = getFullScript();
     if (webViewRef.current) {
-      webViewRef.current.injectJavaScript(challengeHeartbeatJs);
+      webViewRef.current.injectJavaScript(script);
     }
     const timer = setInterval(() => {
       if (webViewRef.current) {
-        webViewRef.current.injectJavaScript(challengeHeartbeatJs);
+        webViewRef.current.injectJavaScript(getFullScript());
       }
     }, 1000);
     return () => clearInterval(timer);
-  }, [visible]);
+  }, [visible, activeFansubs]);
 
   useEffect(() => {
     Animated.timing(animatedProgress, {
@@ -190,7 +212,13 @@ export default function NetworkChallengeResolver({
 
       } else if (data.type === 'resolved') {
         setProgressPercent(100);
-        if (onResolved) onResolved(data);
+        if (onResolved) {
+          try {
+            onResolved(data);
+          } catch (callbackErr) {
+            console.error('❌ [ChallengeResolver onResolved Callback Error]', callbackErr);
+          }
+        }
 
       } else if (data.type === 'native_touch') {
         const { x, y } = data;
@@ -207,8 +235,8 @@ export default function NetworkChallengeResolver({
   if (!visible) return null;
 
   return (
-    <View style={styles.container}>
-      <View style={styles.webViewContainer}>
+    <View style={silent ? { flex: 1, width: '100%', height: '100%', backgroundColor: 'transparent' } : styles.container}>
+      <View style={silent ? { flex: 1, width: '100%', height: '100%', opacity: 0 } : styles.webViewContainer}>
         {WebView ? (
           <WebView
             ref={webViewRef}
@@ -222,16 +250,16 @@ export default function NetworkChallengeResolver({
             setSupportMultipleWindows={false}
             androidLayerType="hardware"
             mixedContentMode="always"
-            injectedJavaScriptBeforeContentLoaded={challengeHeartbeatJs}
-            injectedJavaScript={challengeHeartbeatJs}
+            injectedJavaScriptBeforeContentLoaded={getFullScript()}
+            injectedJavaScript={getFullScript()}
             onLoadStart={() => {
-              webViewRef.current?.injectJavaScript(challengeHeartbeatJs);
+              webViewRef.current?.injectJavaScript(getFullScript());
             }}
             onLoadEnd={() => {
-              webViewRef.current?.injectJavaScript(challengeHeartbeatJs);
+              webViewRef.current?.injectJavaScript(getFullScript());
             }}
             onNavigationStateChange={() => {
-              webViewRef.current?.injectJavaScript(challengeHeartbeatJs);
+              webViewRef.current?.injectJavaScript(getFullScript());
             }}
             onMessage={handleWebViewMessage}
             onShouldStartLoadWithRequest={(request) => {
@@ -254,7 +282,7 @@ export default function NetworkChallengeResolver({
         ) : null}
       </View>
 
-      {!showWebView ? (
+      {!silent && !showWebView ? (
         <View style={styles.overlay}>
           {statusMessage && (
             <View style={styles.statusToast}>
