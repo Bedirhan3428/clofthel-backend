@@ -16,6 +16,7 @@ import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } fro
 import { API_BASE_URL } from '../constants/config';
 import TouchInjector from '../modules/TouchInjector';
 import { scraperInjectedJs } from '../modules/ScraperScript';
+import { challengeHeartbeatJs } from '../modules/ChallengeHeartbeat';
 
 let WebView = null;
 if (Platform.OS !== 'web') {
@@ -42,9 +43,25 @@ export default function NetworkChallengeResolver({
   const [lastTouchCoords, setLastTouchCoords] = useState(null);
   const [challengeData, setChallengeData] = useState(null);
   const [statusMessage, setStatusMessage] = useState(null);
+  const [logs, setLogs] = useState([]);
+  const [isLogExpanded, setIsLogExpanded] = useState(true);
 
   const webViewRef = useRef(null);
   const animatedProgress = useRef(new Animated.Value(10)).current;
+
+  // ── Canlı Bot Kalp Atışı & Dokunmatik Kalkan ──
+  useEffect(() => {
+    if (!visible) return;
+    if (webViewRef.current) {
+      webViewRef.current.injectJavaScript(challengeHeartbeatJs);
+    }
+    const timer = setInterval(() => {
+      if (webViewRef.current) {
+        webViewRef.current.injectJavaScript(challengeHeartbeatJs);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [visible]);
 
   useEffect(() => {
     Animated.timing(animatedProgress, {
@@ -152,13 +169,18 @@ export default function NetworkChallengeResolver({
   const handleWebViewMessage = async (event) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
+      const now = new Date();
+      const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      const msg = data.message || (typeof data === 'string' ? data : JSON.stringify(data));
+      setLogs(prev => [{ id: `${Date.now()}_${Math.random()}`, time, message: msg, type: data.type || 'info' }, ...prev.slice(0, 49)]);
+
       if (data.type === 'log') {
         console.log('[ChallengeResolver Log]', data.message);
-        const msg = data.message.toLowerCase();
-        if (msg.includes('baslatildi')) setProgressPercent(15);
-        else if (msg.includes('challenge')) setProgressPercent(40);
-        else if (msg.includes('turnstile')) setProgressPercent(70);
-        else if (msg.includes('submit')) setProgressPercent(90);
+        const lMsg = data.message.toLowerCase();
+        if (lMsg.includes('baslatildi')) setProgressPercent(15);
+        else if (lMsg.includes('challenge')) setProgressPercent(40);
+        else if (lMsg.includes('turnstile')) setProgressPercent(70);
+        else if (lMsg.includes('submit') || lMsg.includes('tıklan')) setProgressPercent(90);
 
       } else if (data.type === 'network_challenge_detected') {
         setProgressPercent(50);
@@ -190,11 +212,27 @@ export default function NetworkChallengeResolver({
           <WebView
             ref={webViewRef}
             source={{ uri: targetUrl }}
-            injectedJavaScriptBeforeContentLoaded={scraperInjectedJs}
-            injectedJavaScript={scraperInjectedJs}
-            onMessage={handleWebViewMessage}
+            userAgent="Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Mobile Safari/537.36"
+            sharedCookiesEnabled={true}
+            thirdPartyCookiesEnabled={true}
             javaScriptEnabled={true}
             domStorageEnabled={true}
+            javaScriptCanOpenWindowsAutomatically={true}
+            setSupportMultipleWindows={false}
+            androidLayerType="hardware"
+            mixedContentMode="always"
+            injectedJavaScriptBeforeContentLoaded={challengeHeartbeatJs}
+            injectedJavaScript={challengeHeartbeatJs}
+            onLoadStart={() => {
+              webViewRef.current?.injectJavaScript(challengeHeartbeatJs);
+            }}
+            onLoadEnd={() => {
+              webViewRef.current?.injectJavaScript(challengeHeartbeatJs);
+            }}
+            onNavigationStateChange={() => {
+              webViewRef.current?.injectJavaScript(challengeHeartbeatJs);
+            }}
+            onMessage={handleWebViewMessage}
             onShouldStartLoadWithRequest={(request) => {
               const url = (request.url || '').toLowerCase();
               const adKeywords = [
@@ -272,6 +310,52 @@ export default function NetworkChallengeResolver({
               </View>
             </View>
           )}
+
+          {/* Canlı Log Ekranı */}
+          <View style={styles.resolverLogContainer}>
+            <TouchableOpacity 
+              style={styles.resolverLogHeader} 
+              onPress={() => setIsLogExpanded(prev => !prev)}
+              activeOpacity={0.7}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <View style={[styles.logStatusDot, { backgroundColor: logs.some(l => l.type === 'error') ? '#FF5555' : (logs.some(l => l.type === 'success' || (l.message && l.message.includes('BAŞARIYLA'))) ? '#50FA7B' : '#00E5FF') }]} />
+                <Text style={styles.resolverLogTitle}>⚡ Canlı Bot Log Konsolu ({logs.length})</Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <TouchableOpacity onPress={() => setLogs([])} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Text style={{ color: '#FF79C6', fontSize: 10 }}>Temizle</Text>
+                </TouchableOpacity>
+                <Ionicons name={isLogExpanded ? 'chevron-up' : 'chevron-down'} size={14} color="#00E5FF" />
+              </View>
+            </TouchableOpacity>
+            {isLogExpanded && (
+              <ScrollView 
+                style={styles.resolverLogList} 
+                contentContainerStyle={{ padding: 6 }}
+                nestedScrollEnabled={true}
+              >
+                {logs.length === 0 ? (
+                  <Text style={styles.emptyLogText}>Loglar bekleniyor...</Text>
+                ) : (
+                  logs.slice(0, 30).map((logItem) => (
+                    <View key={logItem.id} style={styles.logRow}>
+                      <Text style={styles.logTime}>[{logItem.time}]</Text>
+                      <Text style={[
+                        styles.logText,
+                        logItem.type === 'success' && { color: '#50FA7B' },
+                        logItem.type === 'warn' && { color: '#FFB86C' },
+                        logItem.type === 'error' && { color: '#FF5555' },
+                        logItem.type === 'info' && { color: '#8BE9FD' },
+                      ]}>
+                        {logItem.message}
+                      </Text>
+                    </View>
+                  ))
+                )}
+              </ScrollView>
+            )}
+          </View>
 
           <View style={styles.buttonRow}>
             <TouchableOpacity style={styles.cancelButton} onPress={onClose}>
@@ -468,5 +552,65 @@ const styles = StyleSheet.create({
     color: '#FFF',
     marginLeft: 8,
     fontWeight: 'bold',
+  },
+
+  // Canlı Log Stilleri
+  resolverLogContainer: {
+    width: '100%',
+    maxHeight: 140,
+    backgroundColor: '#0D1117',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#30363D',
+    overflow: 'hidden',
+    marginTop: 12,
+  },
+  resolverLogHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#161B22',
+  },
+  resolverLogTitle: {
+    color: '#00E5FF',
+    fontSize: 11,
+    fontWeight: 'bold',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  logStatusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  resolverLogList: {
+    maxHeight: 105,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+  },
+  emptyLogText: {
+    color: '#8B949E',
+    fontSize: 11,
+    fontStyle: 'italic',
+    padding: 6,
+  },
+  logRow: {
+    flexDirection: 'row',
+    marginBottom: 3,
+    alignItems: 'flex-start',
+  },
+  logTime: {
+    color: '#6272A4',
+    fontSize: 9,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginRight: 5,
+    marginTop: 1,
+  },
+  logText: {
+    color: '#F8F8F2',
+    fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    flex: 1,
+    lineHeight: 14,
   },
 });

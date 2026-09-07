@@ -48,6 +48,7 @@ import {
 } from '../services/lightweightResolver';
 import { fetchAnimeDetails as fetchAniListDetails } from '../services/anilistService';
 import { scraperInjectedJs } from '../modules/ScraperScript';
+import { challengeHeartbeatJs } from '../modules/ChallengeHeartbeat';
 import { useAlert } from '../context/AlertContext';
 import { AuthContext } from '../context/AuthContext';
 
@@ -69,6 +70,7 @@ const webViewEpisodeExtractorJs = `
 (function() {
   if (window.__episode_extractor_running) return;
   window.__episode_extractor_running = true;
+  var attemptCount = 0;
 
   function postMsg(obj) {
     try {
@@ -79,13 +81,54 @@ const webViewEpisodeExtractorJs = `
   }
 
   function tryExtract() {
+    attemptCount++;
     try {
       var currentUrl = window.location.href || '';
       var currentPath = window.location.pathname || '';
 
-      // Captcha veya Network Challenge sayfasındaysak bekle
+      // Captcha veya Network Challenge sayfasındaysak bekle, token alınmadan asla erken yönlendirme yapma!
       if (currentPath.indexOf('/api/CaptchaChallenge') !== -1 || currentPath.indexOf('/_aitr/') !== -1) {
         return;
+      }
+
+      // 404 sayfa kontrolü — slug yanlışsa arama sayfasına yönlendir
+      var pageTitle = (document.title || '').toLowerCase();
+      var bodyText = document.body ? (document.body.innerText || '').substring(0, 500).toLowerCase() : '';
+      if (
+        !window.__404_redirected &&
+        (pageTitle.indexOf('sayfa bulunamad') !== -1 || pageTitle.indexOf('not found') !== -1 || pageTitle.indexOf('404') !== -1 ||
+         bodyText.indexOf('sayfa bulunamad') !== -1 || bodyText.indexOf('aradığınız sayfa') !== -1)
+      ) {
+        window.__404_redirected = true;
+        var searchTitle = window.__TARGET_TITLE || '';
+        if (searchTitle) {
+          var searchDest = window.location.origin + '/arama/' + encodeURIComponent(searchTitle);
+          postMsg({ type: 'log', message: '⚠️ [404] Sayfa bulunamadı, aramaya yönlendiriliyor: ' + searchDest });
+          window.location.replace(searchDest);
+          return;
+        }
+      }
+      // ÖNCELİKLİ: Arama sayfasındaysak hemen ilk sonuca yönlendir — bölüm arama!
+      if (currentPath.indexOf('/arama') !== -1 || currentUrl.indexOf('/arama') !== -1) {
+        if (document.body) document.body.style.opacity = '0.05';
+
+        var allBlocks = document.querySelectorAll('.flx-block[data-href], a[href*="/anime/"]');
+        var firstLink = null;
+        for (var idx = 0; idx < allBlocks.length; idx++) {
+          var h = allBlocks[idx].getAttribute('data-href') || allBlocks[idx].getAttribute('href');
+          if (h && h.indexOf('-bolum') === -1 && h.indexOf('/arama') === -1 && h.indexOf('/kategori') === -1 && h !== '/') {
+            firstLink = h;
+            break;
+          }
+        }
+
+        if (firstLink && !window.__auto_navigated) {
+          window.__auto_navigated = true;
+          var fullDest = firstLink.indexOf('http') === 0 ? firstLink : window.location.origin + (firstLink.indexOf('/') === 0 ? '' : '/') + firstLink;
+          postMsg({ type: 'log', message: '🎯 [YÖNLENDİRME] İlk sonuç: ' + fullDest });
+          window.location.replace(fullDest);
+        }
+        return; // Arama sayfasında episode çıkarma YAPMA!
       }
 
       // 1. EPISODES EXTRACTION (.animeDetail-items ol li, .episode-li, a[href*="-bolum-izle"])
@@ -114,11 +157,19 @@ const webViewEpisodeExtractorJs = `
         var thumb = imgEl ? (imgEl.getAttribute('src') || imgEl.src || '') : '';
         var date = dateEl ? (dateEl.textContent || '').replace(/\\s+/g, ' ').trim() : '';
 
+        // Geçersiz başlıkları filtrele (".", boş, tek karakter)
+        if (title.length < 2 || /^[.\s]+$/.test(title)) {
+          title = '';
+        }
+
         var epMatch = fullHref.match(/[-_](\\d+)[-_]bolum/i) ||
                       fullHref.match(/bolum[-_](\\d+)/i) ||
                       title.match(/(\\d+)\\.\\s*Bölüm/i) ||
                       title.match(/Bölüm\\s*(\\d+)/i);
         var epNum = epMatch ? parseInt(epMatch[1], 10) : (eps.length + 1);
+
+        // Sadece geçerli bölüm numarası olan linkleri ekle
+        if (!epMatch && !title) continue;
 
         eps.push({
           number: epNum,
@@ -129,13 +180,13 @@ const webViewEpisodeExtractorJs = `
         });
       }
 
-      // Pattern B: .flx-block kartları
+      // Pattern B: .flx-block kartları (sadece -bolum içerenler)
       if (eps.length === 0) {
         var blocks = document.querySelectorAll('.flx-block[data-href], div[data-href*="-bolum"]');
         for (var b = 0; b < blocks.length; b++) {
           var elBlock = blocks[b];
           var bHref = elBlock.getAttribute('data-href') || '';
-          if (bHref && !seen[bHref]) {
+          if (bHref && !seen[bHref] && bHref.indexOf('-bolum') !== -1) {
             seen[bHref] = true;
             var h4 = elBlock.querySelector('h4');
             var bTitle = (h4 ? h4.textContent : elBlock.textContent || '').trim();
@@ -162,34 +213,13 @@ const webViewEpisodeExtractorJs = `
         return;
       }
 
-      // 2. SEARCH PAGE HANDLING (/arama/...) - DO NOT LIST, GO DIRECTLY TO FIRST RESULT LINK!
-      if (currentPath.indexOf('/arama') !== -1 || currentUrl.indexOf('/arama') !== -1) {
-        if (document.body) document.body.style.opacity = '0.05';
-
-        var firstBlock = document.querySelector('.flx-block[data-href]');
-        var firstLink = firstBlock ? firstBlock.getAttribute('data-href') : null;
-        if (!firstLink) {
-          var allA = document.querySelectorAll('a[href*="/anime/"], a[href*="-izle"], .flx-block a');
-          for (var aIdx = 0; aIdx < allA.length; aIdx++) {
-            var h = allA[aIdx].getAttribute('href') || '';
-            if (h && h.indexOf('-bolum') === -1 && h.indexOf('/arama') === -1 && h.indexOf('/kategori') === -1 && h !== '/') {
-              firstLink = h;
-              break;
-            }
-          }
+      // Fallback: Anime sayfasındaysak ama 5 denemeden sonra hala bölüm yoksa
+      if (attemptCount > 5 && eps.length === 0) {
+        var animeMainBtn = document.querySelector('a[href*="/anime/"]');
+        if (animeMainBtn && !window.__auto_navigated) {
+            window.__auto_navigated = true;
+            window.location.replace(animeMainBtn.href);
         }
-
-        if (firstLink && !window.__auto_navigated) {
-          window.__auto_navigated = true;
-          var fullDest = firstLink.indexOf('http') === 0 ? firstLink : window.location.origin + (firstLink.indexOf('/') === 0 ? '' : '/') + firstLink;
-          postMsg({
-            type: 'log',
-            message: '🎯 [İLK SONUCUN LİNKİNE GİDİLİYOR] ' + fullDest
-          });
-          window.location.replace(fullDest);
-          return;
-        }
-        return;
       }
     } catch(err) {
       postMsg({ type: 'log', message: 'Extractor Hatası: ' + err.message });
@@ -271,6 +301,26 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const [isChallengeModalVisible, setIsChallengeModalVisible] = useState(false);
   const [challengeUrl, setChallengeUrl] = useState('');
 
+  // Merkezi bölüm formatlama ve filtreleme fonksiyonu
+  const formatAndFilterEpisodes = useCallback((rawEps, mongoId) => {
+    if (!rawEps || !Array.isArray(rawEps)) return [];
+    return rawEps
+      .filter(ep => {
+        const t = (ep.title || ep.episode_title || '').trim();
+        // ".", boş, veya sadece noktalama işaretlerinden oluşan başlıkları filtrele
+        if (!t || t.length < 2 || /^[.\s,;:!?•·…]+$/.test(t)) return false;
+        return true;
+      })
+      .map(ep => ({
+        _id: `${mongoId || 'ep'}_${ep.number || ep.episode_number}`,
+        episode_number: ep.number || ep.episode_number,
+        episode_title: ep.title || ep.episode_title || `${ep.number || ep.episode_number}. Bölüm`,
+        url: (ep.url || '').startsWith('http') ? ep.url : `${BASE_URL}${(ep.url || '').startsWith('/') ? '' : '/'}${ep.url || ''}`,
+        thumbnail: ep.thumbnail ? ((ep.thumbnail).startsWith('http') ? ep.thumbnail : `${BASE_URL}${(ep.thumbnail).startsWith('/') ? '' : '/'}${ep.thumbnail}`) : null,
+        release_date: ep.release_date || null
+      }));
+  }, []);
+
   const addLog = useCallback((message, type = 'info') => {
     console.log(`[DetailLog:${type}] ${message}`);
     const now = new Date();
@@ -278,6 +328,27 @@ export default function AnimeDetailScreen({ route, navigation }) {
     const newEntry = { id: `${Date.now()}_${Math.random()}`, time, message, type };
     setLogs(prev => [newEntry, ...prev.slice(0, 79)]);
   }, []);
+
+  // ── Heartbeat Bot Solver & Touch Unblocker (Her 1 sn'de bir WebView'a enjekte edilir) ──
+  useEffect(() => {
+    if (!isChallengeModalVisible) return;
+
+    addLog('⚡ [BOT ÇÖZÜCÜ] Canlı kalp atışı ve dokunmatik kalkan devrede...', 'info');
+
+    // İlk anlık enjeksiyon
+    if (webViewRef.current) {
+      webViewRef.current.injectJavaScript(challengeHeartbeatJs);
+    }
+
+    // Her 1 saniyede bir sayfayı tara ve çöz
+    const timer = setInterval(() => {
+      if (webViewRef.current) {
+        webViewRef.current.injectJavaScript(challengeHeartbeatJs);
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isChallengeModalVisible, addLog]);
 
   const loadEpisodesForUrl = useCallback(async (overviewUrl, candidateTitle = '') => {
     if (!overviewUrl) return [];
@@ -318,14 +389,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
       const rawEps = await fetchEpisodesForAnime(overviewUrl);
       if (rawEps && rawEps.length > 0) {
-        const formattedEps = rawEps.map(ep => ({
-          _id: `${activeMongoId || 'ep'}_${ep.number}`,
-          episode_number: ep.number,
-          episode_title: ep.title || `${ep.number}. Bölüm`,
-          url: ep.url.startsWith('http') ? ep.url : `${BASE_URL}${ep.url.startsWith('/') ? '' : '/'}${ep.url}`,
-          thumbnail: ep.thumbnail ? (ep.thumbnail.startsWith('http') ? ep.thumbnail : `${BASE_URL}${ep.thumbnail.startsWith('/') ? '' : '/'}${ep.thumbnail}`) : null,
-          release_date: ep.release_date || null
-        }));
+        const formattedEps = formatAndFilterEpisodes(rawEps, activeMongoId);
         setEpisodes(formattedEps);
         addLog(`🎉 [TAMAMLANDI] ${formattedEps.length} adet bölüm listelendi!`, 'success');
 
@@ -440,14 +504,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
           if (!cancelled) {
             const pipelineRes = await searchAndExtractEpisodes(targetTitle, seasonNum);
             if (pipelineRes.success && pipelineRes.episodes.length > 0) {
-              const formattedEps = pipelineRes.episodes.map(ep => ({
-                _id: `${activeMongoId || 'ep'}_${ep.number}`,
-                episode_number: ep.number,
-                episode_title: ep.title || `${ep.number}. Bölüm`,
-                url: ep.url.startsWith('http') ? ep.url : `${BASE_URL}${ep.url.startsWith('/') ? '' : '/'}${ep.url}`,
-                thumbnail: ep.thumbnail ? (ep.thumbnail.startsWith('http') ? ep.thumbnail : `${BASE_URL}${ep.thumbnail.startsWith('/') ? '' : '/'}${ep.thumbnail}`) : null,
-                release_date: ep.release_date || null
-              }));
+              const formattedEps = formatAndFilterEpisodes(pipelineRes.episodes, activeMongoId);
               setEpisodes(formattedEps);
               setLoadingEpisodes(false);
               addLog(`🎉 [BÖLÜMLER LİSTELENDİ] ${formattedEps.length} adet bölüm başarıyla yüklendi!`, 'success');
@@ -457,8 +514,20 @@ export default function AnimeDetailScreen({ route, navigation }) {
                 selectedCandidateUrl: pipelineRes.targetUrl
               };
             } else {
+              // HTTP başarısız — WebView fallback
+              // Arama sayfası yerine doğrudan anime slug URL'sini dene!
               const cleanTitle = getCleanSearchQuery(targetTitle);
-              const fallbackUrl = pipelineRes.targetUrl || `${BASE_URL}/arama/${encodeURIComponent(cleanTitle)}`;
+              const slugTitle = cleanTitle
+                .toLowerCase()
+                .replace(/[^a-z0-9\s-]/g, '')
+                .replace(/\s+/g, '-')
+                .replace(/-+/g, '-')
+                .replace(/^-|-$/g, '');
+              // Anime detay URL'sini dene: /anime/{slug}-izle
+              const predictedAnimeUrl = `${BASE_URL}/anime/${slugTitle}-izle`;
+              // Eğer pipeline targetUrl varsa onu kullan, yoksa tahmin edilen URL'yi, en son arama URL'sini kullan
+              const fallbackUrl = pipelineRes.targetUrl || predictedAnimeUrl;
+              addLog(`🌐 [WEBVIEW] Doğrudan anime sayfasına gidiliyor: ${fallbackUrl}`, 'info');
               setSelectedCandidateUrl(fallbackUrl);
               setChallengeUrl(fallbackUrl);
               if (WebView) {
@@ -515,14 +584,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
     const pipelineRes = await searchAndExtractEpisodes(targetTitle, seasonNum);
     if (pipelineRes.success && pipelineRes.episodes.length > 0) {
-      const formattedEps = pipelineRes.episodes.map(ep => ({
-        _id: `${seasonId || 'ep'}_${ep.number}`,
-        episode_number: ep.number,
-        episode_title: ep.title || `${ep.number}. Bölüm`,
-        url: ep.url.startsWith('http') ? ep.url : `${BASE_URL}${ep.url.startsWith('/') ? '' : '/'}${ep.url}`,
-        thumbnail: ep.thumbnail ? (ep.thumbnail.startsWith('http') ? ep.thumbnail : `${BASE_URL}${ep.thumbnail.startsWith('/') ? '' : '/'}${ep.thumbnail}`) : null,
-        release_date: ep.release_date || null
-      }));
+      const formattedEps = formatAndFilterEpisodes(pipelineRes.episodes, seasonId);
       setEpisodes(formattedEps);
       setLoadingEpisodes(false);
       addLog(`🎉 [BÖLÜMLER LİSTELENDİ] ${formattedEps.length} adet bölüm başarıyla yüklendi!`, 'success');
@@ -533,7 +595,15 @@ export default function AnimeDetailScreen({ route, navigation }) {
       };
     } else {
       const cleanTitle = getCleanSearchQuery(targetTitle);
-      const fallbackUrl = pipelineRes.targetUrl || `${BASE_URL}/arama/${encodeURIComponent(cleanTitle)}`;
+      const slugTitle = cleanTitle
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+      const predictedAnimeUrl = `${BASE_URL}/anime/${slugTitle}-izle`;
+      const fallbackUrl = pipelineRes.targetUrl || predictedAnimeUrl;
+      addLog(`🌐 [WEBVIEW] Doğrudan anime sayfasına gidiliyor: ${fallbackUrl}`, 'info');
       setSelectedCandidateUrl(fallbackUrl);
       setChallengeUrl(fallbackUrl);
       if (WebView) {
@@ -838,6 +908,53 @@ export default function AnimeDetailScreen({ route, navigation }) {
           </View>
         )}
 
+        {/* ── Canlı Bot & Çözücü Günlüğü (Ana Ekran) ── */}
+        {logs.length > 0 && (
+          <View style={[styles.modalLogContainer, { marginHorizontal: SPACING.md, marginBottom: 12, borderRadius: 8, borderWidth: 1, borderColor: '#30363D', overflow: 'hidden' }]}>
+            <TouchableOpacity 
+              style={styles.modalLogHeader} 
+              onPress={() => setIsLogExpanded(prev => !prev)}
+              activeOpacity={0.7}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <View style={[styles.logStatusDot, { backgroundColor: logs.some(l => l.type === 'error') ? '#FF5555' : (logs.some(l => l.type === 'success') ? '#50FA7B' : '#00E5FF') }]} />
+                <Text style={styles.modalLogTitle}>⚡ Canlı Bot Günlüğü ({logs.length})</Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <TouchableOpacity 
+                  onPress={() => setLogs([])} 
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={{ color: '#FF79C6', fontSize: 11 }}>Temizle</Text>
+                </TouchableOpacity>
+                <Ionicons name={isLogExpanded ? 'chevron-up' : 'chevron-down'} size={16} color="#00E5FF" />
+              </View>
+            </TouchableOpacity>
+            {isLogExpanded && (
+              <ScrollView 
+                style={styles.modalLogList} 
+                contentContainerStyle={{ padding: 6 }}
+                nestedScrollEnabled={true}
+              >
+                {logs.slice(0, 30).map((logItem) => (
+                  <View key={logItem.id} style={styles.logRow}>
+                    <Text style={styles.logTime}>[{logItem.time}]</Text>
+                    <Text style={[
+                      styles.logText,
+                      logItem.type === 'success' && { color: '#50FA7B' },
+                      logItem.type === 'warn' && { color: '#FFB86C' },
+                      logItem.type === 'error' && { color: '#FF5555' },
+                      logItem.type === 'info' && { color: '#8BE9FD' },
+                    ]}>
+                      {logItem.message}
+                    </Text>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        )}
+
         {/* ── Episodes Grid ───────────────────────────── */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>
@@ -946,59 +1063,123 @@ export default function AnimeDetailScreen({ route, navigation }) {
               >
                 <Ionicons name="close" size={24} color="#FFF" />
               </TouchableOpacity>
-              <Text style={styles.challengeModalTitle}>Cloudflare Doğrulaması</Text>
-              <TouchableOpacity
-                onPress={() => {
-                  webViewRef.current?.reload();
-                }}
-                style={styles.challengeDoneBtn}
-              >
-                <Text style={styles.challengeDoneBtnText}>Yenile</Text>
-              </TouchableOpacity>
+              <Text style={styles.challengeModalTitle}>Bot Koruması</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <TouchableOpacity
+                  onPress={() => {
+                    addLog('⚡ [MANUEL ÇÖZÜCÜ] Bot çözücü zorla tetiklendi!', 'info');
+                    webViewRef.current?.injectJavaScript(challengeHeartbeatJs);
+                  }}
+                  style={[styles.challengeDoneBtn, { backgroundColor: '#00E5FF' }]}
+                >
+                  <Text style={[styles.challengeDoneBtnText, { color: '#000' }]}>⚡ Çöz</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    addLog('🔄 [WEBVIEW] Sayfa yeniden yükleniyor...', 'info');
+                    webViewRef.current?.reload();
+                  }}
+                  style={styles.challengeDoneBtn}
+                >
+                  <Text style={styles.challengeDoneBtnText}>Yenile</Text>
+                </TouchableOpacity>
+              </View>
             </View>
+
+            {/* ── Canlı Bot & Çözücü Günlüğü (Log Konsolu) ── */}
+            <View style={styles.modalLogContainer}>
+              <TouchableOpacity 
+                style={styles.modalLogHeader} 
+                onPress={() => setIsLogExpanded(prev => !prev)}
+                activeOpacity={0.7}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View style={[styles.logStatusDot, { backgroundColor: logs.some(l => l.type === 'error') ? '#FF5555' : (logs.some(l => l.type === 'success') ? '#50FA7B' : '#00E5FF') }]} />
+                  <Text style={styles.modalLogTitle}>⚡ Canlı Bot Log Konsolu ({logs.length})</Text>
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <TouchableOpacity 
+                    onPress={() => setLogs([])} 
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={{ color: '#FF79C6', fontSize: 11 }}>Temizle</Text>
+                  </TouchableOpacity>
+                  <Ionicons name={isLogExpanded ? 'chevron-up' : 'chevron-down'} size={16} color="#00E5FF" />
+                </View>
+              </TouchableOpacity>
+              {isLogExpanded && (
+                <ScrollView 
+                  style={styles.modalLogList} 
+                  contentContainerStyle={{ padding: 6 }}
+                  nestedScrollEnabled={true}
+                >
+                  {logs.length === 0 ? (
+                    <Text style={styles.emptyLogText}>Henüz log kaydı yok. Sayfa bekleniyor...</Text>
+                  ) : (
+                    logs.slice(0, 40).map((logItem) => (
+                      <View key={logItem.id} style={styles.logRow}>
+                        <Text style={styles.logTime}>[{logItem.time}]</Text>
+                        <Text style={[
+                          styles.logText,
+                          logItem.type === 'success' && { color: '#50FA7B' },
+                          logItem.type === 'warn' && { color: '#FFB86C' },
+                          logItem.type === 'error' && { color: '#FF5555' },
+                          logItem.type === 'info' && { color: '#8BE9FD' },
+                        ]}>
+                          {logItem.message}
+                        </Text>
+                      </View>
+                    ))
+                  )}
+                </ScrollView>
+              )}
+            </View>
+
             <WebView
               ref={webViewRef}
-              source={{ uri: challengeUrl || `${BASE_URL}/arama/${encodeURIComponent(getCleanSearchQuery(anime?.title || anime?.orijinal_ad || initialTitle || ''))}` }}
+              source={{ uri: challengeUrl || (() => {
+                const ct = getCleanSearchQuery(anime?.title || anime?.orijinal_ad || initialTitle || '');
+                const slug = ct.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+                return `${BASE_URL}/anime/${slug}-izle`;
+              })() }}
               style={{ flex: 1 }}
-              userAgent="Mozilla/5.0 (Linux; Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"
-              injectedJavaScriptBeforeContentLoaded={`
-                window.__TARGET_TITLE = ${JSON.stringify(getCleanSearchQuery(anime?.title || anime?.orijinal_ad || initialTitle || ''))};
-                window.__TARGET_SEASON = ${(seasons && seasons.find(s => s && String(s._id) === String(activeMongoId)))?.season_number || 1};
-                ${scraperInjectedJs};
-                ${webViewEpisodeExtractorJs};
-              `}
-              injectedJavaScript={`
-                window.__TARGET_TITLE = ${JSON.stringify(getCleanSearchQuery(anime?.title || anime?.orijinal_ad || initialTitle || ''))};
-                window.__TARGET_SEASON = ${(seasons && seasons.find(s => s && String(s._id) === String(activeMongoId)))?.season_number || 1};
-                ${scraperInjectedJs};
-                ${webViewEpisodeExtractorJs};
-              `}
+              userAgent="Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Mobile Safari/537.36"
+              sharedCookiesEnabled={true}
+              thirdPartyCookiesEnabled={true}
               javaScriptEnabled={true}
               domStorageEnabled={true}
+              javaScriptCanOpenWindowsAutomatically={true}
+              setSupportMultipleWindows={false}
+              androidLayerType="hardware"
+              mixedContentMode="always"
+              injectedJavaScriptBeforeContentLoaded={challengeHeartbeatJs}
+              injectedJavaScript={challengeHeartbeatJs}
+              onLoadStart={() => {
+                webViewRef.current?.injectJavaScript(challengeHeartbeatJs);
+              }}
+              onLoadProgress={({ nativeEvent }) => {
+                if (nativeEvent.progress > 0.3) {
+                  webViewRef.current?.injectJavaScript(challengeHeartbeatJs);
+                }
+              }}
               onLoadEnd={() => {
-                const currentSeason = (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))) || (seasons && seasons[0]) || null;
-                const sNum = currentSeason?.season_number || 1;
-                const cleanTitle = getCleanSearchQuery(anime?.title || anime?.orijinal_ad || initialTitle || '');
-                webViewRef.current?.injectJavaScript(`
-                  window.__TARGET_TITLE = ${JSON.stringify(cleanTitle)};
-                  window.__TARGET_SEASON = ${sNum};
-                  ${webViewEpisodeExtractorJs};
-                `);
+                webViewRef.current?.injectJavaScript(challengeHeartbeatJs);
               }}
               onMessage={(event) => {
                 try {
                   const data = JSON.parse(event.nativeEvent.data);
                   if (data.type === 'log') {
                     addLog(data.message, 'info');
+                  } else if (data.type === 'network_challenge_detected') {
+                    addLog(`🛡️ Bot koruma kontrolü: ${data.questionText}`, 'warn');
                   } else if (data.type === 'captcha_detected') {
                     addLog('🛡️ Bot koruması algılandı, doğrudan HTTP API ile çözülüyor...', 'warn');
                   } else if (data.type === 'captcha_solved') {
                     addLog(`🎉 Doğru görsel HTTP isteğiyle onaylandı! (Hash: ${data.hash ? data.hash.substring(0, 8) : ''}...)`, 'success');
                   } else if (data.type === 'candidates_extracted' && Array.isArray(data.candidates) && data.candidates.length > 0) {
-                    addLog(`🎉 WebView üzerinden ${data.candidates.length} aday bulundu!`, 'success');
-                    setSearchCandidates(data.candidates);
+                    // ARAMA SONUÇLARINI LİSTELEME — DOĞRUDAN İLK SONUCUN LİNKİNE GİT!
+                    addLog(`🔍 WebView arama sonucu: ${data.candidates.length} aday bulundu, ilk sonuca gidiliyor...`, 'info');
                     allCandidatesRef.current = data.candidates;
-                    setSearchStatus('success');
 
                     const currentSeason = (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))) || (seasons && seasons[0]) || null;
                     const seasonNum = currentSeason?.season_number || detectSeasonNumber(anime?.title || anime?.orijinal_ad || initialTitle, 1);
@@ -1013,31 +1194,22 @@ export default function AnimeDetailScreen({ route, navigation }) {
                     }
 
                     const matchedSeasonUrl = matchCandidateForSeason(data.candidates, seasonNum, baseTitle);
+                    const targetUrl = matchedSeasonUrl || (data.candidates[0] ? data.candidates[0].url : null);
 
-                    if (matchedSeasonUrl) {
-                      const target = matchedSeasonUrl.startsWith('http') ? matchedSeasonUrl : `${BASE_URL}${matchedSeasonUrl.startsWith('/') ? '' : '/'}${matchedSeasonUrl}`;
-                      addLog(`🎯 [SEZON EŞLEŞTİ] Sezon ${seasonNum} adresi seçildi ➔ ${target}`, 'info');
+                    if (targetUrl) {
+                      const target = targetUrl.startsWith('http') ? targetUrl : `${BASE_URL}${targetUrl.startsWith('/') ? '' : '/'}${targetUrl}`;
+                      addLog(`🎯 [İLK SONUCUN LİNKİNE GİDİLİYOR] ${target}`, 'info');
                       setSelectedCandidateUrl(target);
                       setChallengeUrl(target);
 
-                      // Doğrudan HTTP isteğiyle bölümleri çekmeyi dene
-                      loadEpisodesForUrl(target);
-
-                      // WebView'ı sezon sayfasına yönlendir ki bölümleri çıkarsın
+                      // WebView'ı anime detay sayfasına yönlendir — bölümleri oradan çıkarsın!
                       if (webViewRef.current) {
                         webViewRef.current.injectJavaScript(`window.location.replace("${target}"); true;`);
                       }
                     }
                   } else if (data.type === 'episodes_extracted' && Array.isArray(data.episodes) && data.episodes.length > 0) {
                     addLog(`🎉 WebView köprüsü üzerinden ${data.episodes.length} adet bölüm başarıyla çıkarıldı!`, 'success');
-                    const formatted = data.episodes.map(ep => ({
-                      _id: `${activeMongoId || 'ep'}_${ep.number}`,
-                      episode_number: ep.number,
-                      episode_title: ep.title || `${ep.number}. Bölüm`,
-                      url: ep.url.startsWith('http') ? ep.url : `${BASE_URL}${ep.url.startsWith('/') ? '' : '/'}${ep.url}`,
-                      thumbnail: ep.thumbnail ? (ep.thumbnail.startsWith('http') ? ep.thumbnail : `${BASE_URL}${ep.thumbnail.startsWith('/') ? '' : '/'}${ep.thumbnail}`) : null,
-                      release_date: ep.release_date || null
-                    }));
+                    const formatted = formatAndFilterEpisodes(data.episodes, activeMongoId);
                     setEpisodes(formatted);
                     setLoadingEpisodes(false);
                     setIsChallengeModalVisible(false);
@@ -1071,6 +1243,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
                 if (navState.title && !navState.title.includes('Doğrulama') && !navState.title.includes('Just a moment')) {
                   addLog(`✅ [WEBVIEW] Sayfa: "${navState.title}"`, 'success');
                 }
+                webViewRef.current?.injectJavaScript(challengeHeartbeatJs);
               }}
             />
           </SafeAreaView>
@@ -2051,5 +2224,61 @@ const styles = StyleSheet.create({
     color: '#000',
     fontSize: 12,
     fontWeight: FONT_WEIGHTS.bold,
+  },
+
+  // Log Konsolu Stilleri
+  modalLogContainer: {
+    backgroundColor: '#0D1117',
+    borderBottomWidth: 1,
+    borderBottomColor: '#30363D',
+    maxHeight: 180,
+  },
+  modalLogHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#161B22',
+  },
+  modalLogTitle: {
+    color: '#00E5FF',
+    fontSize: 12,
+    fontWeight: 'bold',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  logStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  modalLogList: {
+    maxHeight: 135,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+  },
+  emptyLogText: {
+    color: '#8B949E',
+    fontSize: 11,
+    fontStyle: 'italic',
+    padding: 6,
+  },
+  logRow: {
+    flexDirection: 'row',
+    marginBottom: 3,
+    alignItems: 'flex-start',
+  },
+  logTime: {
+    color: '#6272A4',
+    fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginRight: 6,
+    marginTop: 1,
+  },
+  logText: {
+    color: '#F8F8F2',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    flex: 1,
+    lineHeight: 15,
   },
 });

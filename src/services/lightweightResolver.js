@@ -22,7 +22,7 @@ export function tokenizeTitleClient(str) {
 export const BASE_URL = 'https://www.tranimeizle.io';
 
 export const MOBILE_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0',
+  'User-Agent': 'Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Mobile Safari/537.36',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
   'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
   'Cache-Control': 'no-cache',
@@ -498,6 +498,13 @@ export function parseEpisodesHtml(html) {
                       title.match(/(\d+)\.\s*Bölüm/i) ||
                       title.match(/Bölüm\s*(\d+)/i);
       const epNum = epMatch ? parseInt(epMatch[1], 10) : (episodes.length + 1);
+
+      // Geçersiz başlıkları filtrele (".", boş, tek karakter)
+      if (title.length < 2 || /^[.\s]+$/.test(title)) {
+        title = '';
+      }
+      // Geçerli bölüm numarası veya başlık yoksa atla
+      if (!epMatch && !title) continue;
 
       episodes.push({
         number: epNum,

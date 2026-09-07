@@ -10,50 +10,122 @@ export const scraperInjectedJs = `
         window.__scraper_initialized = true;
 
         // --- GÜVENLİK (BOT) KORUMASI ATLATMA (PROXY SPOOFING) & REKLAM ENGELLEME ---
+        // --- GÜVENLİK (BOT) KORUMASI & REKLAM ENGELLEME ---
         try {
-          if (navigator.userActivation === undefined || !navigator.userActivation.hasBeenActive) {
-            Object.defineProperty(navigator, 'userActivation', {
-              get: function() { return { hasBeenActive: true, isActive: true }; }
-            });
-          }
-          Object.defineProperty(navigator, 'webdriver', { get: function() { return false; } });
-          
           // window.open override ederek yeni sekmede reklam açılmasını engelliyoruz
           window.open = function(url) {
             sendToNative({ type: 'log', message: '🚫 window.open (Reklam) engellendi: ' + url });
             return null;
           };
+          var _origReplace = window.location.replace;
+          window.location.replace = function(url) {
+            if (typeof url === 'string') {
+              if (url.indexOf('%2F') !== -1) {
+                try { url = decodeURIComponent(url); } catch(e) {}
+              }
+              if (!url.startsWith('/') && !url.startsWith('http')) {
+                url = '/' + url;
+              }
+              sendToNative({ type: 'log', message: '🚀 Güvenli sayfa yönlendirmesi: ' + url });
+            }
+            return _origReplace.call(window.location, url);
+          };
         } catch(e) {}
         // --------------------------------------------------------
 
         var messageQueue = [];
-        
+
+        // Sürekli Kuyruk Boşaltıcı (React Native Köprüsü hazır olduğunda tüm logları iletir)
+        setInterval(function() {
+          try {
+            if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage && messageQueue.length > 0) {
+              while (messageQueue.length > 0) {
+                window.ReactNativeWebView.postMessage(JSON.stringify(messageQueue.shift()));
+              }
+            }
+          } catch(e) {}
+        }, 100);
+
+        // Canlı Ekran Debug Konsolu (Kullanıcının ve geliştiricinin anlık görmesi için)
         var debugDiv = document.createElement('div');
         debugDiv.id = '__scraper_debug';
         debugDiv.style.position = 'fixed';
         debugDiv.style.top = '0';
         debugDiv.style.left = '0';
         debugDiv.style.width = '100%';
-        debugDiv.style.maxHeight = '40%';
-        debugDiv.style.overflow = 'auto';
-        debugDiv.style.backgroundColor = 'rgba(0,0,0,0.85)';
-        debugDiv.style.color = '#0f0';
-        debugDiv.style.zIndex = '999999';
-        debugDiv.style.fontSize = '11px';
-        debugDiv.style.pointerEvents = 'none';
-        debugDiv.style.padding = '5px';
+        debugDiv.style.maxHeight = '140px';
+        debugDiv.style.backgroundColor = 'rgba(10, 15, 26, 0.95)';
+        debugDiv.style.borderBottom = '2px solid #00E5FF';
+        debugDiv.style.color = '#00E5FF';
+        debugDiv.style.zIndex = '2147483645';
+        debugDiv.style.fontSize = '10px';
+        debugDiv.style.fontFamily = 'monospace';
+        debugDiv.style.padding = '4px 6px';
+        debugDiv.style.boxShadow = '0 4px 12px rgba(0,0,0,0.6)';
+        debugDiv.style.boxSizing = 'border-box';
+        debugDiv.style.display = 'block';
+
+        debugDiv.innerHTML = [
+          '<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(0,229,255,0.3);padding-bottom:2px;margin-bottom:3px;pointer-events:auto;">',
+          '  <span style="color:#FFF;font-weight:bold;display:flex;align-items:center;gap:4px;">',
+          '    <span style="width:7px;height:7px;border-radius:50%;background:#00E5FF;display:inline-block;"></span>',
+          '    CLOFTHEL BOT LOG EKRANI',
+          '  </span>',
+          '  <span id="__scraper_debug_toggle" style="cursor:pointer;color:#FFB86C;font-size:10px;padding:2px 4px;background:rgba(255,184,108,0.15);border-radius:4px;">[Gizle / Göster]</span>',
+          '</div>',
+          '<div id="__scraper_debug_content" style="overflow-y:auto;max-height:105px;pointer-events:auto;"></div>'
+        ].join('');
+
         if (document.documentElement) {
           document.documentElement.appendChild(debugDiv);
+        } else {
+          document.addEventListener('DOMContentLoaded', function() {
+            if (document.documentElement) document.documentElement.appendChild(debugDiv);
+          });
         }
 
-        function logToScreen(msg) {
-          if (!debugDiv.parentNode && document.documentElement) {
-            document.documentElement.appendChild(debugDiv);
+        var isDebugCollapsed = false;
+        setTimeout(function() {
+          var tBtn = document.getElementById('__scraper_debug_toggle');
+          var cDiv = document.getElementById('__scraper_debug_content');
+          if (tBtn && cDiv) {
+            tBtn.addEventListener('click', function(e) {
+              if (e.stopPropagation) e.stopPropagation();
+              isDebugCollapsed = !isDebugCollapsed;
+              cDiv.style.display = isDebugCollapsed ? 'none' : 'block';
+              debugDiv.style.maxHeight = isDebugCollapsed ? '24px' : '140px';
+            });
           }
-          var p = document.createElement('div');
-          p.innerText = msg;
-          debugDiv.appendChild(p);
-          debugDiv.scrollTop = debugDiv.scrollHeight;
+        }, 300);
+
+        function logToScreen(msg) {
+          try {
+            if (!debugDiv.parentNode && document.documentElement) {
+              document.documentElement.appendChild(debugDiv);
+            }
+            var cDiv = document.getElementById('__scraper_debug_content') || debugDiv;
+            var p = document.createElement('div');
+            p.style.lineHeight = '14px';
+            p.style.marginBottom = '2px';
+            p.style.wordBreak = 'break-all';
+
+            var str = String(msg || '');
+            if (str.indexOf('🎉') !== -1 || str.indexOf('✅') !== -1 || str.indexOf('ONAYLANDI') !== -1) {
+              p.style.color = '#50FA7B';
+            } else if (str.indexOf('❌') !== -1 || str.indexOf('Hata') !== -1 || str.indexOf('hatası') !== -1) {
+              p.style.color = '#FF5555';
+            } else if (str.indexOf('⚠️') !== -1 || str.indexOf('🛡️') !== -1) {
+              p.style.color = '#FFB86C';
+            } else {
+              p.style.color = '#8BE9FD';
+            }
+
+            var now = new Date();
+            var timeStr = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + ':' + String(now.getSeconds()).padStart(2, '0');
+            p.innerText = '[' + timeStr + '] ' + str;
+            cDiv.appendChild(p);
+            cDiv.scrollTop = cDiv.scrollHeight;
+          } catch(e) {}
         }
 
         function sendToNative(obj) {
@@ -106,7 +178,7 @@ export const scraperInjectedJs = `
           var injectTouchUnblockStyle = function() {
             if (document.getElementById('__touch_unblock_style')) return;
             var css = [
-              'ins, [class*="kesem"], [id*="ad-container"], [class*="video-ad"], [class*="banner"], [class*="sponsor"], iframe[src*="ad"], iframe[src*="track"], iframe[src="about:blank"], div[style*="z-index: 214748364"]:not(#__scraper_debug), div[style*="z-index: 999999"]:not(#__scraper_debug), div[style*="z-index: 99999"]:not(#__scraper_debug) {',
+              'ins, [class*="kesem"], [id*="ad-container"], [class*="video-ad"], [class*="banner"], [class*="sponsor"], iframe[src*="ad"]:not([src*="cloudflare"]):not([src*="turnstile"]):not([id*="cf"]), iframe[src*="track"]:not([src*="cloudflare"]):not([src*="turnstile"]), iframe[src="about:blank"]:not([id*="cf"]), div[style*="z-index: 214748364"]:not(#__scraper_debug):not(.cf-turnstile), div[style*="z-index: 999999"]:not(#__scraper_debug):not(.cf-turnstile), div[style*="z-index: 99999"]:not(#__scraper_debug):not(.cf-turnstile) {',
               '  display: none !important;',
               '  pointer-events: none !important;',
               '  width: 0 !important;',
@@ -121,6 +193,20 @@ export const scraperInjectedJs = `
               '  touch-action: manipulation !important;',
               '  position: relative !important;',
               '  z-index: 2147483640 !important;',
+              '}',
+              '.cf-turnstile, iframe[src*="cloudflare"], iframe[src*="turnstile"], div[id*="cf-chl-widget"], form[action*="network-challenge"], form[action*="verify"], input#answer, input.answer, button[type="submit"] {',
+              '  display: block !important;',
+              '  pointer-events: auto !important;',
+              '  opacity: 1 !important;',
+              '  visibility: visible !important;',
+              '  position: relative !important;',
+              '  z-index: 2147483640 !important;',
+              '}',
+              'img.question {',
+              '  max-width: 100% !important;',
+              '  height: auto !important;',
+              '  border-radius: 12px !important;',
+              '  display: block !important;',
               '}',
               '.captcha-image {',
               '  cursor: pointer !important;',
@@ -233,6 +319,7 @@ export const scraperInjectedJs = `
                 var origIconCaptcha = obj.iconCaptcha;
                 obj.iconCaptcha = function(options) {
                   options = options || {};
+                  if (options.validationPath) window.__iconCaptchaValidationPath = options.validationPath;
                   options.hoverDetection = false;
                   options.captchaHoverDetection = false;
                   options.clickDelay = 0;
@@ -250,6 +337,7 @@ export const scraperInjectedJs = `
               var origIconCaptcha = jq.fn.iconCaptcha;
               jq.fn.iconCaptcha = function(options) {
                 options = options || {};
+                if (options.validationPath) window.__iconCaptchaValidationPath = options.validationPath;
                 options.hoverDetection = false;
                 options.captchaHoverDetection = false;
                 options.clickDelay = 0;
@@ -312,118 +400,183 @@ export const scraperInjectedJs = `
           });
         } catch(e) {}
 
-        // Doğrudan API Onaylayıcı Yardımcı Fonksiyon (HTTP İsteğini Taklit Etme)
-        function submitCaptchaDirectly(hash, cid) {
-          cid = cid || '0';
-          if (!hash) return;
-          if (window.__captcha_solved_success) return;
-          
-          sendToNative({ type: 'log', message: '⚡ Captcha HTTP isteği doğrudan taklit ediliyor (POST /api/Captcha/ | Hash: ' + hash.substring(0, 8) + '...)' });
-
-          var onVerificationSuccess = function() {
-            window.__captcha_solved_success = true;
-            sendToNative({ 
-              type: 'log', 
-              message: '🎉 Captcha HTTP isteği sunucu tarafından ONAYLANDI! Sayfa yönlendiriliyor...' 
+        // --- REKLAM VE ENGELLEYİCİ ŞEFFAF KATMANLARI İMHA EDİCİ ---
+        function purgeClickBlockingOverlays() {
+          try {
+            // 1. Bilinen reklam ve izleme iframe/container'larını DOM'dan tamamen sil
+            var adSelectors = [
+              'ins.604c7625',
+              'ins[class*="604c"]',
+              '[id*="ad-container"]',
+              '.video-ad-container',
+              '[class*="video-ad"]',
+              'iframe[src*="ad"]',
+              'iframe[src*="track"]',
+              'iframe[src*="wargamings"]',
+              'iframe[src*="maxihalisaha"]',
+              'div[style*="z-index: 214748364"]:not(.captcha-holder):not(.captcha-modal):not(.captcha-image):not(#__scraper_debug)',
+              'div[style*="z-index: 999999"]:not(.captcha-holder):not(.captcha-modal):not(.captcha-image):not(#__scraper_debug)'
+            ];
+            adSelectors.forEach(function(sel) {
+              var els = document.querySelectorAll(sel);
+              for (var i = 0; i < els.length; i++) {
+                var el = els[i];
+                if (el && !el.closest('.captcha-holder') && !el.closest('.captcha-modal')) {
+                  el.remove();
+                }
+              }
             });
-            sendToNative({
-              type: 'captcha_solved',
-              hash: hash,
-              captchaId: cid
-            });
 
-            var holder = document.querySelector('.captcha-holder');
-            if (holder) {
-              holder.classList.add('captcha-success');
-              var icons = holder.querySelector('.captcha-modal__icons');
-              if (icons) {
-                icons.innerHTML = '<div class="captcha-modal__icons-title">İyi seyirler!</div><div class="captcha-modal__icons-subtitle">Doğrulamanız için teşekkürler.</div>';
-              }
-              if (window.jQuery) {
-                var $h = window.jQuery(holder);
-                $h.trigger('success', [{ captcha_id: cid }]);
-                $h.trigger('success.iconCaptcha', [cid]);
-              }
-              // Form varsa input değerlerini güncelle
-              var form = holder.closest('form');
-              if (form) {
-                var hfInput = form.querySelector('input[name="captcha-hf"]');
-                if (hfInput) hfInput.value = hash;
-                var idhfInput = form.querySelector('input[name="captcha-idhf"]');
-                if (idhfInput) idhfInput.value = cid;
-              }
-            }
-
-            // --- REDIRECT & NAVIGATION HANDLER ---
-            var pathname = window.location.pathname || '';
-            var targetPath = '';
-
-            // 1. /api/CaptchaChallenge/%2F... path'i kontrolü veya window.__targetOverviewUrl
-            if (pathname.indexOf('/api/CaptchaChallenge/') !== -1) {
-              var raw = pathname.replace('/api/CaptchaChallenge/', '');
-              try {
-                targetPath = decodeURIComponent(raw);
-              } catch(e) {
-                targetPath = raw;
-              }
-            } else if (window.__targetOverviewUrl) {
-              targetPath = window.__targetOverviewUrl;
-            }
-
-            if (targetPath) {
-              if (!targetPath.startsWith('/') && !targetPath.startsWith('http')) {
-                targetPath = '/' + targetPath;
-              }
-              sendToNative({ type: 'log', message: '🚀 Captcha tamamlandı! Hedef sayfaya yönlendiriliyor: ' + targetPath });
-              setTimeout(function() {
-                window.location.replace(targetPath);
-              }, 400);
-              return;
-            }
-
-            // 2. Sayfa içi form varsa ve geçerli bir action barındırıyorsa
-            if (holder) {
-              var f = holder.closest('form');
-              if (f) {
-                var act = f.getAttribute('action') || '';
-                if (act && act !== '#' && !act.endsWith('#')) {
-                  sendToNative({ type: 'log', message: '📄 Form action tetikleniyor: ' + act });
-                  f.submit();
-                  return;
-                } else {
-                  var sBtn = f.querySelector('button[type="submit"], input[type="submit"]');
-                  if (sBtn) {
-                    sendToNative({ type: 'log', message: '🔘 Form submit butonu tetikleniyor...' });
-                    sBtn.click();
-                    return;
+            // 2. Ekranı kaplayan şeffaf overlay veya tıklama yutucu şeffaf elementleri temizle
+            var allFixed = document.querySelectorAll('div, a, span');
+            for (var j = 0; j < allFixed.length; j++) {
+              var item = allFixed[j];
+              if (!item || item.id === '__scraper_debug' || item.closest('.captcha-holder') || item.closest('.captcha-modal')) continue;
+              var style = window.getComputedStyle(item);
+              if (style.position === 'fixed' || style.position === 'absolute') {
+                var z = parseInt(style.zIndex, 10) || 0;
+                if (z > 50) {
+                  var rect = item.getBoundingClientRect();
+                  if ((rect.width > window.innerWidth * 0.7 && rect.height > window.innerHeight * 0.5) || parseFloat(style.opacity || '1') < 0.1) {
+                    item.style.pointerEvents = 'none';
+                    item.style.display = 'none';
+                    if (item.parentNode) item.parentNode.removeChild(item);
                   }
                 }
               }
             }
 
-            // 3. Form yoksa veya # ise, sayfayı yenileyerek onaylı çerezle aç
-            sendToNative({ type: 'log', message: '🔄 Sayfa yenileniyor (Çerez onaylandı)...' });
+            // 3. Captcha elementlerinin tıklanabilirliğini garanti et
+            var captchaEls = document.querySelectorAll('.captcha-holder, .captcha-modal, .captcha-modal__icons, .captcha-image');
+            for (var k = 0; k < captchaEls.length; k++) {
+              var cEl = captchaEls[k];
+              cEl.style.setProperty('pointer-events', 'auto', 'important');
+              cEl.style.setProperty('z-index', '2147483640', 'important');
+              cEl.style.setProperty('cursor', 'pointer', 'important');
+              cEl.style.setProperty('touch-action', 'manipulation', 'important');
+            }
+          } catch(e) {}
+        }
+
+        // --- POST-CAPTCHA YÖNLENDİRME & VİDEO AÇMA MERKEZİ ---
+        function handlePostCaptchaSuccess(hash, cid) {
+          if (window.__captcha_solved_success) return;
+          window.__captcha_solved_success = true;
+
+          sendToNative({ 
+            type: 'log', 
+            message: '🎉 Captcha BAŞARIYLA GEÇİLDİ!' 
+          });
+          sendToNative({
+            type: 'captcha_solved',
+            hash: hash || '',
+            captchaId: cid || '0'
+          });
+
+          var holder = document.querySelector('.captcha-holder');
+          if (holder) {
+            holder.classList.add('captcha-success');
+            var icons = holder.querySelector('.captcha-modal__icons');
+            if (icons) {
+              icons.innerHTML = '<div class="captcha-modal__icons-title">İyi seyirler!</div><div class="captcha-modal__icons-subtitle">Doğrulamanız için teşekkürler.</div>';
+            }
+            if (window.jQuery) {
+              var $h = window.jQuery(holder);
+              $h.trigger('success', [{ captcha_id: cid || '0' }]);
+              $h.trigger('success.iconCaptcha', [cid || '0']);
+              $h.trigger('selected', [{ captcha_id: cid || '0' }]);
+            }
+            try {
+              holder.dispatchEvent(new CustomEvent('success', { detail: { captcha_id: cid || '0' }, bubbles: true }));
+            } catch(e) {}
+
+            var form = holder.closest('form');
+            if (form) {
+              var hfInput = form.querySelector('input[name="captcha-hf"]');
+              if (hfInput && hash) hfInput.value = hash;
+              var idhfInput = form.querySelector('input[name="captcha-idhf"]');
+              if (idhfInput) idhfInput.value = cid || '0';
+            }
+          }
+
+          // 1. CaptchaChallenge sayfasındaysak anime detayına yönlendir
+          var pathname = window.location.pathname || '';
+          var targetPath = '';
+
+          if (pathname.indexOf('/api/CaptchaChallenge/') !== -1) {
+            var raw = pathname.replace('/api/CaptchaChallenge/', '');
+            try {
+              targetPath = decodeURIComponent(raw);
+            } catch(e) {
+              targetPath = raw;
+            }
+          } else if (window.__targetOverviewUrl) {
+            targetPath = window.__targetOverviewUrl;
+          }
+
+          if (targetPath) {
+            if (!targetPath.startsWith('/') && !targetPath.startsWith('http')) {
+              targetPath = '/' + targetPath;
+            }
+            sendToNative({ type: 'log', message: '🚀 Captcha onaylandı! Hedef anime sayfasına gidiliyor: ' + targetPath });
             setTimeout(function() {
-              window.location.reload();
-            }, 500);
-          };
+              window.location.replace(targetPath);
+            }, 300);
+            return;
+          }
+
+          // 2. Sayfa içi form action yönlendirmesi
+          if (holder) {
+            var f = holder.closest('form');
+            if (f) {
+              var act = f.getAttribute('action') || '';
+              if (act && act !== '#' && !act.endsWith('#') && act !== pathname && act !== window.location.href) {
+                sendToNative({ type: 'log', message: '📄 Form action tetikleniyor: ' + act });
+                f.submit();
+                return;
+              } else {
+                var sBtn = f.querySelector('button[type="submit"], input[type="submit"]');
+                if (sBtn) {
+                  sendToNative({ type: 'log', message: '🔘 Form submit butonu tetikleniyor...' });
+                  sBtn.click();
+                  return;
+                }
+              }
+            }
+          }
+
+          // 3. İzleme sayfasında video kaynaklarını aç
+          sendToNative({ type: 'log', message: '✨ Captcha onaylandı! Video kaynakları aranıyor...' });
+          setTimeout(function() {
+            checkPageForExplorerUrls();
+            checkPageForSibnetUrls();
+          }, 300);
+        }
+
+        // Yedek HTTP Doğrulama İsteği (İstek taklidi)
+        function submitCaptchaDirectly(hash, cid) {
+          cid = cid || '0';
+          if (!hash || window.__captcha_solved_success) return;
+          
+          var validationUrl = window.__iconCaptchaValidationPath || '/api/Captcha/';
+          sendToNative({ type: 'log', message: '⚡ Yedek HTTP isteği gönderiliyor (POST ' + validationUrl + ' | Hash: ' + hash.substring(0, 8) + '...)' });
 
           if (window.jQuery) {
             window.jQuery('input[name="captcha-hf"]').val(hash);
             window.jQuery('input[name="captcha-idhf"]').val(cid);
             window.jQuery.ajax({
-              url: '/api/Captcha/',
+              url: validationUrl,
               type: 'POST',
               data: { cID: cid, pC: hash, rT: 2 },
               headers: { 'X-Requested-With': 'XMLHttpRequest' },
               success: function(res) {
-                onVerificationSuccess();
+                handlePostCaptchaSuccess(hash, cid);
               },
               error: function(err) {
                 if (err && err.status === 200) {
-                  onVerificationSuccess();
+                  handlePostCaptchaSuccess(hash, cid);
                 } else {
-                  sendToNative({ type: 'log', message: 'Captcha API yanıtı: ' + (err.statusText || err.status || 'Hata') });
+                  sendToNative({ type: 'log', message: 'Yedek HTTP API yanıtı: ' + (err.statusText || err.status || 'Hata') });
                 }
               }
             });
@@ -432,7 +585,7 @@ export const scraperInjectedJs = `
             fd.append('cID', cid);
             fd.append('pC', hash);
             fd.append('rT', '2');
-            fetch('/api/Captcha/', {
+            fetch(validationUrl, {
               method: 'POST',
               body: fd,
               headers: { 
@@ -441,17 +594,13 @@ export const scraperInjectedJs = `
               }
             }).then(function(res) {
               if (res.ok || res.status === 200) {
-                onVerificationSuccess();
-              } else {
-                sendToNative({ type: 'log', message: 'Captcha Fetch yanıt kodu: ' + res.status });
+                handlePostCaptchaSuccess(hash, cid);
               }
-            }).catch(function(e) {
-              sendToNative({ type: 'log', message: 'Captcha Fetch hatası: ' + e.message });
-            });
+            }).catch(function(e) {});
           }
         }
 
-        // 5. Kalıcı Hover Kalp Atışı (Heartbeat) & Doğrudan Dokunuş Yakalama
+        // 5. Kalıcı Hover Kalp Atışı (Heartbeat) & Tıklama Engelleyici Kalkan
         try {
           setInterval(function() {
             var holders = document.querySelectorAll('.captcha-holder');
@@ -462,80 +611,226 @@ export const scraperInjectedJs = `
                 if (window.jQuery) window.jQuery(h).trigger('mouseenter');
               } catch(e) {}
             }
-          }, 100);
+          }, 150);
 
           var handleDirectCaptchaTap = function(e) {
             var target = e.target;
-            var imgEl = target ? (target.classList && target.classList.contains('captcha-image') ? target : target.closest && target.closest('.captcha-image')) : null;
+            if (!target) return;
+            var imgEl = (target.classList && target.classList.contains('captcha-image')) ? target : (target.closest ? target.closest('.captcha-image') : null);
             if (!imgEl) return;
 
+            // Reklam scriptlerinin tıklamayı yutmasını önle
+            if (e.stopPropagation) e.stopPropagation();
+            if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+
             var hash = imgEl.getAttribute('icon-hash');
-            var holder = imgEl.closest('.captcha-holder');
+            var holder = imgEl.closest('.captcha-holder') || document.querySelector('.captcha-holder');
             var cid = holder ? (holder.getAttribute('data-captcha-id') || '0') : '0';
 
-            sendToNative({ type: 'log', message: '👆 Dokunuş algılandı (Hash: ' + (hash ? hash.substring(0, 8) + '...' : 'Görsel') + ')' });
+            if (!hash) return;
 
-            if (holder) {
-              try {
-                holder.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
-                if (window.jQuery) window.jQuery(holder).trigger('mouseenter');
-              } catch(e) {}
-            }
-
-            // 250ms içinde IconCaptcha normal yoldan onay alamazsa, doğrudan API ile onayla!
-            setTimeout(function() {
-              if (!holder) return;
-              var isSuccess = holder.classList.contains('captcha-success') || (holder.querySelector && holder.querySelector('.captcha-success'));
-              if (!isSuccess && hash) {
-                submitCaptchaDirectly(hash, cid);
-              }
-            }, 250);
+            sendToNative({ type: 'log', message: '👆 Kullanıcı görsele dokundu (Hash: ' + hash.substring(0, 8) + '...)' });
+            purgeClickBlockingOverlays();
+            simulateIconCaptchaClick(imgEl, cid);
+            submitCaptchaDirectly(hash, cid);
           };
 
           document.addEventListener('click', handleDirectCaptchaTap, true);
           document.addEventListener('touchend', handleDirectCaptchaTap, true);
+          document.addEventListener('pointerup', handleDirectCaptchaTap, true);
         } catch(e) {}
 
         // =========================================================================
 
         function getCleanUrl(bgStyle) {
           if (!bgStyle || bgStyle === 'none') return '';
-          var match = bgStyle.match(/url\\(['"]?([^'"]+?)['"]?\\)/i);
+          var match = bgStyle.match(/url\(['"]?([^'"]+?)['"]?\)/i);
           return match ? match[1] : '';
         }
 
-        function simulateIconCaptchaClick(el) {
+        // 🎯 KUSURSUZ ÇOK KATMANLI CAPTCHA TIKLAMA SİMÜLATÖRÜ
+        function simulateIconCaptchaClick(el, cid) {
+          if (!el) return;
+          if (window.__captcha_solved_success) return;
+          var successEl = document.querySelector('.captcha-success');
+          if (successEl) {
+            handlePostCaptchaSuccess(el.getAttribute('icon-hash'), cid);
+            return;
+          }
+
           try {
+            var holder = el.closest ? el.closest('.captcha-holder') : document.querySelector('.captcha-holder');
+            var iconsContainer = holder ? holder.querySelector('.captcha-modal__icons') : null;
+
+            // 1. Reklam ve engelleyici şeffaf katmanları temizle
+            purgeClickBlockingOverlays();
+
+            // 2. IconCaptcha guardrail: captcha-opacity ve loader'ı kaldır
+            if (iconsContainer) {
+              iconsContainer.classList.remove('captcha-opacity');
+              var loader = iconsContainer.querySelector('.captcha-loader');
+              if (loader) loader.remove();
+            }
+            if (window.jQuery && iconsContainer) {
+              window.jQuery(iconsContainer).removeClass('captcha-opacity');
+              window.jQuery(iconsContainer).find('.captcha-loader').remove();
+            }
+
+            // 3. IconCaptcha guardrail: mouseenter tetikle (q = true olması için)
+            if (holder) {
+              try {
+                holder.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+                if (window.jQuery) window.jQuery(holder).trigger('mouseenter');
+              } catch(e) {}
+            }
+            try {
+              el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+              if (window.jQuery) window.jQuery(el).trigger('mouseenter');
+            } catch(e) {}
+
+            // 4. Koordinatları tam piksel merkezine göre hesapla
             var rect = el.getBoundingClientRect();
-            var x = rect.left + (rect.width / 2);
-            var y = rect.top + (rect.height / 2);
-            
-            var mouseOverEvent = new MouseEvent('mouseover', {
-              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
-            });
-            el.dispatchEvent(mouseOverEvent);
+            var x = Math.round(rect.left + (rect.width > 0 ? rect.width / 2 : 22));
+            var y = Math.round(rect.top + (rect.height > 0 ? rect.height / 2 : 22));
+            var pageX = Math.round((window.pageXOffset || document.documentElement.scrollLeft || 0) + x);
+            var pageY = Math.round((window.pageYOffset || document.documentElement.scrollTop || 0) + y);
 
-            var mouseEnterEvent = new MouseEvent('mouseenter', {
-              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+            var hash = el.getAttribute('icon-hash') || '';
+            sendToNative({ 
+              type: 'log', 
+              message: '👆 Tıklanıyor: Hash ' + (hash ? hash.substring(0, 8) : 'yok') + '... (X:' + x + ' Y:' + y + ' | PageX:' + pageX + ' PageY:' + pageY + ')' 
             });
-            el.dispatchEvent(mouseEnterEvent);
 
-            var mouseDownEvent = new MouseEvent('mousedown', {
-              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
-            });
-            el.dispatchEvent(mouseDownEvent);
+            // ── KATMAN 1: jQuery Dahili Handler'ını Doğrudan Çağırma (jQuery._data) ──
+            var directHandlerExecuted = false;
+            if (window.jQuery && holder) {
+              try {
+                var events = window.jQuery._data(holder, "events");
+                if (events && events.click && events.click.length > 0) {
+                  for (var k = 0; k < events.click.length; k++) {
+                    var hObj = events.click[k];
+                    if (hObj && (!hObj.selector || hObj.selector.indexOf('captcha-image') !== -1)) {
+                      var fakeEv = window.jQuery.Event('click', {
+                        target: el,
+                        currentTarget: el,
+                        srcElement: el,
+                        pageX: pageX,
+                        pageY: pageY,
+                        clientX: x,
+                        clientY: y,
+                        which: 1,
+                        button: 0,
+                        bubbles: true
+                      });
+                      hObj.handler.call(el, fakeEv);
+                      directHandlerExecuted = true;
+                      sendToNative({ type: 'log', message: '⚡ IconCaptcha jQuery dahili dinleyicisi doğrudan çalıştırıldı!' });
+                    }
+                  }
+                }
+              } catch(jErr) {
+                sendToNative({ type: 'log', message: 'jQuery dahili çağrı notu: ' + jErr.message });
+              }
+            }
 
-            var mouseUpEvent = new MouseEvent('mouseup', {
-              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
-            });
-            el.dispatchEvent(mouseUpEvent);
+            // ── KATMAN 2: jQuery Event Triggering ($el.trigger & $holder.trigger) ──
+            if (window.jQuery) {
+              try {
+                var $el = window.jQuery(el);
+                var $holder = holder ? window.jQuery(holder) : $el;
+                var offset = $el.offset() || { left: pageX - 22, top: pageY - 22 };
+                var jqEvent = window.jQuery.Event('click', {
+                  target: el,
+                  currentTarget: el,
+                  srcElement: el,
+                  pageX: offset.left + Math.max(10, Math.floor(rect.width / 2) || 20),
+                  pageY: offset.top + Math.max(10, Math.floor(rect.height / 2) || 20),
+                  clientX: x,
+                  clientY: y,
+                  which: 1,
+                  button: 0,
+                  bubbles: true
+                });
+                $el.trigger(jqEvent);
+                if ($holder[0] !== $el[0]) {
+                  $holder.trigger(jqEvent);
+                }
+              } catch(jqTrigErr) {}
+            }
 
-            var clickEvent = new MouseEvent('click', {
-              bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+            // ── KATMAN 3: Gerçekçi DOM Dokunmatik & Fare Event Zinciri ──
+            var touchObj = null;
+            try {
+              if (typeof Touch !== 'undefined') {
+                touchObj = new Touch({
+                  identifier: Date.now(),
+                  target: el,
+                  clientX: x,
+                  clientY: y,
+                  screenX: x,
+                  screenY: y,
+                  pageX: pageX,
+                  pageY: pageY
+                });
+              }
+            } catch(tErr) {}
+
+            try {
+              el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y }));
+              el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, cancelable: false, view: window, clientX: x, clientY: y }));
+              el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, pointerType: 'touch', isPrimary: true, button: 0, buttons: 1 }));
+            } catch(pe) {}
+
+            if (touchObj) {
+              try {
+                el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true, view: window, touches: [touchObj], targetTouches: [touchObj], changedTouches: [touchObj] }));
+              } catch(te) {}
+            }
+
+            try {
+              el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, pointerType: 'touch', isPrimary: true, button: 0 }));
+            } catch(pe) {}
+
+            if (touchObj) {
+              try {
+                el.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true, view: window, touches: [], targetTouches: [], changedTouches: [touchObj] }));
+              } catch(te) {}
+            }
+
+            ['mouseover', 'mouseenter', 'mousemove', 'mousedown', 'mouseup', 'click'].forEach(function(evName) {
+              try {
+                var ev = new MouseEvent(evName, {
+                  bubbles: true,
+                  cancelable: true,
+                  view: window,
+                  clientX: x,
+                  clientY: y,
+                  screenX: x,
+                  screenY: y,
+                  pageX: pageX,
+                  pageY: pageY,
+                  button: 0,
+                  buttons: (evName === 'mousedown' ? 1 : 0),
+                  which: 1
+                });
+                el.dispatchEvent(ev);
+              } catch(me) {}
             });
-            el.dispatchEvent(clickEvent);
+
+            try {
+              el.click();
+            } catch(ce) {}
+
+            // Native Touch Mesajı (React Native köprüsüne koordinat ilet)
+            sendToNative({
+              type: 'native_touch',
+              x: x,
+              y: y,
+              hash: hash
+            });
+
           } catch(err) {
-            sendToNative({ type: 'log', message: 'Event tetikleme hatasi: ' + err.message });
+            sendToNative({ type: 'log', message: 'Tıklama simülasyon hatası: ' + err.message });
           }
         }
 
@@ -630,9 +925,9 @@ export const scraperInjectedJs = `
           try {
             var getSibnetId = function(url) {
               if (!url) return null;
-              var match = url.match(/[?&]id=(\\d+)/);
+              var match = url.match(/[?&]id=(\d+)/);
               if (match) return match[1];
-              var pathMatch = url.match(/\\/video(\\d+)/) || url.match(/\\/v\\/(\\d+)/);
+              var pathMatch = url.match(new RegExp('/video(\\d+)')) || url.match(new RegExp('/v/(\\d+)'));
               if (pathMatch) return pathMatch[1];
               return null;
             };
@@ -662,7 +957,7 @@ export const scraperInjectedJs = `
               }
               
               var html = document.documentElement.innerHTML;
-              var srcMatch = html.match(/src\\s*:\\s*["'](\\/v\\/[^"']+)["']/i);
+              var srcMatch = html.match(new RegExp('src\\s*:\\s*["\'](/v/[^"\']+)["\']', 'i'));
               
               if (srcMatch && srcMatch[1]) {
                  var absoluteUrl = "https://video.sibnet.ru" + srcMatch[1];
@@ -689,7 +984,7 @@ export const scraperInjectedJs = `
                        sendResolved('sibnet-direct:' + vid.currentSrc);
                      } else {
                        var bodyHtml = document.documentElement.innerHTML;
-                       var mp4Match = bodyHtml.match(/https?:\\/\\/[^"'\\s]+\\.mp4[^"'\\s]*/i);
+                       var mp4Match = bodyHtml.match(new RegExp('https?://[^"\'\\s]+\\.mp4[^"\'\\s]*', 'i'));
                        if (mp4Match) {
                          sendToNative({ type: 'log', message: 'MP4 link HTML icerisinde bulundu!' });
                          sendResolved('sibnet-direct:' + mp4Match[0]);
@@ -844,51 +1139,87 @@ export const scraperInjectedJs = `
 
             // --- NETWORK CHALLENGE / TURNSTILE DETECTOR ---
             try {
-              var isNetworkChallenge = window.location.pathname.includes('/_aitr/network-challenge') || document.querySelector('form[action*="network-challenge"]');
-              if (isNetworkChallenge && !window.__challenge_notified) {
-                window.__challenge_notified = true;
-                sendToNative({ type: 'log', message: '⚠️ Network Challenge tespit edildi!' });
+              var isNetworkChallenge = window.location.pathname.includes('/_aitr/network-challenge') || 
+                                       window.location.pathname.includes('/api/CaptchaChallenge') || 
+                                       document.querySelector('form[action*="network-challenge"]') || 
+                                       document.querySelector('form[action*="verify"]') || 
+                                       document.querySelector('.cf-turnstile');
 
+              if (isNetworkChallenge) {
                 var questionImg = document.querySelector('img.question');
                 var questionText = questionImg ? (questionImg.getAttribute('alt') || 'Görseldeki sorunun cevabını seçin') : 'Bağlantınızı doğrulayın';
                 var questionImgUrl = questionImg ? (questionImg.src || questionImg.getAttribute('src')) : null;
 
-                var options = [];
-                var radioLabels = document.querySelectorAll('label.option, label:has(input[type="radio"])');
-                for (var r = 0; r < radioLabels.length; r++) {
-                  var labelEl = radioLabels[r];
-                  var radioInput = labelEl.querySelector('input[type="radio"]');
-                  var spanText = labelEl.querySelector('span') || labelEl;
-                  if (radioInput) {
-                    var rect = radioInput.getBoundingClientRect();
-                    var x = rect.left + (rect.width / 2);
-                    var y = rect.top + (rect.height / 2);
-                    options.push({
-                      id: radioInput.value,
-                      text: (spanText.textContent || spanText.innerText || '').trim(),
-                      physicalX: x * window.devicePixelRatio,
-                      physicalY: y * window.devicePixelRatio
-                    });
+                if (!window.__challenge_notified) {
+                  window.__challenge_notified = true;
+                  sendToNative({ 
+                    type: 'network_challenge_detected',
+                    questionText: questionText,
+                    questionImageUrl: questionImgUrl
+                  });
+                  sendToNative({ type: 'log', message: '⚠️ Güvenlik kontrolü algılandı: ' + questionText });
+                }
+
+                // 1. OTOMATİK CEVAP DOLDURUCU (Text Input: input[name="answer"])
+                var answerInput = document.querySelector('input[name="answer"], input#answer, input.answer');
+                if (answerInput && (!answerInput.value || !answerInput.value.trim())) {
+                  var rawText = ((questionImg ? (questionImg.getAttribute('alt') || '') : '') + ' ' + (document.body ? document.body.innerText : '')).toLowerCase();
+                  var autoAnswer = '';
+                  if (rawText.includes('yoğun nüfus') || rawText.includes('en kalabalık il') || rawText.includes('nüfusa sahip')) {
+                    autoAnswer = 'İstanbul';
+                  } else if (rawText.includes('başkent')) {
+                    autoAnswer = 'Ankara';
+                  } else if (rawText.includes('yüzölçüm') || rawText.includes('en geniş')) {
+                    autoAnswer = 'Konya';
+                  } else if (rawText.includes('en kalabalık ikinci')) {
+                    autoAnswer = 'Ankara';
+                  } else if (rawText.includes('en kalabalık üçüncü')) {
+                    autoAnswer = 'İzmir';
+                  } else if (rawText.includes('01 plaka') || rawText.includes('plaka kodu 01')) {
+                    autoAnswer = 'Adana';
+                  } else if (rawText.includes('06 plaka') || rawText.includes('plaka kodu 06')) {
+                    autoAnswer = 'Ankara';
+                  } else if (rawText.includes('34 plaka') || rawText.includes('plaka kodu 34')) {
+                    autoAnswer = 'İstanbul';
+                  } else if (rawText.includes('35 plaka') || rawText.includes('plaka kodu 35')) {
+                    autoAnswer = 'İzmir';
+                  }
+
+                  if (autoAnswer) {
+                    answerInput.value = autoAnswer;
+                    try {
+                      answerInput.dispatchEvent(new Event('input', { bubbles: true }));
+                      answerInput.dispatchEvent(new Event('change', { bubbles: true }));
+                    } catch(e) {}
+                    sendToNative({ type: 'log', message: '🤖 Güvenlik sorusu otomatik yanıtlandı: ' + autoAnswer });
+                  } else if (!window.__answer_prompt_logged) {
+                    window.__answer_prompt_logged = true;
+                    sendToNative({ type: 'log', message: '✍️ Lütfen görseldeki sorunun cevabını yazın: ' + questionText });
                   }
                 }
 
-                sendToNative({
-                  type: 'network_challenge_detected',
-                  questionText: questionText,
-                  questionImageUrl: questionImgUrl,
-                  options: options
-                });
-              }
-
-              // Turnstile Token Observer Loop
-              var turnstileInput = document.querySelector('input[name="cf-turnstile-response"]') || document.querySelector('input[id*="cf-chl-widget"]');
-              if (turnstileInput && turnstileInput.value && !window.__turnstile_submitted) {
-                window.__turnstile_submitted = true;
-                sendToNative({ type: 'log', message: '✅ Turnstile Token alındı! Submit butonu tetikleniyor...' });
-
-                var submitBtn = document.querySelector('button[type="submit"]') || document.querySelector('form[action*="network-challenge"] button');
-                if (submitBtn) {
-                  clickElement(submitBtn);
+                // 2. TURNSTILE VE SUBMIT GÖZLEMCİSİ
+                var turnstileInput = document.querySelector('input[name="cf-turnstile-response"]') || document.querySelector('input[id*="cf-chl-widget"]');
+                if (turnstileInput && turnstileInput.value && !window.__turnstile_submitted) {
+                  // Cevap inputu varsa ve hala boşsa, kullanıcı cevabı yazana kadar submit YAPMA!
+                  if (answerInput && !answerInput.value.trim()) {
+                    if (!window.__turnstile_waiting_logged) {
+                      window.__turnstile_waiting_logged = true;
+                      sendToNative({ type: 'log', message: '⏳ Turnstile onaylandı! Soru cevabını yazmanız bekleniyor...' });
+                    }
+                  } else {
+                    window.__turnstile_submitted = true;
+                    sendToNative({ type: 'log', message: '✅ Turnstile token ve cevap hazır! Form gönderiliyor...' });
+                    var submitBtn = document.querySelector('button[type="submit"]') || 
+                                    document.querySelector('form[action*="network-challenge"] button') || 
+                                    document.querySelector('form[action*="verify"] button') || 
+                                    document.querySelector('form button');
+                    if (submitBtn) {
+                      setTimeout(function() {
+                        clickElement(submitBtn);
+                      }, 300);
+                    }
+                  }
                 }
               }
             } catch(chErr) {
@@ -944,14 +1275,20 @@ export const scraperInjectedJs = `
               }
             }
 
-            if (captchaImgs.length === 5 && !captchaChecked) {
+            var validCaptchaImgs = captchaImgs.filter(function(el) {
+              var h = el.getAttribute('icon-hash');
+              return h && h.length > 5;
+            });
+
+            if (validCaptchaImgs.length === 5 && !captchaChecked) {
               captchaChecked = true;
-              sendToNative({ type: 'log', message: '🛡️ IconCaptcha tespit edildi (5 görsel). Farklı olan analiz ediliyor...' });
+              var captchaHolder = document.querySelector('.captcha-holder') || document.body;
+              var cid = captchaHolder ? (captchaHolder.getAttribute('data-captcha-id') || '0') : '0';
+
+              sendToNative({ type: 'log', message: '🛡️ IconCaptcha hazır (5 görsel). Farklı olan analiz ediliyor...' });
               sendToNative({ type: 'captcha_detected', message: 'Bot koruması bulundu.' });
 
               (function() {
-                var captchaHolder = document.querySelector('.captcha-holder') || document.body;
-
                 try {
                   captchaHolder.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
                   if (window.jQuery) {
@@ -959,26 +1296,36 @@ export const scraperInjectedJs = `
                   }
                 } catch(e) {}
 
-                var iconData = captchaImgs.map(function(el, idx) {
+                var iconData = validCaptchaImgs.map(function(el, idx) {
                   var hash = el.getAttribute('icon-hash') || '';
                   var bg = el.style.backgroundImage || window.getComputedStyle(el).backgroundImage || '';
-                  var match = bg.match(/url\\(['"]?([^'"]+?)['"]?\\)/i);
-                  var src = match ? match[1] : '';
+                  var src = '';
+                  if (bg && bg.indexOf('url(') !== -1) {
+                    src = bg.split('url(')[1].split(')')[0].replace(/['"]/g, '').trim();
+                  }
                   if (!src && hash) {
-                    src = '/api/Captcha/?cid=0&hash=' + hash;
+                    var vPath = window.__iconCaptchaValidationPath || '/api/Captcha/';
+                    src = vPath + '?cid=' + cid + '&hash=' + hash;
+                  }
+                  if (src && !src.startsWith('http')) {
+                    src = window.location.origin + (src.startsWith('/') ? '' : '/') + src;
                   }
                   return { element: el, hash: hash, src: src, index: idx };
                 });
 
                 var fetchPromises = iconData.map(function(item) {
-                  if (!item.src) return Promise.resolve({ element: item.element, hash: item.hash, size: 0, index: item.index });
-                  return fetch(item.src, { credentials: 'same-origin' })
-                    .then(function(res) { return res.arrayBuffer(); })
+                  if (!item.src) return Promise.resolve({ element: item.element, hash: item.hash, size: 0, buffer: null, index: item.index });
+                  return fetch(item.src, { credentials: 'include', cache: 'force-cache' })
+                    .then(function(res) { 
+                      if (!res.ok) throw new Error('HTTP ' + res.status);
+                      return res.arrayBuffer(); 
+                    })
                     .then(function(buf) {
-                      return { element: item.element, hash: item.hash, size: buf.byteLength, index: item.index };
+                      return { element: item.element, hash: item.hash, size: buf.byteLength, buffer: new Uint8Array(buf), index: item.index };
                     })
                     .catch(function(err) {
-                      return { element: item.element, hash: item.hash, size: 0, index: item.index };
+                      sendToNative({ type: 'log', message: '⚠️ Görsel #' + (item.index + 1) + ' indirme uyarısı: ' + err.message });
+                      return { element: item.element, hash: item.hash, size: 0, buffer: null, index: item.index };
                     });
                 });
 
@@ -990,90 +1337,91 @@ export const scraperInjectedJs = `
 
                   var sizeFreq = {};
                   results.forEach(function(r) {
-                    sizeFreq[r.size] = (sizeFreq[r.size] || 0) + 1;
+                    if (r.size > 0) {
+                      sizeFreq[r.size] = (sizeFreq[r.size] || 0) + 1;
+                    }
                   });
 
                   var outlier = results.find(function(r) {
-                    return sizeFreq[r.size] === 1;
-                  }) || results[0];
+                    return r.size > 0 && sizeFreq[r.size] === 1;
+                  });
+
+                  // Eğer boyutlar tamamen aynıysa (örn. hepsi 1420B), bayt fark matrisi ile en yüksek farka sahip olanı seç
+                  if (!outlier && results.some(function(r) { return r.buffer && r.buffer.length > 0; })) {
+                    var maxDiff = -1;
+                    var outlierIdx = 0;
+                    for (var i = 0; i < results.length; i++) {
+                      var totalDiff = 0;
+                      for (var j = 0; j < results.length; j++) {
+                        if (i !== j && results[i].buffer && results[j].buffer) {
+                          var len = Math.min(results[i].buffer.length, results[j].buffer.length);
+                          for (var k = 0; k < len; k += 8) {
+                            totalDiff += Math.abs(results[i].buffer[k] - results[j].buffer[k]);
+                          }
+                        }
+                      }
+                      if (totalDiff > maxDiff) {
+                        maxDiff = totalDiff;
+                        outlierIdx = i;
+                      }
+                    }
+                    outlier = results[outlierIdx];
+                    sendToNative({ type: 'log', message: '🔬 Bayt fark matrisi ile farklı görsel bulundu: #' + (outlierIdx + 1) });
+                  }
+
+                  if (!outlier) {
+                    outlier = results[0];
+                  }
 
                   sendToNative({ 
                     type: 'log', 
                     message: '🎯 Farklı olan görsel: #' + (outlier.index + 1) + ' (Hash: ' + (outlier.hash ? outlier.hash.substring(0, 8) : 'yok') + '... Boyut: ' + outlier.size + 'B)' 
                   });
 
-                  // Dokunuş kilidi kaldırıldığı için uzun süre beklemeden hızlıca onayla
-                  setTimeout(function() {
-                    var targetEl = outlier.element;
-                    var rect = targetEl.getBoundingClientRect();
-                    var x = rect.left + (rect.width / 2);
-                    var y = rect.top + (rect.height / 2);
-                    var pageX = (window.pageXOffset || document.documentElement.scrollLeft || 0) + x;
-                    var pageY = (window.pageYOffset || document.documentElement.scrollTop || 0) + y;
+                  // 1. Reklam katmanlarını temizle ve IconCaptcha yüklenme kilidini kaldır
+                  purgeClickBlockingOverlays();
+                  var iconsCont = captchaHolder.querySelector('.captcha-modal__icons');
+                  if (iconsCont) {
+                    iconsCont.classList.remove('captcha-opacity');
+                    var ldr = iconsCont.querySelector('.captcha-loader');
+                    if (ldr) ldr.remove();
+                  }
+                  if (window.jQuery && iconsCont) {
+                    window.jQuery(iconsCont).removeClass('captcha-opacity');
+                    window.jQuery(iconsCont).find('.captcha-loader').remove();
+                  }
 
-                    sendToNative({ 
-                      type: 'log', 
-                      message: '⚡ Otomatik çözüm tetikleniyor...' 
-                    });
-
-                    // A) Container üzerinde mouseenter tazele
-                    try {
-                      captchaHolder.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
-                      if (window.jQuery) {
-                        window.jQuery(captchaHolder).trigger('mouseenter');
-                      }
-                    } catch(e) {}
-
-                    // B) jQuery Event ile tıkla
-                    if (window.jQuery) {
-                      try {
-                        var $target = window.jQuery(targetEl);
-                        var offset = $target.offset() || { left: x, top: y };
-                        var jqEvent = window.jQuery.Event('click', {
-                          pageX: offset.left + 20,
-                          pageY: offset.top + 20,
-                          target: targetEl
-                        });
-                        $target.trigger(jqEvent);
-                        sendToNative({ type: 'log', message: '✅ jQuery IconCaptcha click eventi tetiklendi.' });
-                      } catch(jqErr) {}
-                    }
-
-                    // C) Gerçek DOM MouseEvent zinciri
-                    var events = ['mouseover', 'mouseenter', 'mousemove', 'mousedown', 'mouseup', 'click'];
-                    events.forEach(function(evType) {
-                      try {
-                        var ev = new MouseEvent(evType, {
-                          bubbles: true,
-                          cancelable: true,
-                          view: window,
-                          clientX: x,
-                          clientY: y,
-                          screenX: x,
-                          screenY: y,
-                          pageX: pageX,
-                          pageY: pageY
-                        });
-                        targetEl.dispatchEvent(ev);
-                      } catch(e) {}
-                    });
-
-                    // D) Doğrudan API Onayı (JNI yerine garantili ve anlık HTTP doğrulaması)
-                    if (typeof submitCaptchaDirectly === 'function' && outlier.hash) {
-                      submitCaptchaDirectly(outlier.hash, 0);
-                    }
-
-                    // E) Sonuç kontrolü
+                  // 2. Akıllı Tıklama Pulse Zinciri (Çoklu aralıklarla tıklama garantisi)
+                  var pulseDelays = [350, 1200, 2200, 3200];
+                  pulseDelays.forEach(function(delay, idx) {
                     setTimeout(function() {
-                      var successEl = document.querySelector('.captcha-success');
-                      if (successEl) {
-                        sendToNative({ type: 'log', message: '🎉 IconCaptcha başarıyla geçildi!' });
-                      } else {
-                        captchaChecked = false;
+                      if (window.__captcha_solved_success || document.querySelector('.captcha-success')) {
+                        return;
                       }
-                    }, 1500);
+                      sendToNative({ 
+                        type: 'log', 
+                        message: '⚡ [' + (idx + 1) + '/' + pulseDelays.length + '] Görsele tıklama gönderiliyor (' + delay + 'ms)...' 
+                      });
+                      simulateIconCaptchaClick(outlier.element, cid);
 
-                  }, 300);
+                      // Yedek olarak istek taklidini de 2. pulse sırasında gönder
+                      if (idx === 1 && outlier.hash) {
+                        submitCaptchaDirectly(outlier.hash, cid);
+                      }
+                    }, delay);
+                  });
+
+                  // 3. Sonuç Kontrolü & Başarı Yönetimi
+                  setTimeout(function() {
+                    var successEl = document.querySelector('.captcha-success');
+                    if (successEl || window.__captcha_solved_success) {
+                      sendToNative({ type: 'log', message: '🎉 IconCaptcha başarıyla geçildi!' });
+                      handlePostCaptchaSuccess(outlier.hash, cid);
+                    } else {
+                      sendToNative({ type: 'log', message: '⚠️ Captcha yanıtı bekleniyor, yeniden taranacak...' });
+                      captchaChecked = false;
+                    }
+                  }, 4500);
 
                 }).catch(function(err) {
                   sendToNative({ type: 'log', message: '❌ Görsel boyutu analiz hatası: ' + err.message });

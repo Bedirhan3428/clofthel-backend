@@ -61,3 +61,8 @@ backend/test_*.js
 backend/search_*.js
 backend/inspect_*.js
 backend/find_*.js
+
+# Scratch & temporary test files
+scratch/
+scratch_*
+
