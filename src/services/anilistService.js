@@ -76,6 +76,22 @@ async function fetchAniListGraphQL(query, variables = {}) {
 }
 
 /**
+ * Calculates the exact number of already released / aired episodes.
+ * For ongoing (RELEASING) animes, nextAiringEpisode.episode - 1 gives the true aired count.
+ */
+export function getReleasedEpisodeCount(animeOrSeason) {
+  if (!animeOrSeason) return 0;
+  const rawStatus = (animeOrSeason.status || '').toUpperCase();
+  const isReleasing = rawStatus === 'RELEASING' || rawStatus === 'DEVAM EDIYOR' || rawStatus === 'DEVAM EDİYOR';
+  const nextEp = animeOrSeason.nextAiringEpisode?.episode || animeOrSeason.node?.nextAiringEpisode?.episode || null;
+  
+  if (isReleasing && typeof nextEp === 'number' && nextEp > 1) {
+    return nextEp - 1;
+  }
+  return parseInt(animeOrSeason.episodes || animeOrSeason.total_episodes || animeOrSeason.totalEpisodes || (typeof nextEp === 'number' && nextEp > 1 ? nextEp - 1 : 0), 10) || 0;
+}
+
+/**
  * Normalizes AniList media object into Clofthel's UI model
  */
 export function formatAniListMedia(media) {
@@ -87,11 +103,14 @@ export function formatAniListMedia(media) {
     : 'Açıklama bulunamadı.';
 
   const scoreFormatted = media.averageScore ? (media.averageScore / 10).toFixed(1) : null;
+  const releasedCount = getReleasedEpisodeCount(media);
 
   return {
     _id: String(media.id),
     id: media.id,
     anilist_id: media.id,
+    idMal: media.idMal || null,
+    mal_id: media.idMal || null,
     orijinal_ad: displayTitle,
     title: displayTitle,
     title_romaji: media.title?.romaji || '',
@@ -103,9 +122,10 @@ export function formatAniListMedia(media) {
     banner: media.bannerImage || media.coverImage?.extraLarge || media.coverImage?.large || '',
     rating: scoreFormatted || '8.2',
     averageScore: media.averageScore,
-    total_episodes: media.episodes || null,
-    totalEpisodes: media.episodes || null,
-    episodes_count: media.episodes || null,
+    episodes: releasedCount,
+    total_episodes: releasedCount,
+    totalEpisodes: releasedCount,
+    episodes_count: releasedCount,
     format: media.format || 'TV',
     status: media.status || 'FINISHED',
     season: media.season || null,
@@ -118,6 +138,7 @@ export function formatAniListMedia(media) {
     studios: media.studios?.nodes?.map(s => s.name) || [],
     startDate: media.startDate || null,
     startYear: media.startDate?.year || media.seasonYear || null,
+    streamingEpisodes: media.streamingEpisodes || [],
     relations: media.relations?.edges?.map(e => ({
       relationType: e.relationType,
       node: formatAniListMedia(e.node),
@@ -291,6 +312,7 @@ export async function searchAnimes(searchQuery, page = 1, perPage = 20) {
       Page(page: $page, perPage: $perPage) {
         media(type: ANIME, search: $search, sort: SEARCH_MATCH, format_not: MUSIC) {
           id
+          idMal
           title { romaji english native }
           format
           season
@@ -337,6 +359,7 @@ export async function fetchAnimeDetails(anilistId) {
     query ($id: Int) {
       Media(id: $id, type: ANIME) {
         id
+        idMal
         title { romaji english native }
         format
         season
@@ -352,6 +375,10 @@ export async function fetchAnimeDetails(anilistId) {
         nextAiringEpisode { episode airingAt }
         studios { nodes { name } }
         startDate { year month day }
+        streamingEpisodes {
+          title
+          thumbnail
+        }
         relations {
           edges {
             relationType
@@ -584,12 +611,25 @@ export async function fetchFullSeasonChain(initialMedia) {
 
     const partNum = isPart4 ? 4 : (isPart3 ? 3 : (isPart2 ? 2 : 1));
 
+    const hasExplicit = explicit > 0 || /\b(\d+)\s*\.?\s*(?:sezon|season)\b/i.test(rawTitle) || /\b(?:season|sezon)\s*\d+\b/i.test(rawTitle);
+    const cleanNamedTitle = (item.title || item.title_romaji || '').trim();
+    const isNamedEntry = !hasExplicit && cleanNamedTitle.length >= 2;
+
     if (isFinal) {
       if (partNum > 1) {
         label = `${sNum}. Sezon (Final) ${partNum}. Kısım`;
       } else {
         label = `${sNum}. Sezon (Final)`;
       }
+    } else if (hasExplicit) {
+      if (partNum > 1) {
+        label = `${sNum}. Sezon ${partNum}. Kısım`;
+      } else {
+        label = `${sNum}. Sezon`;
+      }
+    } else if (isNamedEntry && idx > 0) {
+      // For named seasons like Dragon Ball Z, Dragon Ball Super, Naruto Shippuuden:
+      label = cleanNamedTitle;
     } else {
       if (partNum > 1) {
         label = `${sNum}. Sezon ${partNum}. Kısım`;
@@ -606,13 +646,14 @@ export async function fetchFullSeasonChain(initialMedia) {
       part_number: partNum,
       is_final: isFinal,
       label: label,
+      season_title: cleanNamedTitle || label,
       title: item.title || item.orijinal_ad,
       title_romaji: item.title_romaji || item.title || '',
       title_english: item.title_english || item.title || '',
       category: 'seasons',
       cover_image: item.coverImage || item.poster,
       banner_image: item.bannerImage || item.banner,
-      episodes: item.total_episodes || item.episodes || 0,
+      episodes: getReleasedEpisodeCount(item),
       format: item.format || 'TV',
       status: item.status || 'FINISHED',
       startDate: item.startDate || null,
@@ -764,4 +805,186 @@ export function formatReleaseDateTr(item) {
 
   return 'Yakında';
 }
+
+/**
+ * Fetches episode metadata (titles and high-res thumbnails) season-specifically.
+ * Prioritizes Kitsu for Season > 1 because AniList frequently duplicates Season 1's Crunchyroll streaming episodes onto sequel entries.
+ * Maps both direct episode numbers and relative season indices.
+ * @param {number|string} anilistId
+ * @param {string} [searchTitle]
+ * @param {number} [seasonNum=1]
+ * @returns {Promise<Record<number, { title: string, thumbnail: string }>>}
+ */
+export async function fetchAniListEpisodeMetadata(anilistId, searchTitle = '', seasonNum = 1) {
+  if (!anilistId && !searchTitle) return {};
+  const sNum = parseInt(seasonNum, 10) || 1;
+  const cacheKey = `ep_meta_${anilistId || searchTitle}_s${sNum}`;
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
+
+  const result = {};
+
+  // Kitsu helper to get season-specific episodes
+  const tryKitsu = async () => {
+    if (!searchTitle) return;
+    try {
+      const cleanTitle = searchTitle.replace(/\s*\d+\.\s*sezon.*$/i, '').replace(/\s*season\s*\d+.*$/i, '').trim();
+      const query = sNum > 1 ? `${cleanTitle} Season ${sNum}` : cleanTitle;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const kRes = await fetch(`https://kitsu.io/api/edge/anime?filter[text]=${encodeURIComponent(query)}&page[limit]=5`, {
+        headers: { 'Accept': 'application/vnd.api+json', 'User-Agent': 'Clofthel/1.0' },
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (kRes.ok) {
+        const kJson = await kRes.json();
+        const candList = Array.isArray(kJson?.data) ? kJson.data : [];
+        if (candList.length > 0) {
+          let best = null;
+          for (const cand of candList) {
+            const cTitle = (cand.attributes?.canonicalTitle || '').toLowerCase();
+            if (sNum > 1) {
+              const hasSeason = cTitle.includes(`season ${sNum}`) ||
+                                cTitle.includes(`${sNum}nd season`) ||
+                                cTitle.includes(`${sNum}rd season`) ||
+                                cTitle.includes(`${sNum}th season`) ||
+                                cTitle.includes(` ${sNum}`);
+              const isRecapOrSpecial = cTitle.includes('recap') || cTitle.includes('special');
+              if (hasSeason && !isRecapOrSpecial) {
+                best = cand;
+                break;
+              }
+            } else {
+              if (!cTitle.includes('season') && !cTitle.includes('special') && !cTitle.includes('recap')) {
+                best = cand;
+                break;
+              }
+            }
+          }
+          if (!best) best = candList[0];
+
+          // Fetch page 1 (max 20 per Kitsu API)
+          const epRes1 = await fetch(`https://kitsu.io/api/edge/episodes?filter[mediaId]=${best.id}&page[limit]=20&page[offset]=0&sort=number`, {
+            headers: { 'Accept': 'application/vnd.api+json', 'User-Agent': 'Clofthel/1.0' }
+          });
+          if (epRes1.ok) {
+            const epJson1 = await epRes1.json();
+            let allEps = Array.isArray(epJson1?.data) ? [...epJson1.data] : [];
+            if (allEps.length === 20) {
+              try {
+                const epRes2 = await fetch(`https://kitsu.io/api/edge/episodes?filter[mediaId]=${best.id}&page[limit]=20&page[offset]=20&sort=number`, {
+                  headers: { 'Accept': 'application/vnd.api+json', 'User-Agent': 'Clofthel/1.0' }
+                });
+                if (epRes2.ok) {
+                  const epJson2 = await epRes2.json();
+                  if (Array.isArray(epJson2?.data)) {
+                    allEps = allEps.concat(epJson2.data);
+                    if (epJson2.data.length === 20) {
+                      try {
+                        const epRes3 = await fetch(`https://kitsu.io/api/edge/episodes?filter[mediaId]=${best.id}&page[limit]=20&page[offset]=40&sort=number`, {
+                          headers: { 'Accept': 'application/vnd.api+json', 'User-Agent': 'Clofthel/1.0' }
+                        });
+                        if (epRes3.ok) {
+                          const epJson3 = await epRes3.json();
+                          if (Array.isArray(epJson3?.data)) {
+                            allEps = allEps.concat(epJson3.data);
+                          }
+                        }
+                      } catch (e3) {}
+                    }
+                  }
+                }
+              } catch (e) {}
+            }
+
+            for (const kEp of allEps) {
+              const num = kEp.attributes?.number;
+              const t = kEp.attributes?.canonicalTitle || kEp.attributes?.titles?.en_us || kEp.attributes?.titles?.en_jp;
+              const thumbObj = kEp.attributes?.thumbnail;
+              const thumb = thumbObj?.original || thumbObj?.large || thumbObj?.medium || '';
+              if (num && t && !result[num]) {
+                result[num] = { title: t, thumbnail: thumb };
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {}
+  };
+
+  // 1. Season > 1 ise, Kitsu'yu ilk olarak dene. Çünkü AniList veritabanında devam sezonlarına Crunchyroll'un ana dizisi (1. Sezon bölümleri) bağlanmış olabiliyor!
+  if (sNum > 1 && searchTitle) {
+    await tryKitsu();
+    if (Object.keys(result).length > 0) {
+      setCache(cacheKey, result);
+      return result;
+    }
+  }
+
+  // 2. AniList GraphQL sorgusu
+  if (anilistId) {
+    const query = `
+      query ($id: Int) {
+        Media(id: $id, type: ANIME) {
+          id
+          streamingEpisodes {
+            title
+            thumbnail
+          }
+        }
+      }
+    `;
+    const data = await fetchAniListGraphQL(query, { id: parseInt(anilistId, 10) });
+    const eps = data?.Media?.streamingEpisodes;
+    if (Array.isArray(eps) && eps.length > 0) {
+      const parsed = [];
+      for (const ep of eps) {
+        if (!ep || !ep.title) continue;
+        const numMatch = ep.title.match(/(?:episode|bölüm|ep\.?)\s*(\d+)/i);
+        parsed.push({
+          num: numMatch ? parseInt(numMatch[1], 10) : 0,
+          title: ep.title,
+          thumb: ep.thumbnail || ''
+        });
+      }
+
+      parsed.sort((a, b) => a.num - b.num);
+
+      parsed.forEach((item, idx) => {
+        let clean = item.title.trim();
+        const m = clean.match(/^(?:episode|bölüm|ep\.?)\s*\d+\s*[-:–—]\s*(.+)$/i);
+        if (m && m[1].trim()) {
+          clean = m[1].trim();
+        } else if (/^(?:episode|bölüm|ep\.?)\s*\d+$/i.test(clean)) {
+          clean = '';
+        }
+
+        if (clean && !/^\d{1,2}\s+[a-zçğıöşü]+\s+\d{4}$/i.test(clean)) {
+          if (item.num > 0) {
+            if (!result[item.num]) {
+              result[item.num] = { title: clean, thumbnail: item.thumb };
+            }
+          } else {
+            const relNum = idx + 1;
+            if (!result[relNum]) {
+              result[relNum] = { title: clean, thumbnail: item.thumb };
+            }
+          }
+        }
+      });
+    }
+  }
+
+  // 3. Eğer 1. bölüm eksikse (örn: One Piece için AniList sadece 62-130'u veriyorsa) veya hiç bölüm yoksa Kitsu ile tamamla
+  if ((!result[1] || Object.keys(result).length === 0) && searchTitle) {
+    await tryKitsu();
+  }
+
+  setCache(cacheKey, result);
+  return result;
+}
+
 

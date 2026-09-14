@@ -21,12 +21,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { addToHistory, cacheEpisodeVideoUrl } from '../services/api';
-import { fetchAnimeDetails as fetchAniListDetails, searchAnimes, fetchFullSeasonChain } from '../services/anilistService';
+import { fetchAnimeDetails as fetchAniListDetails, searchAnimes, fetchFullSeasonChain, fetchAniListEpisodeMetadata } from '../services/anilistService';
 import { resolveEpisodeStream } from '../services/lightweightResolver';
 import { API_BASE_URL } from '../constants/config';
 import TouchInjector from '../modules/TouchInjector';
 import NetworkChallengeResolver from '../components/NetworkChallengeResolver';
 import { scraperInjectedJs } from '../modules/ScraperScript';
+import { shouldBlockNetworkRequest } from '../modules/ResourceFilter';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { UltraClarityView } from '../../modules/ultra-clarity/src';
 import { getQualitySettings, saveQualitySettings } from '../utils/qualitySettings';
@@ -184,7 +185,6 @@ export default function WatchScreen({ route, navigation }) {
   const [isFixingAnilist, setIsFixingAnilist] = useState(false);
   const [playerPrefs, setPlayerPrefs] = useState(DEFAULT_PREFERENCES);
   const [aniSkipData, setAniSkipData] = useState(null);
-  const [showSkipIntro, setShowSkipIntro] = useState(false);
   const [fansubOffsetSeconds, setFansubOffsetSeconds] = useState(0);
 
   useEffect(() => {
@@ -222,6 +222,33 @@ export default function WatchScreen({ route, navigation }) {
           setCurrentAnime(anilistDetail);
           setCurrentAnilistId(anilistDetail.id || anilistDetail.anilist_id);
 
+          // AniList / Kitsu bölüm başlıkları ile mevcut başlığı ve bölüm listesini sezona özel olarak zenginleştir
+          const sNum = detectSeasonFromTitle(currentEpisodeTitle || route.params?.episodeTitle || anilistDetail.title_english || anilistDetail.title, 1);
+          fetchAniListEpisodeMetadata(anilistDetail.id || anilistDetail.anilist_id, anilistDetail.title_english || anilistDetail.title, sNum).then(meta => {
+            if (meta && Object.keys(meta).length > 0 && isMounted) {
+              const currentMeta = meta[currentEpisodeNumber];
+              if (currentMeta?.title) {
+                const cleanCurrent = cleanEpTitle(currentEpisodeTitle);
+                if (!cleanCurrent || !cleanCurrent.includes(' - ') || /izle/i.test(cleanCurrent)) {
+                  setCurrentEpisodeTitle(`${currentEpisodeNumber}. Bölüm - ${currentMeta.title}`);
+                }
+              }
+
+              setEpisodes(prev => {
+                if (!prev || prev.length === 0) return prev;
+                return prev.map(ep => {
+                  const m = meta[ep.episode_number];
+                  if (!m) return ep;
+                  return {
+                    ...ep,
+                    episode_title: `${ep.episode_number}. Bölüm - ${m.title}`,
+                    thumbnail: m.thumbnail || ep.thumbnail
+                  };
+                });
+              });
+            }
+          }).catch(() => {});
+
           // If seasons not provided, automatically fetch the full franchise season chain from AniList
           if (!seasons || seasons.length === 0) {
             try {
@@ -248,20 +275,50 @@ export default function WatchScreen({ route, navigation }) {
     const loadSkipTimes = async () => {
       if (!currentEpisodeNumber) return;
       try {
-        let anilistId = currentAnilistId || currentAnime?.anilist_id || currentAnime?.id;
+        const isNumericId = (id) => id && !isNaN(Number(id)) && Number(id) > 0 && !/^[a-fA-F0-9]{24}$/.test(String(id));
+        let anilistId = isNumericId(currentAnilistId)
+          ? Number(currentAnilistId)
+          : (isNumericId(currentAnime?.anilist_id)
+              ? Number(currentAnime.anilist_id)
+              : (isNumericId(currentAnime?.id) ? Number(currentAnime.id) : null));
+
+        // If AniList ID not resolved yet, attempt resolution using title
+        if (!anilistId) {
+          const targetTitle = currentAnime?.title_english || currentAnime?.title || route.params?.animeTitle || currentEpisodeTitle;
+          if (targetTitle) {
+            const resolved = await resolveAniListMedia({
+              anilistId: null,
+              animeId,
+              animeTitle: targetTitle,
+              episodeTitle: currentEpisodeTitle,
+              initialAnime
+            });
+            if (resolved?.id && !isCancelled) {
+              anilistId = resolved.id;
+              setCurrentAnilistId(resolved.id);
+            }
+          }
+        }
 
         if (anilistId) {
-          const activeFansubs = currentEpisodeFansub 
-            ? [currentEpisodeFansub] 
-            : (currentAnime?.fansubs && currentAnime.fansubs.length > 0 ? currentAnime.fansubs : (initialFansubs || []));
+          // Extract fansub tags from episode title or active fansub list
+          const detectedFansubTag = (currentEpisodeTitle || '').match(/\[(.*?)\]/)?.[1] || null;
+          const activeFansubs = [];
+          if (currentEpisodeFansub) activeFansubs.push(currentEpisodeFansub);
+          if (detectedFansubTag) activeFansubs.push(detectedFansubTag);
+          if (Array.isArray(currentAnime?.fansubs)) activeFansubs.push(...currentAnime.fansubs);
+          if (Array.isArray(initialFansubs)) activeFansubs.push(...initialFansubs);
 
-          console.log(`🎬 [WatchScreen AniSkip] Fetching skip times for AniList ID: ${anilistId}, Episode: ${currentEpisodeNumber}, Fansubs:`, activeFansubs);
+          const knownMalId = currentAnime?.idMal || currentAnime?.mal_id || null;
+
+          console.log(`🎬 [WatchScreen AniSkip] Fetching skip times for AniList ID: ${anilistId}, MAL ID: ${knownMalId || 'Auto-resolve'}, Episode: ${currentEpisodeNumber}, Fansubs:`, activeFansubs);
 
           const skipTimes = await fetchAniSkipTimes(
             anilistId,
             currentEpisodeNumber,
             0,
-            activeFansubs
+            activeFansubs,
+            knownMalId
           );
 
           if (!isCancelled && skipTimes) {
@@ -270,9 +327,18 @@ export default function WatchScreen({ route, navigation }) {
             if (skipTimes.fansubOffset) {
               setFansubOffsetSeconds(skipTimes.fansubOffset);
             }
+            if (webViewRef.current) {
+              if (Platform.OS === 'web') {
+                if (webViewRef.current.contentWindow) {
+                  webViewRef.current.contentWindow.postMessage(JSON.stringify({ type: 'setSkipTimes', value: skipTimes }), '*');
+                }
+              } else {
+                webViewRef.current.injectJavaScript(`if(window.setSkipTimes){window.setSkipTimes(${JSON.stringify(skipTimes)});}true;`);
+              }
+            }
           }
         } else {
-          console.log(`ℹ️ [WatchScreen AniSkip] No AniList ID available for anime ${animeId} yet.`);
+          console.log(`ℹ️ [WatchScreen AniSkip] No numeric AniList ID available for anime ${animeId} yet.`);
         }
       } catch (e) {
         console.warn('[WatchScreen AniSkip] Error loading skip times:', e.message);
@@ -281,7 +347,7 @@ export default function WatchScreen({ route, navigation }) {
 
     loadSkipTimes();
     return () => { isCancelled = true; };
-  }, [animeId, currentAnilistId, currentAnime, currentEpisodeNumber, currentEpisodeFansub]);
+  }, [animeId, currentAnilistId, currentAnime, currentEpisodeNumber, currentEpisodeFansub, currentEpisodeTitle]);
 
   useEffect(() => {
     const loadPrefs = async () => {
@@ -296,7 +362,12 @@ export default function WatchScreen({ route, navigation }) {
       }
     };
     loadPrefs();
-  }, []);
+
+    const unsubscribe = navigation?.addListener ? navigation.addListener('focus', loadPrefs) : null;
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [navigation]);
 
   const slideAnim = useRef(new Animated.Value(400)).current;
   const webViewRef = useRef(null);
@@ -766,7 +837,9 @@ export default function WatchScreen({ route, navigation }) {
   const handleWebViewMessage = async (event) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
-      console.log('[WebView Player Log]', data);
+      if (data.type !== 'timeupdate') {
+        console.log('[WebView Player Log]', data.type);
+      }
 
       if (data.type === 'fullscreen') {
         setIsFullscreen(data.isFullscreen);
@@ -831,14 +904,6 @@ export default function WatchScreen({ route, navigation }) {
 
       if (data.type === 'timeupdate') {
         currentVideoTimeRef.current = data.currentTime;
-        if (aniSkipData?.op) {
-          const { startTime, endTime } = aniSkipData.op;
-          if (data.currentTime >= startTime && data.currentTime <= endTime) {
-            if (!showSkipIntro) setShowSkipIntro(true);
-          } else if (showSkipIntro) {
-            setShowSkipIntro(false);
-          }
-        }
       }
 
       if (data.type === 'playerReady' && startAt > 0) {
@@ -847,7 +912,7 @@ export default function WatchScreen({ route, navigation }) {
       }
 
       if (data.type === 'backgroundClick') {
-        setIsSettingsOpen(false);
+        setIsSettingsOpen(prev => prev ? false : prev);
       }
     } catch (err) {
       console.error('[WebView Message Parse Error]', err);
@@ -870,7 +935,9 @@ export default function WatchScreen({ route, navigation }) {
                 clarityMode={clarityMode}
                 startAt={currentStartAt}
                 playerPrefs={playerPrefs}
-                key={`${currentEpisodeNumber}_${currentVideoUrl}`}
+                isFullscreen={isFullscreen}
+                aniSkipData={aniSkipData}
+                key={`${currentEpisodeNumber}_${currentVideoUrl}_${playerPrefs?.buttonSize || 'medium'}`}
               />
             ) : (
               <VideoPlayerWrapper
@@ -880,7 +947,9 @@ export default function WatchScreen({ route, navigation }) {
                 clarityMode={clarityMode}
                 startAt={currentStartAt}
                 playerPrefs={playerPrefs}
-                key={`${currentEpisodeNumber}_${currentVideoUrl}`}
+                isFullscreen={isFullscreen}
+                aniSkipData={aniSkipData}
+                key={`${currentEpisodeNumber}_${currentVideoUrl}_${playerPrefs?.buttonSize || 'medium'}`}
               />
             )
           ) : (
@@ -896,21 +965,6 @@ export default function WatchScreen({ route, navigation }) {
             </View>
           )}
 
-          {/* AniSkip Auto/Manual Intro Skip Button with Fansub Offset */}
-          {showSkipIntro && aniSkipData?.op && (
-            <TouchableOpacity
-              activeOpacity={0.8}
-              style={styles.skipIntroButton}
-              onPress={() => {
-                const targetSeek = Math.max(0, (aniSkipData.op.endTime || 0) - 3);
-                sendControlCommand('seekTo', targetSeek);
-                setShowSkipIntro(false);
-              }}
-            >
-              <Ionicons name="play-forward" size={18} color="#000" style={{ marginRight: 6 }} />
-              <Text style={styles.skipIntroText}>İntroyu Geç</Text>
-            </TouchableOpacity>
-          )}
           
           {/* Overlay Back Button on Video */}
           <TouchableOpacity
@@ -1180,6 +1234,21 @@ export default function WatchScreen({ route, navigation }) {
                     {clarityMode === 'ai-native' && 'AI Native'}
                   </Text>
                 </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.sheetItem} 
+                  onPress={() => {
+                    setIsSettingsOpen(false);
+                    navigation.navigate('PlayerSettings');
+                  }}
+                >
+                  <Text style={styles.sheetItemText}>Player & Buton Ayarları</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Text style={styles.sheetItemValue}>
+                      {playerPrefs?.buttonSize === 'small' ? 'Küçük' : playerPrefs?.buttonSize === 'large' ? 'Büyük' : 'Normal'}
+                    </Text>
+                    <Ionicons name="chevron-forward" size={16} color={COLORS.textSecondary} style={{ marginLeft: 4 }} />
+                  </View>
+                </TouchableOpacity>
               </View>
             )}
             
@@ -1295,7 +1364,10 @@ export default function WatchScreen({ route, navigation }) {
             mediaPlaybackRequiresUserAction={false}
             setSupportMultipleWindows={false}
             onShouldStartLoadWithRequest={(request) => {
-              const url = request.url;
+              if (shouldBlockNetworkRequest(request.url)) {
+                return false;
+              }
+              const url = request.url || '';
               return url.includes('tranimeizle.io') || url.includes('Captcha') || url.includes('challenge') || url.startsWith('about:blank') || url.startsWith('data:');
             }}
           />
@@ -1396,7 +1468,7 @@ const getRefererForUrl = (url) => {
   return 'https://optraco.top/';
 };
 
-const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, playerPrefs = {}) => {
+const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, playerPrefs = {}, initialSkipTimes = null) => {
   const prefs = {
     doubleTapEnabled: true,
     swipeSeekEnabled: true,
@@ -1404,14 +1476,23 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
     buttonSize: 'medium',
     defaultSpeed: 1.0,
     clarityMode: 'off',
+    autoSkipIntro: false,
     ...playerPrefs
   };
   let btnSizeMultiplier = 1.0;
-  if (prefs.buttonSize === 'small') btnSizeMultiplier = 0.8;
-  if (prefs.buttonSize === 'large') btnSizeMultiplier = 1.25;
+  if (prefs.buttonSize === 'small') btnSizeMultiplier = 0.82;
+  if (prefs.buttonSize === 'large') btnSizeMultiplier = 1.22;
 
-  // Resolve active clarity mode: use passed clarityMode or preference fallback
+  // Resolve active clarity mode
   const activeClarity = clarityMode || prefs.clarityMode || 'off';
+  let activeFilter = 'none';
+  if (activeClarity === 'performance') {
+    activeFilter = 'contrast(1.06) saturate(1.10)';
+  } else if (activeClarity === 'balanced') {
+    activeFilter = 'contrast(1.12) saturate(1.18)';
+  } else if (activeClarity === 'ai-native') {
+    activeFilter = 'contrast(1.18) saturate(1.26) brightness(1.02)';
+  }
 
   return `
     <!DOCTYPE html>
@@ -1421,71 +1502,128 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
       <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
       <title>Premium Video Player</title>
       <script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.12/dist/hls.min.js"></script>
-      <script src="https://unpkg.com/lucide@latest"></script>
       <style>
         :root {
           --accent-color: #FF6B00;
-          --btn-size-multiplier: ${btnSizeMultiplier};
+          --btn-pref-scale: ${btnSizeMultiplier};
+
+          /* Normal / Compact Mode (Portrait embed) */
+          --center-btn-size: calc(36px * var(--btn-pref-scale));
+          --play-btn-size: calc(48px * var(--btn-pref-scale));
+          --center-icon-size: calc(18px * var(--btn-pref-scale));
+          --play-icon-size: calc(24px * var(--btn-pref-scale));
+          --center-gap: 16px;
+          --btn-label-size: calc(7.5px * var(--btn-pref-scale));
+          --top-btn-pad: 6px;
+          --top-btn-icon: 18px;
+          --top-gap: 8px;
+          --top-offset: 10px;
+          --bottom-offset: 10px;
+          --bottom-pad: 0 12px;
+          --time-font-size: 11px;
+          --progress-height: 4px;
+          --progress-hover-height: 6px;
+          --progress-knob-size: 11px;
         }
+
+        /* Fullscreen / Spacious Mode */
+        body.is-fullscreen,
+        body.is-spacious,
+        .player-container.fullscreen {
+          --center-btn-size: calc(56px * var(--btn-pref-scale));
+          --play-btn-size: calc(72px * var(--btn-pref-scale));
+          --center-icon-size: calc(26px * var(--btn-pref-scale));
+          --play-icon-size: calc(36px * var(--btn-pref-scale));
+          --center-gap: 36px;
+          --btn-label-size: calc(9.5px * var(--btn-pref-scale));
+          --top-btn-pad: 8px;
+          --top-btn-icon: 22px;
+          --top-gap: 14px;
+          --top-offset: 18px;
+          --bottom-offset: 16px;
+          --bottom-pad: 0 24px;
+          --time-font-size: 13px;
+          --progress-height: 6px;
+          --progress-hover-height: 8px;
+          --progress-knob-size: 15px;
+        }
+
+        @media (min-height: 290px) and (min-width: 480px) {
+          :root {
+            --center-btn-size: calc(56px * var(--btn-pref-scale));
+            --play-btn-size: calc(72px * var(--btn-pref-scale));
+            --center-icon-size: calc(26px * var(--btn-pref-scale));
+            --play-icon-size: calc(36px * var(--btn-pref-scale));
+            --center-gap: 36px;
+            --btn-label-size: calc(9.5px * var(--btn-pref-scale));
+            --top-btn-pad: 8px;
+            --top-btn-icon: 22px;
+            --top-gap: 14px;
+            --top-offset: 18px;
+            --bottom-offset: 16px;
+            --bottom-pad: 0 24px;
+            --time-font-size: 13px;
+            --progress-height: 6px;
+            --progress-hover-height: 8px;
+            --progress-knob-size: 15px;
+          }
+        }
+
         * {
           -webkit-tap-highlight-color: transparent;
           outline: none;
+          box-sizing: border-box;
         }
         body, html {
           margin: 0; padding: 0; width: 100%; height: 100%;
           background-color: #000; overflow: hidden;
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
           user-select: none; -webkit-user-select: none;
+          touch-action: manipulation;
         }
         .player-container {
           position: relative; width: 100%; height: 100%;
           background: #000; display: flex; justify-content: center; align-items: center;
           overflow: hidden;
+          contain: layout style paint;
+          touch-action: manipulation;
         }
         video {
           width: 100%; height: 100%; object-fit: contain; z-index: 1;
-          image-rendering: -webkit-optimize-contrast;
-          image-rendering: crisp-edges;
-          ${activeClarity === 'performance' ? `
-            filter: contrast(1.08) saturate(1.15);
-          ` : ''}
-          ${activeClarity === 'balanced' ? `
-            filter: url(#balanced-sharpen) contrast(1.12) saturate(1.22);
-          ` : ''}
-          ${activeClarity === 'ai-native' ? `
-            filter: url(#ultra-sharpen) contrast(1.20) saturate(1.35) brightness(1.01);
-          ` : ''}
-          ${activeClarity === 'off' ? `
-            filter: none;
-          ` : ''}
+          transform: translateZ(0); -webkit-transform: translateZ(0);
+          ${activeFilter !== 'none' ? `filter: ${activeFilter};` : ''}
         }
         .click-backdrop {
           position: absolute; top: 0; left: 0; width: 100%; height: 100%;
           z-index: 5; background: transparent; pointer-events: auto;
+          touch-action: manipulation;
         }
         .loading-overlay {
           position: absolute; top: 0; left: 0; width: 100%; height: 100%;
           background: #000; z-index: 50; display: flex; flex-direction: column;
           justify-content: center; align-items: center; pointer-events: none;
-          transition: opacity 0.3s;
+          transition: opacity 0.15s ease;
         }
         .spinner {
-          width: 44px; height: 44px; border: 3px solid rgba(255,255,255,0.1);
+          width: 38px; height: 38px; border: 3px solid rgba(255,255,255,0.15);
           border-top-color: var(--accent-color); border-radius: 50%;
-          animation: spin 1s linear infinite;
-          margin-bottom: 12px;
+          animation: spin 0.8s linear infinite;
+          margin-bottom: 8px;
         }
         @keyframes spin { 100% { transform: rotate(360deg); } }
         .loading-text {
-          color: #fff; font-size: 14px; font-weight: 500; opacity: 0.8;
-          font-family: system-ui, -apple-system, sans-serif; letter-spacing: 0.5px;
+          color: #fff; font-size: 13px; font-weight: 500; opacity: 0.85;
+          letter-spacing: 0.5px;
         }
         .controls-overlay {
           position: absolute; top: 0; left: 0; width: 100%; height: 100%;
           z-index: 10; opacity: 1; visibility: visible;
-          transition: opacity 0.3s cubic-bezier(0.25, 1, 0.5, 1), visibility 0.3s;
+          transition: opacity 0.12s linear, visibility 0.12s linear;
           pointer-events: auto;
-          background: rgba(0, 0, 0, 0.45);
+          background: rgba(0, 0, 0, 0.40);
+          transform: translateZ(0);
+          will-change: opacity;
+          touch-action: manipulation;
         }
         .controls-overlay.hidden {
           opacity: 0; visibility: hidden; pointer-events: none !important;
@@ -1494,210 +1632,302 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
           pointer-events: none !important;
         }
         .top-controls {
-          position: absolute; top: 16px; right: 16px;
-          display: flex; align-items: center; gap: 12px; z-index: 20;
+          position: absolute; top: var(--top-offset); right: var(--top-offset);
+          display: flex; align-items: center; gap: var(--top-gap); z-index: 20;
+          transform: translateZ(0);
         }
         .control-btn {
-          background: transparent; border: none; color: #fff; cursor: pointer;
-          padding: 8px; border-radius: 50%; display: flex; align-items: center;
-          justify-content: center; transition: background 0.2s, opacity 0.2s, transform 0.1s;
+          background: rgba(255, 255, 255, 0.16);
+          backdrop-filter: blur(14px);
+          -webkit-backdrop-filter: blur(14px);
+          border: 1px solid rgba(255, 255, 255, 0.28);
+          color: #FFFFFF !important;
+          cursor: pointer; padding: var(--top-btn-pad); border-radius: 50%;
+          display: flex; align-items: center; justify-content: center;
+          transition: background 0.12s ease, transform 0.08s ease, border-color 0.12s ease;
           outline: none;
+          box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+          touch-action: manipulation;
         }
-        .control-btn svg, .control-btn .lucide {
-          width: 24px; height: 24px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
-          transition: transform 0.3s ease;
+        .control-btn svg {
+          width: var(--top-btn-icon); height: var(--top-btn-icon);
+          display: block; pointer-events: none;
+          color: #FFFFFF !important;
+          stroke: #FFFFFF !important;
         }
         .control-btn:hover {
-          background: rgba(255, 255, 255, 0.15);
+          background: rgba(255, 255, 255, 0.28);
+          border-color: rgba(255, 255, 255, 0.5);
         }
         .control-btn:active {
-          transform: scale(0.95);
+          transform: scale(0.92);
+          background: rgba(255, 255, 255, 0.38);
         }
-        #btn-settings:active svg, #btn-settings:active .lucide {
+        #btn-settings:active svg {
           transform: rotate(30deg);
         }
         .center-controls {
           position: absolute; top: 50%; left: 50%;
-          transform: translate(-50%, -50%); display: flex; align-items: center;
-          gap: 36px; z-index: 15;
+          transform: translate(-50%, -50%) translateZ(0);
+          display: flex; align-items: center; gap: var(--center-gap); z-index: 15;
+          will-change: transform;
         }
         .center-btn {
-          opacity: 0.6; transition: opacity 0.2s, background 0.2s, transform 0.2s;
-          background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.15);
-          width: calc(58px * var(--btn-size-multiplier)); height: calc(58px * var(--btn-size-multiplier)); border-radius: 50%;
+          background: rgba(255, 255, 255, 0.15);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          border: 1.2px solid rgba(255, 255, 255, 0.28);
+          color: #FFFFFF !important;
+          width: var(--center-btn-size); height: var(--center-btn-size); border-radius: 50%;
           position: relative; display: flex; align-items: center; justify-content: center;
+          cursor: pointer;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.42);
+          transition: transform 0.1s ease, background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+          will-change: transform; touch-action: manipulation;
         }
         .center-btn:hover {
-          opacity: 1.0; background: rgba(0, 0, 0, 0.85);
+          background: rgba(255, 255, 255, 0.26);
+          border-color: rgba(255, 255, 255, 0.5);
         }
-        .center-btn svg, .center-btn .lucide {
-          width: calc(28px * var(--btn-size-multiplier)); height: calc(28px * var(--btn-size-multiplier));
+        .center-btn:active {
+          transform: scale(0.92);
+          background: rgba(255, 255, 255, 0.36);
+        }
+        .center-btn svg {
+          width: var(--center-icon-size); height: var(--center-icon-size);
+          display: block; pointer-events: none;
+          color: #FFFFFF !important;
+          stroke: #FFFFFF !important;
+        }
+        .center-btn svg line {
+          stroke: #FFFFFF !important;
+        }
+        .center-btn svg polygon {
+          fill: #FFFFFF !important;
+          stroke: #FFFFFF !important;
         }
         .center-btn .btn-label {
-          position: absolute;
-          font-size: calc(8px * var(--btn-size-multiplier));
-          font-weight: 800;
-          color: #fff;
-          top: 53%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          font-family: system-ui, -apple-system, sans-serif;
-          letter-spacing: -0.5px;
+          position: absolute; font-size: var(--btn-label-size); font-weight: 800;
+          color: #FFFFFF !important; top: 52%; left: 50%; transform: translate(-50%, -50%);
+          letter-spacing: -0.5px; pointer-events: none;
+          text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
         }
         .play-btn {
-          width: calc(68px * var(--btn-size-multiplier)); height: calc(68px * var(--btn-size-multiplier));
+          width: var(--play-btn-size); height: var(--play-btn-size);
+          background: rgba(255, 255, 255, 0.24);
+          border: 1.6px solid rgba(255, 255, 255, 0.44);
+          box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
         }
-        .play-btn svg, .play-btn .lucide {
-          width: calc(34px * var(--btn-size-multiplier)); height: calc(34px * var(--btn-size-multiplier));
+        .play-btn:hover {
+          background: rgba(255, 255, 255, 0.35);
+          border-color: rgba(255, 255, 255, 0.65);
+        }
+        .play-btn:active {
+          background: rgba(255, 255, 255, 0.45);
+        }
+        .play-btn svg {
+          width: var(--play-icon-size); height: var(--play-icon-size);
+          color: #FFFFFF !important;
+          fill: #FFFFFF !important;
+        }
+        .play-btn svg polygon,
+        .play-btn svg rect {
+          fill: #FFFFFF !important;
+          stroke: none !important;
         }
         .bottom-controls {
-          position: absolute;
-          bottom: 16px;
-          left: 0; width: 100%;
+          position: absolute; bottom: var(--bottom-offset); left: 0; width: 100%;
           display: flex; flex-direction: column; z-index: 15;
-          padding: 0 16px;
-          box-sizing: border-box;
+          padding: var(--bottom-pad); box-sizing: border-box;
+          transform: translateZ(0);
         }
         .time-display {
-          color: #fff; font-size: 13px; font-weight: 500;
-          margin-bottom: 8px; pointer-events: none;
-          text-shadow: 0 1px 3px rgba(0,0,0,0.8); letter-spacing: 0.5px;
+          color: #fff; font-size: var(--time-font-size); font-weight: 500;
+          margin-bottom: 5px; pointer-events: none;
+          text-shadow: 0 1px 2px rgba(0,0,0,0.9); letter-spacing: 0.3px;
         }
         .progress-bar-container {
-          position: relative; width: 100%; height: 6px;
-          background: rgba(255, 255, 255, 0.2); cursor: pointer;
-          transition: height 0.15s ease, background 0.15s; pointer-events: auto;
-          border-radius: 4px;
+          position: relative; width: 100%; height: var(--progress-height);
+          background: rgba(255, 255, 255, 0.22); cursor: pointer;
+          transition: height 0.12s ease; pointer-events: auto;
+          border-radius: 3px; transform: translateZ(0);
+          touch-action: none;
         }
-        .progress-bar-container:hover {
-          height: 8px;
-          background: rgba(255, 255, 255, 0.25);
+        .progress-bar-container:hover, .progress-bar-container.seeking {
+          height: var(--progress-hover-height);
         }
         .progress-fill {
           position: absolute; top: 0; left: 0; height: 100%; width: 0%;
-          background: var(--accent-color); z-index: 2;
-          border-radius: 4px;
-          box-shadow: 0 0 8px var(--accent-color);
+          background: var(--accent-color); z-index: 2; border-radius: 3px;
         }
         .buffer-fill {
           position: absolute; top: 0; left: 0; height: 100%; width: 0%;
-          background: rgba(255, 255, 255, 0.35); z-index: 1;
-          border-radius: 4px;
+          background: rgba(255, 255, 255, 0.35); z-index: 1; border-radius: 3px;
         }
         .progress-knob {
-          position: absolute;
-          top: 50%;
-          left: 0%;
-          width: 14px;
-          height: 14px;
-          border-radius: 50%;
-          background: #fff;
-          border: 2px solid var(--accent-color);
-          box-shadow: 0 2px 6px rgba(0,0,0,0.4);
-          z-index: 5;
+          position: absolute; top: 50%; left: 0%;
+          width: var(--progress-knob-size); height: var(--progress-knob-size);
+          border-radius: 50%; background: #fff; border: 2px solid var(--accent-color);
+          box-shadow: 0 1px 4px rgba(0,0,0,0.4); z-index: 5;
           transform: translate(-50%, -50%) scale(0);
-          transition: transform 0.15s ease;
+          transition: transform 0.1s ease; pointer-events: none;
         }
         .progress-bar-container:hover .progress-knob,
         .progress-bar-container.seeking .progress-knob {
           transform: translate(-50%, -50%) scale(1);
         }
         .progress-tooltip {
-          position: absolute;
-          bottom: 20px;
-          background: rgba(0, 0, 0, 0.85);
-          color: #fff;
-          padding: 6px 10px;
-          border-radius: 6px;
-          font-size: 12px;
-          font-weight: 600;
-          font-family: system-ui, -apple-system, sans-serif;
-          pointer-events: none;
-          display: none;
-          z-index: 100;
-          transform: translateX(-50%);
-          border: 1px solid rgba(255, 255, 255, 0.15);
-          box-shadow: 0 4px 10px rgba(0,0,0,0.5);
-          white-space: nowrap;
+          position: absolute; bottom: 18px; background: rgba(0, 0, 0, 0.88);
+          color: #fff; padding: 4px 8px; border-radius: 5px;
+          font-size: 11px; font-weight: 600; pointer-events: none;
+          display: none; z-index: 100; transform: translateX(-50%);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          box-shadow: 0 2px 8px rgba(0,0,0,0.5); white-space: nowrap;
         }
 
-        /* Double Tap & Swipe Seek HUD Styles */
+        /* Double Tap & Swipe HUD */
         .double-tap-overlay {
-          position: absolute; top: 0; bottom: 0; width: 35%;
+          position: absolute; top: 0; bottom: 0; width: 32%;
           display: flex; flex-direction: column; align-items: center; justify-content: center;
           z-index: 8; opacity: 0; pointer-events: none;
           background: radial-gradient(circle, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0) 70%);
-          transition: opacity 0.2s ease;
+          transition: opacity 0.15s ease;
         }
         .double-tap-overlay.left { left: 0; border-radius: 0 50% 50% 0; }
         .double-tap-overlay.right { right: 0; border-radius: 50% 0 0 50%; }
         .double-tap-overlay.active { opacity: 1; }
-        
         .ripple-container {
-          position: absolute; width: 100px; height: 100px; display: flex; align-items: center; justify-content: center;
+          position: absolute; width: 70px; height: 70px; display: flex; align-items: center; justify-content: center;
+        }
+        body.is-fullscreen .ripple-container, body.is-spacious .ripple-container {
+          width: 100px; height: 100px;
         }
         .ripple-circle {
           position: absolute; width: 100%; height: 100%; border-radius: 50%;
           background: rgba(255, 255, 255, 0.2); transform: scale(0);
         }
         .double-tap-overlay.active .ripple-circle:nth-child(1) {
-          animation: rippleEffect 0.6s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
+          animation: rippleEffect 0.5s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
         }
         .double-tap-overlay.active .ripple-circle:nth-child(2) {
-          animation: rippleEffect 0.6s cubic-bezier(0.1, 0.8, 0.3, 1) 0.15s forwards;
+          animation: rippleEffect 0.5s cubic-bezier(0.1, 0.8, 0.3, 1) 0.1s forwards;
         }
         .double-tap-overlay.active .ripple-circle:nth-child(3) {
-          animation: rippleEffect 0.6s cubic-bezier(0.1, 0.8, 0.3, 1) 0.3s forwards;
+          animation: rippleEffect 0.5s cubic-bezier(0.1, 0.8, 0.3, 1) 0.2s forwards;
         }
         @keyframes rippleEffect {
           0% { transform: scale(0.2); opacity: 1; }
-          100% { transform: scale(1.5); opacity: 0; }
+          100% { transform: scale(1.4); opacity: 0; }
         }
         .double-tap-text {
           display: flex; flex-direction: row; align-items: center; gap: 4px;
-          color: #fff; font-size: 14px; font-weight: 700; text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+          color: #fff; font-size: 12px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.8);
           z-index: 9;
         }
-        .double-tap-text svg, .double-tap-text .lucide {
+        body.is-fullscreen .double-tap-text, body.is-spacious .double-tap-text {
+          font-size: 15px;
+        }
+        .double-tap-text svg {
+          width: 16px; height: 16px;
+        }
+        body.is-fullscreen .double-tap-text svg, body.is-spacious .double-tap-text svg {
           width: 20px; height: 20px;
         }
-
         .swipe-hud {
-          position: absolute; top: 24px; left: 50%;
-          transform: translateX(-50%) scale(0.9);
-          background: rgba(0, 0, 0, 0.85); border: 1px solid rgba(255, 255, 255, 0.2);
-          border-radius: 8px; padding: 8px 16px;
+          position: absolute; top: 16px; left: 50%;
+          transform: translateX(-50%) scale(0.92);
+          background: rgba(20, 20, 25, 0.68);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          border: 1px solid rgba(255, 255, 255, 0.28);
+          border-radius: 12px; padding: 6px 16px;
           display: flex; flex-direction: column; align-items: center; justify-content: center;
           z-index: 40; pointer-events: none; opacity: 0;
-          transition: opacity 0.15s, transform 0.15s;
-          box-shadow: 0 4px 15px rgba(0,0,0,0.6);
+          transition: opacity 0.12s, transform 0.12s;
+          box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+        }
+        body.is-fullscreen .swipe-hud, body.is-spacious .swipe-hud {
+          top: 24px; padding: 8px 20px;
         }
         .swipe-hud.active {
           opacity: 1; transform: translateX(-50%) scale(1);
         }
         .swipe-hud-time {
-          color: #fff; font-size: 16px; font-weight: 700;
-          font-family: system-ui, -apple-system, sans-serif;
+          color: #ffffff; font-size: 14px; font-weight: 700;
+        }
+        body.is-fullscreen .swipe-hud-time, body.is-spacious .swipe-hud-time {
+          font-size: 17px;
         }
         .swipe-hud-change {
-          color: var(--accent-color); font-size: 12px; font-weight: 600; margin-top: 2px;
-          font-family: system-ui, -apple-system, sans-serif;
+          color: var(--accent-color); font-size: 11px; font-weight: 600; margin-top: 1px;
+        }
+
+        /* Frosted Glass Skip Intro Button */
+        .skip-intro-btn {
+          position: absolute;
+          bottom: calc(var(--bottom-offset) + 38px);
+          right: 20px;
+          display: none;
+          align-items: center;
+          gap: 8px;
+          background: rgba(20, 20, 25, 0.72);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          border: 1px solid rgba(255, 255, 255, 0.35);
+          border-radius: 9999px;
+          padding: 7px 15px;
+          color: #FFFFFF !important;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          font-size: 12.5px;
+          font-weight: 700;
+          cursor: pointer;
+          z-index: 35;
+          box-shadow: 0 4px 18px rgba(0, 0, 0, 0.6);
+          transition: transform 0.15s ease, background 0.15s ease, opacity 0.2s ease;
+          touch-action: manipulation;
+          user-select: none;
+          -webkit-user-select: none;
+        }
+        .skip-intro-btn.visible {
+          display: flex;
+        }
+        .skip-intro-btn:hover {
+          background: rgba(40, 40, 45, 0.88);
+          border-color: rgba(255, 255, 255, 0.6);
+          transform: scale(1.04);
+        }
+        .skip-intro-btn:active {
+          transform: scale(0.95);
+          background: rgba(255, 255, 255, 0.25);
+        }
+        .skip-intro-btn svg {
+          width: 15px;
+          height: 15px;
+          fill: #FFFFFF !important;
+          stroke: none !important;
+          pointer-events: none;
+        }
+        .skip-intro-btn span {
+          color: #FFFFFF !important;
+          pointer-events: none;
+        }
+
+        body.is-fullscreen .skip-intro-btn,
+        body.is-spacious .skip-intro-btn {
+          bottom: calc(var(--bottom-offset) + 52px);
+          right: 32px;
+          padding: 10px 20px;
+          font-size: 14px;
+        }
+        body.is-fullscreen .skip-intro-btn svg,
+        body.is-spacious .skip-intro-btn svg {
+          width: 18px;
+          height: 18px;
         }
       </style>
     </head>
     <body>
       <div class="player-container" id="player-container">
-        <!-- SVG Filter for 4K Ultra Clarity Sharpening -->
-        <svg xmlns="http://www.w3.org/2000/svg" style="display:none; width:0; height:0;">
-          <defs>
-            <filter id="ultra-sharpen">
-              <feConvolveMatrix order="3" kernelMatrix="-0.2 -0.8 -0.2 -0.8 5.0 -0.8 -0.2 -0.8 -0.2" preserveAlpha="true"/>
-            </filter>
-            <filter id="balanced-sharpen">
-              <feConvolveMatrix order="3" kernelMatrix="-0.1 -0.4 -0.1 -0.4 3.0 -0.4 -0.1 -0.4 -0.1" preserveAlpha="true"/>
-            </filter>
-          </defs>
-        </svg>
         <video id="player" playsinline preload="auto"></video>
         <div class="loading-overlay" id="loading-overlay">
           <div class="spinner"></div>
@@ -1707,29 +1937,29 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
         <div class="controls-overlay" id="controls-overlay">
           <div class="top-controls">
             <button class="control-btn" id="btn-settings" aria-label="Ayarlar">
-              <i data-lucide="settings"></i>
+              <svg viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
             </button>
             <button class="control-btn" id="btn-fullscreen" aria-label="Tam Ekran">
-              <i data-lucide="maximize" id="fs-icon-maximize"></i>
-              <i data-lucide="minimize" id="fs-icon-minimize" style="display: none;"></i>
+              <svg id="fs-icon-maximize" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
+              <svg id="fs-icon-minimize" style="display: none;" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path></svg>
             </button>
           </div>
           
           <div class="center-controls">
-            <button class="control-btn center-btn" id="btn-rewind" aria-label="${prefs.skipInterval} Saniye Geri">
-              <i data-lucide="rotate-ccw"></i>
+            <button class="center-btn" id="btn-rewind" aria-label="${prefs.skipInterval} Saniye Geri">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
               <span class="btn-label">${prefs.skipInterval}</span>
             </button>
-            <button class="control-btn center-btn play-btn" id="btn-play-pause" aria-label="Oynat/Duraklat">
-              <i data-lucide="play" id="play-icon"></i>
-              <i data-lucide="pause" id="pause-icon" style="display: none;"></i>
+            <button class="center-btn play-btn" id="btn-play-pause" aria-label="Oynat/Duraklat">
+              <svg id="play-icon" viewBox="0 0 24 24" fill="#FFFFFF" stroke="none"><polygon points="6 3 20 12 6 21 6 3" fill="#FFFFFF"></polygon></svg>
+              <svg id="pause-icon" style="display: none;" viewBox="0 0 24 24" fill="#FFFFFF" stroke="none"><rect x="6" y="4" width="4" height="16" rx="1" fill="#FFFFFF"></rect><rect x="14" y="4" width="4" height="16" rx="1" fill="#FFFFFF"></rect></svg>
             </button>
-            <button class="control-btn center-btn" id="btn-forward" aria-label="${prefs.skipInterval} Saniye İleri">
-              <i data-lucide="rotate-cw"></i>
+            <button class="center-btn" id="btn-forward" aria-label="${prefs.skipInterval} Saniye İleri">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path></svg>
               <span class="btn-label">${prefs.skipInterval}</span>
             </button>
-            <button class="control-btn center-btn" id="btn-next-episode" aria-label="Sonraki Bölüm">
-              <i data-lucide="skip-forward"></i>
+            <button class="center-btn" id="btn-next-episode" aria-label="Sonraki Bölüm">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4" fill="#FFFFFF"></polygon><line x1="19" y1="5" x2="19" y2="19" stroke="#FFFFFF"></line></svg>
             </button>
           </div>
           
@@ -1752,7 +1982,7 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
             <div class="ripple-circle"></div>
           </div>
           <div class="double-tap-text">
-            <i data-lucide="chevrons-left"></i>
+            <svg viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="11 17 6 12 11 7"></polyline><polyline points="18 17 13 12 18 7"></polyline></svg>
             <span>${prefs.skipInterval}s</span>
           </div>
         </div>
@@ -1764,7 +1994,7 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
           </div>
           <div class="double-tap-text">
             <span>${prefs.skipInterval}s</span>
-            <i data-lucide="chevrons-right"></i>
+            <svg viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 17 18 12 13 7"></polyline><polyline points="6 17 11 12 6 7"></polyline></svg>
           </div>
         </div>
 
@@ -1773,16 +2003,23 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
           <div class="swipe-hud-time" id="swipe-hud-time">00:00</div>
           <div class="swipe-hud-change" id="swipe-hud-change">[+0:00]</div>
         </div>
+
+        <!-- Frosted Glass Skip Intro Button (In-DOM) -->
+        <button class="skip-intro-btn" id="btn-skip-intro" aria-label="İntroyu Geç">
+          <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4" fill="#FFFFFF"></polygon><line x1="19" y1="5" x2="19" y2="19" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"></line></svg>
+          <span>İntroyu Geç</span>
+        </button>
       </div>
       
       <script>
-        lucide.createIcons();
-
         const video = document.getElementById('player');
         const videoUrl = '${videoUrl}';
         const isMp4 = ${isMp4};
         
         let hlsInstance = null;
+        let _isFullscreenLocal = false;
+        let isSwiping = false;
+        let controlsWereHiddenOnSwipeStart = false;
         
         function sendToParent(obj) {
           if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
@@ -1791,24 +2028,73 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
             window.parent.postMessage(JSON.stringify(obj), '*');
           }
         }
+
+        // Fast tap utility to eliminate 300ms mobile browser delay
+        function bindFastClick(el, fn) {
+          if (!el) return;
+          let handled = false;
+          el.addEventListener('touchend', (e) => {
+            handled = true;
+            setTimeout(() => { handled = false; }, 300);
+            e.stopPropagation();
+            fn(e);
+          }, { passive: false });
+          el.addEventListener('click', (e) => {
+            if (handled) {
+              e.stopPropagation();
+              e.preventDefault();
+              return;
+            }
+            e.stopPropagation();
+            fn(e);
+          });
+        }
+
+        let currentSkipTimes = ${initialSkipTimes ? JSON.stringify(initialSkipTimes) : 'null'};
+        const autoSkipIntro = ${prefs.autoSkipIntro ? 'true' : 'false'};
+        const btnSkipIntro = document.getElementById('btn-skip-intro');
+
+        window.setSkipTimes = function(data) {
+          currentSkipTimes = data;
+          if (!currentSkipTimes || !currentSkipTimes.op) {
+            if (btnSkipIntro) btnSkipIntro.classList.remove('visible');
+          }
+        };
+
+        if (btnSkipIntro) {
+          bindFastClick(btnSkipIntro, (e) => {
+            if (currentSkipTimes && currentSkipTimes.op) {
+              video.currentTime = currentSkipTimes.op.endTime;
+              btnSkipIntro.classList.remove('visible');
+            }
+          });
+        }
+
+        function updateLayoutMode() {
+          const isLandscapeOrLarge = (window.innerHeight > 280 && window.innerWidth > 480) || _isFullscreenLocal;
+          document.body.classList.toggle('is-fullscreen', _isFullscreenLocal);
+          document.body.classList.toggle('is-spacious', isLandscapeOrLarge);
+          const container = document.getElementById('player-container');
+          if (container) container.classList.toggle('fullscreen', _isFullscreenLocal);
+        }
+        window.addEventListener('resize', updateLayoutMode, { passive: true });
+        window.addEventListener('orientationchange', updateLayoutMode, { passive: true });
         
         const loadingOverlay = document.getElementById('loading-overlay');
         let hasStartedPlaying = false;
         
         video.addEventListener('waiting', () => {
-          if (!hasStartedPlaying) {
-            loadingOverlay.style.opacity = '1';
-          }
-        });
+          if (!hasStartedPlaying) loadingOverlay.style.opacity = '1';
+        }, { passive: true });
         
         video.addEventListener('playing', () => {
           loadingOverlay.style.opacity = '0';
           hasStartedPlaying = true;
-        });
+        }, { passive: true });
         
         video.addEventListener('canplay', () => {
           loadingOverlay.style.opacity = '0';
-        });
+        }, { passive: true });
         
         function initPlayer() {
           const defaultSpeed = ${prefs.defaultSpeed};
@@ -1825,22 +2111,20 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
             sendToParent({ type: 'speedSelected', speed: defaultSpeed, label: defaultSpeed === 1.0 ? 'Normal (1.0x)' : defaultSpeed + 'x' });
           } else if (Hls.isSupported()) {
             const hlsOptions = {
-              maxBufferLength: 120,               // İlk 2 dakikayı (120 sn) hızla indir ve bellekte tut
-              maxMaxBufferLength: 300,            // Maksimum önbellek sınırı: 5 dakika (300 saniye)
-              maxBufferSize: 250 * 1024 * 1024,   // 250 MB tampon bellek alanı
-              backBufferLength: 90,               // Geçmiş 90 saniyeyi bellekte tut (Geri sarmada 0ms donmasız oynatma)
-              maxBufferHole: 0.5,                 // Küçük zaman boşluklarını otomatik atlayıp donmayı önle
-              lowLatencyMode: false,              // Tam bant genişliği ile agresif parça indirme
-              startFragPrefetch: true,            // İlk parçanın bitmesini beklemeden sıradaki parçaları anında çek
-              progressive: true,                  // Aşamalı parça akışı
-              appendErrorMaxRetry: 5,             // Olası parça ekleme hatalarında 5 kez dene
-              nudgeOffset: 0.1,                   // Takılma kurtarma payı
-              nudgeMaxRetry: 5,                   // Takılma durumunda 5 deneme
-              fragLoadingTimeOut: 20000,
-              manifestLoadingTimeOut: 15000,
-              levelLoadingTimeOut: 15000,
-              fragLoadingMaxRetry: 6,
-              levelLoadingMaxRetry: 6,
+              maxBufferLength: 25,
+              maxMaxBufferLength: 50,
+              maxBufferSize: 30 * 1024 * 1024,
+              backBufferLength: 15,
+              maxBufferHole: 0.8,
+              lowLatencyMode: false,
+              startFragPrefetch: false,
+              progressive: false,
+              enableWorker: true,
+              fragLoadingTimeOut: 15000,
+              manifestLoadingTimeOut: 12000,
+              levelLoadingTimeOut: 12000,
+              fragLoadingMaxRetry: 5,
+              levelLoadingMaxRetry: 5,
               capLevelToPlayerSize: ${activeClarity === 'ai-native' ? 'false' : 'true'}
             };
             const hls = new Hls(hlsOptions);
@@ -1857,9 +2141,7 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
               }
               video.playbackRate = defaultSpeed;
               sendToParent({ type: 'speedSelected', speed: defaultSpeed, label: defaultSpeed === 1.0 ? 'Normal (1.0x)' : defaultSpeed + 'x' });
-              if (${startAt} > 0) {
-                video.currentTime = ${startAt};
-              }
+              if (${startAt} > 0) video.currentTime = ${startAt};
               video.play().catch(e => {
                 console.log('Autoplay error, retrying:', e);
                 video.play().catch(() => {});
@@ -1916,16 +2198,19 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
         const playIcon = document.getElementById('play-icon');
         const pauseIcon = document.getElementById('pause-icon');
         
-        btnPlayPause.addEventListener('click', (e) => {
-          e.stopPropagation();
+        bindFastClick(btnPlayPause, () => {
           togglePlay();
         });
         
         function togglePlay() {
           if (video.paused) {
             video.play().catch(e => console.log('Playback error:', e));
+            playIcon.style.display = 'none';
+            pauseIcon.style.display = 'block';
           } else {
             video.pause();
+            playIcon.style.display = 'block';
+            pauseIcon.style.display = 'none';
           }
           resetControlsTimeout();
         }
@@ -1934,26 +2219,26 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
           playIcon.style.display = 'none';
           pauseIcon.style.display = 'block';
           resetControlsTimeout();
-        });
+        }, { passive: true });
         
         video.addEventListener('pause', () => {
           playIcon.style.display = 'block';
           pauseIcon.style.display = 'none';
-          showControls();
-        });
+          if (!isSwiping) {
+            showControls();
+          }
+        }, { passive: true });
         
         const btnRewind = document.getElementById('btn-rewind');
         const btnForward = document.getElementById('btn-forward');
         const skipInterval = ${prefs.skipInterval};
         
-        btnRewind.addEventListener('click', (e) => {
-          e.stopPropagation();
+        bindFastClick(btnRewind, () => {
           video.currentTime = Math.max(0, video.currentTime - skipInterval);
           resetControlsTimeout();
         });
         
-        btnForward.addEventListener('click', (e) => {
-          e.stopPropagation();
+        bindFastClick(btnForward, () => {
           video.currentTime = Math.min(video.duration || 0, video.currentTime + skipInterval);
           resetControlsTimeout();
         });
@@ -1961,16 +2246,15 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
         const btnFullscreen = document.getElementById('btn-fullscreen');
         const container = document.getElementById('player-container');
         
-        btnFullscreen.addEventListener('click', (e) => {
-          e.stopPropagation();
+        bindFastClick(btnFullscreen, () => {
           toggleFullscreen();
         });
         
-        let _isFullscreenLocal = false;
         function toggleFullscreen() {
           if (window.ReactNativeWebView) {
             _isFullscreenLocal = !_isFullscreenLocal;
             updateFullscreenIcons(_isFullscreenLocal);
+            updateLayoutMode();
             sendToParent({ type: 'fullscreen', isFullscreen: _isFullscreenLocal });
           } else {
             if (!document.fullscreenElement &&
@@ -2016,18 +2300,20 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
         }
 
         function onFullscreenChange() {
-          const isFS = document.fullscreenElement ||
+          const isFS = !!(document.fullscreenElement ||
                        document.webkitFullscreenElement ||
                        document.mozFullScreenElement ||
-                       document.msFullscreenElement;
+                       document.msFullscreenElement);
+          _isFullscreenLocal = isFS;
           updateFullscreenIcons(isFS);
-          sendToParent({ type: 'fullscreen', isFullscreen: !!isFS });
+          updateLayoutMode();
+          sendToParent({ type: 'fullscreen', isFullscreen: isFS });
         }
 
-        document.addEventListener('fullscreenchange', onFullscreenChange);
-        document.addEventListener('webkitfullscreenchange', onFullscreenChange);
-        document.addEventListener('mozfullscreenchange', onFullscreenChange);
-        document.addEventListener('MSFullscreenChange', onFullscreenChange);
+        document.addEventListener('fullscreenchange', onFullscreenChange, { passive: true });
+        document.addEventListener('webkitfullscreenchange', onFullscreenChange, { passive: true });
+        document.addEventListener('mozfullscreenchange', onFullscreenChange, { passive: true });
+        document.addEventListener('MSFullscreenChange', onFullscreenChange, { passive: true });
         
         const timeDisplay = document.getElementById('time-display');
         const progressFill = document.getElementById('progress-fill');
@@ -2059,11 +2345,28 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
             }
           }
 
-          if (Math.abs(current - lastSentTime) > 1) {
+          if (currentSkipTimes && currentSkipTimes.op) {
+            const opStart = currentSkipTimes.op.startTime;
+            const opEnd = currentSkipTimes.op.endTime;
+            if (current >= opStart && current < opEnd) {
+              if (autoSkipIntro) {
+                video.currentTime = opEnd;
+                if (btnSkipIntro) btnSkipIntro.classList.remove('visible');
+              } else {
+                if (btnSkipIntro) btnSkipIntro.classList.add('visible');
+              }
+            } else {
+              if (btnSkipIntro) btnSkipIntro.classList.remove('visible');
+            }
+          } else {
+            if (btnSkipIntro) btnSkipIntro.classList.remove('visible');
+          }
+
+          if (Math.abs(current - lastSentTime) > 1.2) {
             sendToParent({ type: 'timeupdate', currentTime: current });
             lastSentTime = current;
           }
-        });
+        }, { passive: true });
         
         video.addEventListener('progress', () => {
           const duration = video.duration || 0;
@@ -2071,18 +2374,19 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
             const bufferedEnd = video.buffered.end(video.buffered.length - 1);
             bufferFill.style.width = (bufferedEnd / duration) * 100 + '%';
           }
-        });
+        }, { passive: true });
         
         video.addEventListener('loadedmetadata', () => {
           timeDisplay.textContent = '00:00 / ' + formatTime(video.duration || 0);
-        });
+        }, { passive: true });
         
         let isSeeking = false;
         const progressTooltip = document.getElementById('progress-tooltip');
         
         function seekTo(event) {
           const rect = progressBar.getBoundingClientRect();
-          let pct = (event.clientX - rect.left) / rect.width;
+          const clientX = event.clientX || (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
+          let pct = (clientX - rect.left) / rect.width;
           pct = Math.max(0, Math.min(1, pct));
           const duration = video.duration || 0;
           const targetTime = pct * duration;
@@ -2090,14 +2394,12 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
           progressFill.style.width = (pct * 100) + '%';
           progressKnob.style.left = (pct * 100) + '%';
           resetControlsTimeout();
-          
-          updateTooltip(event.clientX, rect.left, rect.width, targetTime);
+          updateTooltip(clientX, rect.left, rect.width, targetTime);
         }
 
         function updateTooltip(clientX, rectLeft, rectWidth, time) {
           progressTooltip.style.display = 'block';
           progressTooltip.textContent = formatTime(time);
-          
           const relativeX = clientX - rectLeft;
           const posX = Math.max(0, Math.min(rectWidth, relativeX));
           progressTooltip.style.left = posX + 'px';
@@ -2113,61 +2415,31 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
           setTimeout(hideTooltip, 1000);
         });
         
-        progressBar.addEventListener('mousedown', (e) => {
-          e.stopPropagation();
-          isSeeking = true;
-          progressBar.classList.add('seeking');
-          seekTo(e);
-        });
-        
-        progressBar.addEventListener('mousemove', (e) => {
-          if (!isSeeking) {
-            const rect = progressBar.getBoundingClientRect();
-            let pct = (e.clientX - rect.left) / rect.width;
-            pct = Math.max(0, Math.min(1, pct));
-            const duration = video.duration || 0;
-            updateTooltip(e.clientX, rect.left, rect.width, pct * duration);
-          }
-        });
-        
-        progressBar.addEventListener('mouseleave', () => {
-          if (!isSeeking) hideTooltip();
-        });
- 
-        document.addEventListener('mousemove', (e) => {
-          if (isSeeking) seekTo(e);
-        });
-        
-        document.addEventListener('mouseup', () => {
-          if (isSeeking) {
-            isSeeking = false;
-            progressBar.classList.remove('seeking');
-            hideTooltip();
-          }
-        });
-        
         progressBar.addEventListener('touchstart', (e) => {
           e.stopPropagation();
           isSeeking = true;
           progressBar.classList.add('seeking');
           seekTo(e.touches[0]);
-        }, { passive: true });
-        
-        document.addEventListener('touchmove', (e) => {
-          if (isSeeking) seekTo(e.touches[0]);
         }, { passive: false });
         
-        document.addEventListener('touchend', () => {
+        progressBar.addEventListener('touchmove', (e) => {
           if (isSeeking) {
+            e.preventDefault();
+            seekTo(e.touches[0]);
+          }
+        }, { passive: false });
+        
+        progressBar.addEventListener('touchend', (e) => {
+          if (isSeeking) {
+            e.stopPropagation();
             isSeeking = false;
             progressBar.classList.remove('seeking');
-            hideTooltip();
+            setTimeout(hideTooltip, 800);
           }
-        });
+        }, { passive: false });
         
         const btnSettings = document.getElementById('btn-settings');
-        btnSettings.addEventListener('click', (e) => {
-          e.stopPropagation();
+        bindFastClick(btnSettings, () => {
           video.pause();
           sendToParent({ type: 'openSettings' });
           resetControlsTimeout();
@@ -2175,8 +2447,7 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
 
         const btnNextEpisode = document.getElementById('btn-next-episode');
         if (btnNextEpisode) {
-          btnNextEpisode.addEventListener('click', (e) => {
-            e.stopPropagation();
+          bindFastClick(btnNextEpisode, () => {
             sendToParent({ type: 'nextEpisode' });
           });
         }
@@ -2198,8 +2469,8 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
         
         function resetControlsTimeout() {
           clearTimeout(controlsTimer);
-          if (!video.paused) {
-            controlsTimer = setTimeout(hideControls, 3000);
+          if (!video.paused && !controlsOverlay.classList.contains('hidden')) {
+            controlsTimer = setTimeout(hideControls, 3500);
           }
         }
         
@@ -2207,85 +2478,176 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
         let dtTimerRight = null;
         function triggerDoubleTapFeedback(side) {
           const overlay = document.getElementById('double-tap-' + side);
+          if (!overlay) return;
           if (side === 'left') {
             clearTimeout(dtTimerLeft);
             overlay.classList.remove('active');
-            void overlay.offsetWidth; // Trigger reflow
+            void overlay.offsetWidth;
             overlay.classList.add('active');
-            dtTimerLeft = setTimeout(() => overlay.classList.remove('active'), 650);
+            dtTimerLeft = setTimeout(() => overlay.classList.remove('active'), 550);
           } else {
             clearTimeout(dtTimerRight);
             overlay.classList.remove('active');
-            void overlay.offsetWidth; // Trigger reflow
+            void overlay.offsetWidth;
             overlay.classList.add('active');
-            dtTimerRight = setTimeout(() => overlay.classList.remove('active'), 650);
+            dtTimerRight = setTimeout(() => overlay.classList.remove('active'), 550);
           }
         }
 
-        let lastTap = 0;
-        let tapTimeout = null;
-        function handleBackgroundClick(e) {
-          const currentTime = new Date().getTime();
-          const tapLength = currentTime - lastTap;
+        // INSTANT TAP & DOUBLE-TAP ENGINE
+        let singleTapTimer = null;
+        let lastTapTime = 0;
+        let lastTapX = 0;
+        let lastSeekTapTime = 0;
+        let lastSeekSide = null;
+        
+        function handleInstantTap(touchX) {
+          const now = Date.now();
+          const timeSinceLastTap = now - lastTapTime;
+          const timeSinceLastSeek = now - lastSeekTapTime;
+          const rect = document.getElementById('player-container').getBoundingClientRect();
+          const relativeX = touchX - rect.left;
+          const isHidden = controlsOverlay.classList.contains('hidden');
+          const isLeftSide = relativeX < rect.width * 0.38;
+          const isRightSide = relativeX > rect.width * 0.62;
           
-          const isInteractive = e.target.closest('button, .progress-bar-container');
-          if (isInteractive) return;
-
-          if (${prefs.doubleTapEnabled}) {
-            if (tapLength < 300 && tapLength > 0) {
-              clearTimeout(tapTimeout);
-              e.preventDefault();
-              
-              const rect = document.getElementById('player-container').getBoundingClientRect();
-              const touchX = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 0) || (e.changedTouches && e.changedTouches[0] ? e.changedTouches[0].clientX : 0);
-              const relativeX = touchX - rect.left;
-              
-              if (relativeX < rect.width / 2) {
-                video.currentTime = Math.max(0, video.currentTime - skipInterval);
-                triggerDoubleTapFeedback('left');
-              } else {
-                video.currentTime = Math.min(video.duration || 0, video.currentTime + skipInterval);
-                triggerDoubleTapFeedback('right');
-              }
-              
-              lastTap = 0;
-              return;
+          // 1. Multi-tap seek continuation (3rd, 4th quick tap within 420ms on the same seek side)
+          if (${prefs.doubleTapEnabled} && timeSinceLastSeek < 420 && lastSeekSide && ((lastSeekSide === 'left' && isLeftSide) || (lastSeekSide === 'right' && isRightSide))) {
+            if (singleTapTimer) {
+              clearTimeout(singleTapTimer);
+              singleTapTimer = null;
             }
-            
-            lastTap = currentTime;
-            
-            tapTimeout = setTimeout(() => {
-              sendToParent({ type: 'backgroundClick' });
-              if (controlsOverlay.classList.contains('hidden')) {
-                showControls();
-              } else {
-                hideControls();
-              }
-            }, 300);
-          } else {
-            if (tapLength < 300 && tapLength > 0) {
-              e.preventDefault();
-              toggleFullscreen();
-              lastTap = currentTime;
-              return;
-            }
-            lastTap = currentTime;
-            sendToParent({ type: 'backgroundClick' });
-            if (controlsOverlay.classList.contains('hidden')) {
-              showControls();
+            lastSeekTapTime = now;
+            lastTapTime = now;
+            lastTapX = touchX;
+            if (lastSeekSide === 'left') {
+              video.currentTime = Math.max(0, video.currentTime - skipInterval);
+              triggerDoubleTapFeedback('left');
             } else {
-              hideControls();
+              video.currentTime = Math.min(video.duration || 0, video.currentTime + skipInterval);
+              triggerDoubleTapFeedback('right');
+            }
+            if (isHidden) {
+              controlsOverlay.classList.add('hidden');
+            }
+            return;
+          }
+
+          // 2. Double-tap detection (2nd tap within 280ms)
+          if (${prefs.doubleTapEnabled} && timeSinceLastTap < 280 && timeSinceLastTap > 0 && Math.abs(touchX - lastTapX) < 130 && (isLeftSide || isRightSide)) {
+            // Cancel pending single tap toggle before controls ever show!
+            if (singleTapTimer) {
+              clearTimeout(singleTapTimer);
+              singleTapTimer = null;
+            }
+            lastTapTime = 0; // consumed
+            const side = isLeftSide ? 'left' : 'right';
+            lastSeekSide = side;
+            lastSeekTapTime = now;
+            
+            if (side === 'left') {
+              video.currentTime = Math.max(0, video.currentTime - skipInterval);
+              triggerDoubleTapFeedback('left');
+            } else {
+              video.currentTime = Math.min(video.duration || 0, video.currentTime + skipInterval);
+              triggerDoubleTapFeedback('right');
+            }
+
+            // CRITICAL: Keep controls hidden if they were hidden!
+            if (isHidden) {
+              controlsOverlay.classList.add('hidden');
+            } else {
+              resetControlsTimeout();
+            }
+            return;
+          }
+          
+          // Record this tap
+          lastTapTime = now;
+          lastTapX = touchX;
+          lastSeekSide = null;
+          
+          // 3. Single-tap handling:
+          if (!isHidden) {
+            // Controls currently visible: tapping empty area immediately hides controls (0ms)
+            if (singleTapTimer) {
+              clearTimeout(singleTapTimer);
+              singleTapTimer = null;
+            }
+            hideControls();
+          } else {
+            // Controls currently hidden:
+            // Wait 175ms so double-tap can cancel it before controls ever appear!
+            if (singleTapTimer) {
+              clearTimeout(singleTapTimer);
+            }
+            if (${prefs.doubleTapEnabled}) {
+              singleTapTimer = setTimeout(() => {
+                showControls();
+                singleTapTimer = null;
+              }, 175);
+            } else {
+              showControls();
             }
           }
         }
-        
-        clickBackdrop.addEventListener('click', handleBackgroundClick);
-        controlsOverlay.addEventListener('click', handleBackgroundClick);
-        
-        controlsOverlay.addEventListener('mousemove', resetControlsTimeout);
-        controlsOverlay.addEventListener('touchstart', resetControlsTimeout, { passive: true });
 
-        // Swipe to Seek functionality
+        let backdropTouchStartX = 0;
+        let backdropTouchStartY = 0;
+        let backdropHasMoved = false;
+
+        function onBackdropTouchStart(e) {
+          const touch = e.touches[0];
+          backdropTouchStartX = touch.clientX;
+          backdropTouchStartY = touch.clientY;
+          backdropHasMoved = false;
+        }
+
+        function onBackdropTouchEnd(e) {
+          if (backdropHasMoved) return;
+          const touch = e.changedTouches ? e.changedTouches[0] : null;
+          const touchX = touch ? touch.clientX : backdropTouchStartX;
+          e.preventDefault();
+          handleInstantTap(touchX);
+        }
+
+        function onBackdropClick(e) {
+          if (backdropHasMoved) {
+            backdropHasMoved = false;
+            return;
+          }
+          if (e.target.closest('button, .progress-bar-container')) return;
+          const touchX = e.clientX || backdropTouchStartX;
+          handleInstantTap(touchX);
+        }
+
+        clickBackdrop.addEventListener('touchstart', onBackdropTouchStart, { passive: true });
+        clickBackdrop.addEventListener('touchmove', (e) => {
+          const touch = e.touches[0];
+          if (Math.abs(touch.clientX - backdropTouchStartX) > 10 || Math.abs(touch.clientY - backdropTouchStartY) > 10) {
+            backdropHasMoved = true;
+          }
+        }, { passive: true });
+        clickBackdrop.addEventListener('touchend', onBackdropTouchEnd, { passive: false });
+        clickBackdrop.addEventListener('click', onBackdropClick);
+
+        controlsOverlay.addEventListener('touchstart', onBackdropTouchStart, { passive: true });
+        controlsOverlay.addEventListener('touchmove', (e) => {
+          const touch = e.touches[0];
+          if (Math.abs(touch.clientX - backdropTouchStartX) > 10 || Math.abs(touch.clientY - backdropTouchStartY) > 10) {
+            backdropHasMoved = true;
+          }
+        }, { passive: true });
+        controlsOverlay.addEventListener('touchend', (e) => {
+          if (e.target.closest('button, .progress-bar-container')) return;
+          onBackdropTouchEnd(e);
+        }, { passive: false });
+        controlsOverlay.addEventListener('click', (e) => {
+          if (e.target.closest('button, .progress-bar-container')) return;
+          onBackdropClick(e);
+        });
+
+        // Swipe to Seek functionality (Passive with active scrub check)
         const swipeHud = document.getElementById('swipe-hud');
         const swipeHudTime = document.getElementById('swipe-hud-time');
         const swipeHudChange = document.getElementById('swipe-hud-change');
@@ -2303,19 +2665,18 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
 
         let swipeStartX = 0;
         let swipeStartY = 0;
-        let isSwiping = false;
         let swipeInitialTime = 0;
         let swipeCurrentTargetTime = 0;
         
         function handleSwipeStart(e) {
           if (!${prefs.swipeSeekEnabled}) return;
-          const isInteractive = e.target.closest('button, .progress-bar-container');
-          if (isInteractive) return;
+          if (e.target.closest('button, .progress-bar-container')) return;
           const touch = e.touches[0];
           swipeStartX = touch.clientX;
           swipeStartY = touch.clientY;
           swipeInitialTime = video.currentTime;
           isSwiping = false;
+          controlsWereHiddenOnSwipeStart = controlsOverlay.classList.contains('hidden');
         }
 
         function handleSwipeMove(e) {
@@ -2324,10 +2685,15 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
           const deltaX = touch.clientX - swipeStartX;
           const deltaY = touch.clientY - swipeStartY;
           
-          if (!isSwiping && Math.abs(deltaX) > 15 && Math.abs(deltaX) > Math.abs(deltaY)) {
+          if (!isSwiping && Math.abs(deltaX) > 15 && Math.abs(deltaX) > Math.abs(deltaY) * 1.3) {
             isSwiping = true;
+            backdropHasMoved = true;
+            if (singleTapTimer) {
+              clearTimeout(singleTapTimer);
+              singleTapTimer = null;
+            }
             video.pause();
-            showControls();
+            // DO NOT show controls! Media buttons must NOT pop up!
             clearTimeout(controlsTimer);
           }
           
@@ -2335,7 +2701,6 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
             e.preventDefault();
             const rect = clickBackdrop.getBoundingClientRect();
             const swipeSensitivity = 180; 
-            // Invert deltaX horizontal scrubbing direction by multiplying by -1
             const deltaSeconds = -(deltaX / rect.width) * swipeSensitivity;
             swipeCurrentTargetTime = Math.max(0, Math.min(video.duration || 0, swipeInitialTime + deltaSeconds));
             showSwipeHud(swipeCurrentTargetTime, deltaSeconds);
@@ -2349,10 +2714,14 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
           }
           video.currentTime = swipeCurrentTargetTime;
           hideSwipeHud();
-          video.play().catch(err => console.log('Swipe play resume fail:', err));
+          video.play().catch(() => {});
           isSwiping = false;
           swipeStartX = 0;
-          resetControlsTimeout();
+          if (controlsWereHiddenOnSwipeStart) {
+            controlsOverlay.classList.add('hidden');
+          } else {
+            resetControlsTimeout();
+          }
         }
 
         clickBackdrop.addEventListener('touchstart', handleSwipeStart, { passive: true });
@@ -2363,28 +2732,19 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
         controlsOverlay.addEventListener('touchmove', handleSwipeMove, { passive: false });
         controlsOverlay.addEventListener('touchend', handleSwipeEnd, { passive: true });
         
-        window.addEventListener('message', (event) => {
-          try {
-            let data = event.data;
-            if (typeof data === 'string') {
-              data = JSON.parse(data);
-            }
-            if (data && data.type) {
-              if (data.type === 'selectQuality') {
-                selectQuality(data.value);
-              } else if (data.type === 'setPlaySpeed') {
-                setPlaySpeed(data.value);
-              } else if (data.type === 'setClarityMode') {
-                if (window.setClarityMode) window.setClarityMode(data.value);
-              } else if (data.type === 'playVideo') {
-                if (window.playVideo) window.playVideo();
-              }
-            }
-          } catch (e) {
-            console.error('Error handling parent message in iframe:', e);
-          }
-        });
-        
+        window.setFullscreenMode = function(isFS) {
+          _isFullscreenLocal = !!isFS;
+          updateFullscreenIcons(_isFullscreenLocal);
+          updateLayoutMode();
+        };
+
+        window.setButtonSize = function(size) {
+          let scale = 1.0;
+          if (size === 'small') scale = 0.82;
+          if (size === 'large') scale = 1.22;
+          document.documentElement.style.setProperty('--btn-pref-scale', scale);
+        };
+
         window.playVideo = function() {
           const vid = document.getElementById('player');
           if (vid && vid.paused) vid.play();
@@ -2394,58 +2754,53 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
           const vid = document.getElementById('player');
           if (!vid) return;
           
-          // Clear current filters
-          vid.style.filter = 'none';
-          vid.style.imageRendering = 'auto';
-          
           if (mode === 'performance') {
-            vid.style.filter = 'contrast(1.08) saturate(1.15)';
-            vid.style.imageRendering = '-webkit-optimize-contrast';
+            vid.style.filter = 'contrast(1.06) saturate(1.10)';
           } else if (mode === 'balanced') {
-            vid.style.filter = 'url(#balanced-sharpen) contrast(1.12) saturate(1.22)';
-            vid.style.imageRendering = '-webkit-optimize-contrast';
-            if (hlsInstance) {
-              hlsInstance.config.maxMaxBufferLength = 90;
-              hlsInstance.config.maxBufferLength = 45;
-              hlsInstance.config.maxBufferSize = 120 * 1024 * 1024;
-              hlsInstance.config.capLevelToPlayerSize = false;
-              hlsInstance.config.lowLatencyMode = false;
-            }
+            vid.style.filter = 'contrast(1.12) saturate(1.18)';
           } else if (mode === 'ai-native') {
-            vid.style.filter = 'url(#ultra-sharpen) contrast(1.20) saturate(1.35) brightness(1.01)';
-            vid.style.imageRendering = '-webkit-optimize-contrast';
-            if (hlsInstance) {
-              hlsInstance.config.maxMaxBufferLength = 180;
-              hlsInstance.config.maxBufferLength = 60;
-              hlsInstance.config.maxBufferSize = 200 * 1024 * 1024;
-              hlsInstance.config.capLevelToPlayerSize = false;
-              hlsInstance.config.lowLatencyMode = false;
-              selectQuality(hlsInstance.levels.length - 1);
-            }
+            vid.style.filter = 'contrast(1.18) saturate(1.26) brightness(1.02)';
           } else {
-            // off
-            vid.style.filter = 'none';
-            vid.style.imageRendering = 'auto';
-            if (hlsInstance) {
-              hlsInstance.config.maxMaxBufferLength = 30;
-              hlsInstance.config.maxBufferLength = 30;
-              hlsInstance.config.maxBufferSize = 60 * 1024 * 1024;
-              hlsInstance.config.capLevelToPlayerSize = true;
-              hlsInstance.config.lowLatencyMode = true;
-              selectQuality(-1);
-            }
+            vid.style.filter = '';
           }
         };
 
+        window.addEventListener('message', (event) => {
+          try {
+            let data = event.data;
+            if (typeof data === 'string') data = JSON.parse(data);
+            if (data && data.type) {
+              if (data.type === 'selectQuality') {
+                selectQuality(data.value);
+              } else if (data.type === 'setPlaySpeed') {
+                setPlaySpeed(data.value);
+              } else if (data.type === 'setClarityMode') {
+                if (window.setClarityMode) window.setClarityMode(data.value);
+              } else if (data.type === 'setFullscreenMode') {
+                if (window.setFullscreenMode) window.setFullscreenMode(data.value);
+              } else if (data.type === 'setButtonSize') {
+                if (window.setButtonSize) window.setButtonSize(data.value);
+              } else if (data.type === 'setSkipTimes') {
+                if (window.setSkipTimes) window.setSkipTimes(data.value);
+              } else if (data.type === 'playVideo') {
+                if (window.playVideo) window.playVideo();
+              }
+            }
+          } catch (e) {
+            console.error('Error handling parent message in iframe:', e);
+          }
+        });
+
         initPlayer();
         showControls();
+        updateLayoutMode();
       <\/script>
     </body>
     </html>
   `;
 };
 
-function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, clarityMode, startAt, playerPrefs }) {
+function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, clarityMode, startAt, playerPrefs, isFullscreen, aniSkipData }) {
   const refererUrl = getRefererForUrl(videoUrl);
   console.log('[WatchScreen] Playing video directly with Referer baseUrl:', refererUrl);
 
@@ -2460,13 +2815,31 @@ function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, clarityMode, star
     isMp4 = true;
   }
 
-  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, clarityMode, startAt, playerPrefs));
+  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, clarityMode, startAt, playerPrefs, aniSkipData));
 
   useEffect(() => {
     if (webViewRef.current) {
       webViewRef.current.injectJavaScript(`if(window.setClarityMode) { window.setClarityMode('${clarityMode}'); } true;`);
     }
   }, [clarityMode]);
+
+  useEffect(() => {
+    if (webViewRef.current) {
+      webViewRef.current.injectJavaScript(`if(window.setFullscreenMode) { window.setFullscreenMode(${!!isFullscreen}); } true;`);
+    }
+  }, [isFullscreen]);
+
+  useEffect(() => {
+    if (webViewRef.current && playerPrefs?.buttonSize) {
+      webViewRef.current.injectJavaScript(`if(window.setButtonSize) { window.setButtonSize('${playerPrefs.buttonSize}'); } true;`);
+    }
+  }, [playerPrefs?.buttonSize]);
+
+  useEffect(() => {
+    if (webViewRef.current && aniSkipData) {
+      webViewRef.current.injectJavaScript(`if(window.setSkipTimes) { window.setSkipTimes(${JSON.stringify(aniSkipData)}); } true;`);
+    }
+  }, [aniSkipData]);
 
   return (
     <WebView
@@ -2481,7 +2854,7 @@ function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, clarityMode, star
       mediaPlaybackRequiresUserAction={false}
       allowsInlineMediaPlayback={true}
       mixedContentMode="always"
-      androidLayerType="hardware"
+      androidLayerType="none"
       scrollEnabled={false}
       bounces={false}
       style={styles.videoPlayer}
@@ -2490,7 +2863,7 @@ function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, clarityMode, star
   );
 }
 
-function WebVideoPlayer({ videoUrl, onMessage, webViewRef, clarityMode, startAt, playerPrefs }) {
+function WebVideoPlayer({ videoUrl, onMessage, webViewRef, clarityMode, startAt, playerPrefs, isFullscreen, aniSkipData }) {
   const isSibnet = videoUrl && (videoUrl.includes('sibnet.ru') || videoUrl.toLowerCase().includes('.mp4'));
   let videoSourceUrl = videoUrl;
   let isMp4 = false;
@@ -2501,13 +2874,31 @@ function WebVideoPlayer({ videoUrl, onMessage, webViewRef, clarityMode, startAt,
     isMp4 = true;
   }
 
-  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, clarityMode, startAt, playerPrefs));
+  const [initialHtml] = useState(() => generatePlayerHtml(videoSourceUrl, isMp4, clarityMode, startAt, playerPrefs, aniSkipData));
 
   useEffect(() => {
     if (webViewRef.current && webViewRef.current.contentWindow) {
       webViewRef.current.contentWindow.postMessage(JSON.stringify({ type: 'setClarityMode', value: clarityMode }), '*');
     }
   }, [clarityMode]);
+
+  useEffect(() => {
+    if (webViewRef.current && webViewRef.current.contentWindow) {
+      webViewRef.current.contentWindow.postMessage(JSON.stringify({ type: 'setFullscreenMode', value: !!isFullscreen }), '*');
+    }
+  }, [isFullscreen]);
+
+  useEffect(() => {
+    if (webViewRef.current && webViewRef.current.contentWindow && playerPrefs?.buttonSize) {
+      webViewRef.current.contentWindow.postMessage(JSON.stringify({ type: 'setButtonSize', value: playerPrefs.buttonSize }), '*');
+    }
+  }, [playerPrefs?.buttonSize]);
+
+  useEffect(() => {
+    if (webViewRef.current && webViewRef.current.contentWindow && aniSkipData) {
+      webViewRef.current.contentWindow.postMessage(JSON.stringify({ type: 'setSkipTimes', value: aniSkipData }), '*');
+    }
+  }, [aniSkipData]);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -2960,27 +3351,5 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: FONT_SIZES.small,
     fontWeight: FONT_WEIGHTS.medium,
-  },
-  skipIntroButton: {
-    position: 'absolute',
-    bottom: 80,
-    right: 25,
-    backgroundColor: '#00E5FF',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 18,
-    borderRadius: 25,
-    zIndex: 999,
-    shadowColor: '#00E5FF',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  skipIntroText: {
-    color: '#000',
-    fontSize: FONT_SIZES.body,
-    fontWeight: FONT_WEIGHTS.bold,
   },
 });

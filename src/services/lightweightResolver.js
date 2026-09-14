@@ -16,7 +16,7 @@ export function tokenizeTitleClient(str) {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter(t => t.length > 1 && !stopwords.includes(t));
+    .filter(t => t.length >= 1 && !stopwords.includes(t));
 }
 
 export const BASE_URL = 'https://www.tranimeizle.io';
@@ -163,7 +163,35 @@ export function parseSearchResultsHtml(html) {
   const candidates = [];
   const seen = new Set();
 
-  // Pattern 1: All <a href="..."> tags
+  if (!html) return candidates;
+
+  // Pattern 1: flx-block cards (standard Tranimeizle search results)
+  const blockRegex = /<div[^>]*class=["'][^"']*flx-block[^"']*["'][^>]*data-href=["']([^"']+)["']/gi;
+  let blockMatch;
+  while ((blockMatch = blockRegex.exec(html)) !== null) {
+    let href = blockMatch[1].trim();
+    if (href.startsWith('/')) href = `${BASE_URL}${href}`;
+    if (!href.includes('/anime/') || href.includes('-bolum') || seen.has(href)) continue;
+
+    const idx = blockMatch.index;
+    const slice = html.slice(idx, idx + 1500);
+    const h4Match = slice.match(/<h4>([^<]+)<\/h4>/i);
+    const chipMatch = slice.match(/<span[^>]*class=["']info-chip(?:\s+pull-right)?["']>([^<]+)<\/span>/i);
+    const format = chipMatch ? chipMatch[1].trim() : '';
+
+    let title = h4Match ? h4Match[1].trim() : '';
+    if (!title) {
+      const altMatch = slice.match(/alt=["']([^"']+)["']/i);
+      title = altMatch ? altMatch[1].trim() : '';
+    }
+
+    if (title) {
+      seen.add(href);
+      candidates.push({ url: href, title, format });
+    }
+  }
+
+  // Pattern 2: Fallback to all <a href="/anime/..."> tags
   const aRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let match;
   while ((match = aRegex.exec(html)) !== null) {
@@ -174,24 +202,16 @@ export function parseSearchResultsHtml(html) {
       !href ||
       href.startsWith('#') ||
       href.startsWith('javascript:') ||
+      !href.includes('/anime/') ||
+      href.includes('-bolum') ||
       href.includes('/arama') ||
       href.includes('/kategori') ||
-      href.includes('/iletisim') ||
-      href.includes('/login') ||
-      href.includes('/kayit') ||
-      href.includes('/api/') ||
-      href.includes('/dmca') ||
-      href.includes('/profil') ||
-      href.includes('-bolum') || // skip individual episodes
       href === '/'
     ) {
       continue;
     }
 
-    if (href.startsWith('/')) {
-      href = `${BASE_URL}${href}`;
-    }
-
+    if (href.startsWith('/')) href = `${BASE_URL}${href}`;
     if (seen.has(href)) continue;
 
     const titleMatch = content.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i) ||
@@ -205,24 +225,9 @@ export function parseSearchResultsHtml(html) {
       title = content.replace(/<[^>]*>/g, '').trim();
     }
 
-    if (title && title.length > 1 && !title.toLowerCase().includes('izle full hd') && title.length < 150) {
+    if (title && title.length > 1 && title.length < 150) {
       seen.add(href);
       candidates.push({ url: href, title });
-    }
-  }
-
-  // Pattern 2: flx-block cards
-  const blockRegex = /<div[^>]*class=["'][^"']*flx-block[^"']*["'][^>]*data-href=["']([^"']+)["']([\s\S]*?)<\/div>/gi;
-  while ((match = blockRegex.exec(html)) !== null) {
-    let href = match[1].trim();
-    if (href.startsWith('/')) href = `${BASE_URL}${href}`;
-    if (!seen.has(href) && !href.includes('-bolum')) {
-      seen.add(href);
-      const titleMatch = match[2].match(/<h4>([^<]+)<\/h4>/i);
-      candidates.push({
-        url: href,
-        title: titleMatch ? titleMatch[1].trim() : '',
-      });
     }
   }
 
@@ -514,21 +519,35 @@ export function detectCandidateSeason(candTitle, candUrl, fallback = 1) {
 /**
  * Extracts part/kısım/cour number (e.g. 2. Kısım, Part 2, Cour 2, Kanketsu-hen)
  */
-export function detectPartNumber(titleOrUrl, fallback = 1) {
-  if (!titleOrUrl) return fallback;
-  const full = normalizeTurkish(String(titleOrUrl)).toLowerCase().replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+export function detectPartNumber(titleOrUrl, fallback = 1, secondaryUrl = '') {
+  if (!titleOrUrl && !secondaryUrl) return fallback;
 
-  // Kanketsu-hen / Final Chapters is Part 3
-  if (full.includes('kanketsu hen') || full.includes('final chapters')) return 3;
+  const parsePart = (str) => {
+    if (!str) return null;
+    const clean = normalizeTurkish(String(str)).toLowerCase().replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (clean.includes('kanketsu hen') || clean.includes('final chapters')) return 3;
+    if (/\b(?:2nd|second)\s*(?:part|cour|kisim)\b/.test(clean)) return 2;
+    if (/\b(?:3rd|third)\s*(?:part|cour|kisim)\b/.test(clean)) return 3;
+    if (/\b(?:4th|fourth)\s*(?:part|cour|kisim)\b/.test(clean)) return 4;
+    const m = clean.match(/\b(?:part|cour|kisim)\s*(\d+)\b/) ||
+              clean.match(/\b(\d+)\s*(?:kisim|part|cour)\b/);
+    if (m) return parseInt(m[1], 10);
+    return null;
+  };
 
-  if (/\b(?:2nd|second)\s*(?:part|cour|kisim)\b/.test(full)) return 2;
-  if (/\b(?:3rd|third)\s*(?:part|cour|kisim)\b/.test(full)) return 3;
-  if (/\b(?:4th|fourth)\s*(?:part|cour|kisim)\b/.test(full)) return 4;
+  const primaryPart = parsePart(titleOrUrl);
+  if (primaryPart !== null) return primaryPart;
 
-  const m = full.match(/\b(?:part|cour|kisim)\s*(\d+)\b/) ||
-            full.match(/\b(\d+)\s*(?:kisim|part|cour)\b/);
-  if (m) {
-    return parseInt(m[1], 10);
+  // If primary title explicitly specifies a season (e.g. 2. Sezon) without a part,
+  // it is Part 1! Do NOT let a secondary URL typo (e.g. part-2) override the title!
+  const tClean = normalizeTurkish(String(titleOrUrl)).toLowerCase();
+  if (/\b\d+\s*\.?\s*sezon\b/.test(tClean) || /\bseason\s*\d+\b/.test(tClean) || /\bs\d{1,2}\b/.test(tClean)) {
+    return 1;
+  }
+
+  if (secondaryUrl) {
+    const secondaryPart = parsePart(secondaryUrl);
+    if (secondaryPart !== null) return secondaryPart;
   }
 
   return fallback;
@@ -586,15 +605,34 @@ export function scoreCandidateAgainstAniList(candidate, animeInput, targetSeason
   const isTargetFinal = Boolean(animeInfo.is_final || /\bfinal\b/i.test(animeInfo.title || animeInfo.season_title));
 
   const candExplicitSeason = detectCandidateSeason(candTitle, candUrl, 0);
-  const candPart = detectPartNumber(`${candTitle} ${candUrl}`, 1);
+  const candPart = detectPartNumber(candTitle, 1, candUrl);
   const candIsFinal = /\b(?:the\s+)?final(?:\s+sezon|\s+season)?\b/i.test(`${candTitle} ${candUrl}`) ||
                       /[-_]final[-_]/i.test(candUrl) ||
                       candTitle.toLowerCase().includes('final');
 
+  // Named Season Detection
+  const targetHasExplicitSeason = hasExplicitSeasonNumber(animeInfo.season_title || animeInfo.title);
+  const franBaseTitle = animeInfo.franchise_title || animeInfo.parent_title || getFranchiseBaseTitle(animeInfo.title_romaji || animeInfo.title);
+  const franBaseTokens = getFranchiseBaseTitle(franBaseTitle).toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length >= 2);
+  const targetDistinctTokens = getDistinctSeasonTokens(animeInfo, franBaseTokens);
+  const isNamedTarget = !targetHasExplicitSeason && targetDistinctTokens.length > 0;
+
   let candSeason = candExplicitSeason;
+  let namedSeasonMatched = false;
+
   if (candSeason === 0) {
     if (candIsFinal && isTargetFinal) {
       candSeason = targetSeason; // Candidate is the final season of the franchise!
+    } else if (isNamedTarget) {
+      // Target is a named season (e.g. Dragon Ball Z, Dragon Ball Super, Naruto Shippuuden)
+      const candTokenSet = new Set(candTokens);
+      const matchesDistinct = targetDistinctTokens.every(t => candTokenSet.has(t) || (t.length > 1 && candNorm.includes(t)));
+      if (matchesDistinct) {
+        candSeason = targetSeason;
+        namedSeasonMatched = true;
+      } else {
+        candSeason = 1;
+      }
     } else {
       candSeason = 1;
     }
@@ -607,6 +645,16 @@ export function scoreCandidateAgainstAniList(candidate, animeInput, targetSeason
       return -999999; // Strict Zero Tolerance: Disqualify any candidate whose season does not match target!
     }
 
+    // If target is Season 1 (no distinct sequel tokens), but candidate has a known sequel token (z, super, gt, daima), disqualify!
+    if (!isNamedTarget && targetSeason === 1) {
+      const candTokenSet = new Set(candTokens);
+      for (const tok of KNOWN_SEQUEL_TOKENS) {
+        if (candTokenSet.has(tok)) {
+          return -999999;
+        }
+      }
+    }
+
     // Strict Zero Tolerance for Multi-Part / Kısım:
     if (targetPart > 1 && candPart !== targetPart) {
       return -999999; // Target is Part 2+, candidate is not matching part!
@@ -616,6 +664,9 @@ export function scoreCandidateAgainstAniList(candidate, animeInput, targetSeason
     }
 
     seasonScore += 2500;
+    if (namedSeasonMatched) {
+      seasonScore += 1500; // Extra bonus for matching exact named season!
+    }
 
     // Final Season matching bonus / penalty
     if (isTargetFinal && candIsFinal) {
@@ -748,16 +799,60 @@ export function getCleanSearchQuery(title) {
   // 6. Remove Roman numerals (e.g. II, III, IV)
   clean = clean.replace(/\b(?:II|III|IV|V|VI|VII|VIII|IX|X)\b/g, ' ');
 
-  // 7. If there's a colon or dash, keep primary franchise title if length >= 3
-  const colonParts = clean.split(/[:\-–—]/);
-  if (colonParts.length > 1 && colonParts[0].trim().length >= 3) {
-    clean = colonParts[0].trim();
-  }
+  // 7. Convert colons and dashes to spaces so subtitles (e.g. "Naruto: Shippuuden" -> "Naruto Shippuuden") are preserved
+  clean = clean.replace(/[:\-–—]/g, ' ');
 
   // 8. Strip lingering punctuation and extra spaces
   clean = clean.replace(/[.,\-_]/g, ' ').replace(/\s+/g, ' ').trim();
   return clean || title;
 }
+
+/**
+ * Checks if a title explicitly contains a season number or season keyword (e.g. 2. Sezon, Season 2, S2, 2nd Season)
+ */
+export function hasExplicitSeasonNumber(title) {
+  if (!title) return false;
+  const t = String(title).toLowerCase();
+  return (
+    /\b(\d+)\s*\.?\s*(?:st|nd|rd|th)?\s*(?:sezon|season)\b/i.test(t) ||
+    /\b(?:season|sezon)\s*\d+\b/i.test(t) ||
+    /\bs\d{1,2}\b/i.test(t) ||
+    /\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s*season\b/i.test(t) ||
+    /\b(?:ii|iii|iv|v|vi|vii|viii|ix|x)\b/i.test(t)
+  );
+}
+
+/**
+ * Extracts primary franchise title before colon/dash/parentheses (e.g. "Dragon Ball" from "Dragon Ball: Daima")
+ */
+export function getFranchiseBaseTitle(title) {
+  if (!title) return '';
+  const raw = String(title).replace(/[\(\[\{].*?[\)\]\}]/g, ' ').trim();
+  const parts = raw.split(/[:\-–—]/);
+  return parts[0].trim();
+}
+
+/**
+ * Extracts distinctive tokens that differentiate named seasons (e.g. ['z'], ['super'], ['shippuuden'])
+ */
+export function getDistinctSeasonTokens(titleOrObj, franchiseBaseTokens = []) {
+  const titles = typeof titleOrObj === 'object' && titleOrObj !== null
+    ? [titleOrObj.season_title, titleOrObj.title, titleOrObj.title_romaji, titleOrObj.title_english].filter(Boolean)
+    : [String(titleOrObj || '')];
+
+  const baseSet = new Set(franchiseBaseTokens.map(t => normalizeAnimeTitle(t)));
+  const stopWords = new Set(['the', 'and', 'or', 'of', 'in', 'to', 'a', 'an', 'tv', 'izle', 'dizi', 'hd', 'full', 'anime', 'bolum', 'season', 'sezon', 'film', 'movie', 'ova', 'special', 'specials', 'ozel']);
+
+  const distinct = new Set();
+  for (const t of titles) {
+    const norm = normalizeAnimeTitle(t);
+    const tokens = norm.split(' ').filter(w => w.length >= 1 && !baseSet.has(w) && !stopWords.has(w));
+    tokens.forEach(tok => distinct.add(tok));
+  }
+  return Array.from(distinct);
+}
+
+export const KNOWN_SEQUEL_TOKENS = new Set(['z', 'gt', 'super', 'daima', 'kai', 'heroes', 'shippuuden', 'boruto', 'brotherhood', 'alicization']);
 
 /**
  * Arama sayfasında listelenen animelerden ilk çıkan sonucun içindeki linki alır
@@ -1221,11 +1316,16 @@ export function extractPaginationLinks(html, currentUrl = '') {
  * Intelligently extrapolates missing episodes using the anime's detected slug pattern.
  * e.g. If episodes 1 to 10 are extracted (/haikyuu-1-bolum-izle) and targetTotal is 25,
  * generates missing episodes 11 to 25 (/haikyuu-11-bolum-izle) so no episodes are cut off.
+ * Supports maxLimit to generate episodes in incremental batches of 50.
  */
-export function completeMissingEpisodes(extractedEpisodes, targetTotal = 0, animeTitle = '', defaultThumb = '') {
+export function completeMissingEpisodes(extractedEpisodes, targetTotal = 0, animeTitle = '', defaultThumb = '', maxLimit = 50) {
   if (!Array.isArray(extractedEpisodes) || extractedEpisodes.length === 0) return extractedEpisodes || [];
-  const total = parseInt(targetTotal, 10);
-  if (!total || total <= extractedEpisodes.length) return extractedEpisodes;
+  const total = parseInt(targetTotal, 10) || 0;
+  const limit = maxLimit && maxLimit > 0 ? (total > 0 ? Math.min(total, maxLimit) : maxLimit) : total;
+
+  if (!limit || (limit <= extractedEpisodes.length && (!total || extractedEpisodes.length >= total))) {
+    return limit > 0 ? extractedEpisodes.slice(0, limit) : extractedEpisodes;
+  }
 
   const epsByNum = new Map();
   extractedEpisodes.forEach(ep => {
@@ -1252,7 +1352,9 @@ export function completeMissingEpisodes(extractedEpisodes, targetTotal = 0, anim
     }
   }
 
-  if (!urlPattern) return extractedEpisodes;
+  if (!urlPattern) {
+    return limit > 0 ? extractedEpisodes.slice(0, limit) : extractedEpisodes;
+  }
 
   // Title pattern
   let titlePrefix = animeTitle ? `${animeTitle} ` : '';
@@ -1268,7 +1370,7 @@ export function completeMissingEpisodes(extractedEpisodes, targetTotal = 0, anim
 
   const thumb = (sampleEp && sampleEp.thumbnail) || defaultThumb || '';
 
-  for (let num = 1; num <= total; num++) {
+  for (let num = 1; num <= limit; num++) {
     if (!epsByNum.has(num)) {
       const generatedUrl = `${urlPattern.fullPrefix}${num}${urlPattern.suffix}`;
       const generatedTitle = `${titlePrefix}${num}${titleSuffix}`;
@@ -1279,20 +1381,20 @@ export function completeMissingEpisodes(extractedEpisodes, targetTotal = 0, anim
         episode_title: generatedTitle,
         url: generatedUrl,
         thumbnail: thumb,
-        release_date: null,
-        is_deduced: true
+        release_date: null
       });
     }
   }
 
-  return Array.from(epsByNum.values()).sort((a, b) => (a.number || a.episode_number) - (b.number || b.episode_number));
+  const result = Array.from(epsByNum.values()).sort((a, b) => (a.number || a.episode_number) - (b.number || b.episode_number));
+  return limit > 0 ? result.slice(0, limit) : result;
 }
 
 /**
  * 2. Fetches anime overview page and extracts all episodes
- * Traverses pagination pages if total > 10/12, and extrapolates missing episodes
+ * Traverses pagination pages up to batchLimit (default 50), and extrapolates missing episodes
  */
-export async function fetchEpisodesForAnime(animeOverviewUrl, targetTotal = 0, animeTitle = '', targetFormat = '') {
+export async function fetchEpisodesForAnime(animeOverviewUrl, targetTotal = 0, animeTitle = '', targetFormat = '', batchLimit = 50) {
   if (!animeOverviewUrl) return [];
 
   const { html, size, ok } = await fetchHtml(animeOverviewUrl);
@@ -1314,13 +1416,16 @@ export async function fetchEpisodesForAnime(animeOverviewUrl, targetTotal = 0, a
     }
   }
 
-  // Check and traverse pagination pages if episodes are incomplete
+  const effectiveTotal = totalCount || episodes.length;
+
+  // Check and traverse pagination pages if episodes are incomplete and under batchLimit
   const paginationLinks = extractPaginationLinks(html, animeOverviewUrl);
-  if (paginationLinks.length > 0 && (totalCount === 0 || episodes.length < totalCount)) {
+  if (paginationLinks.length > 0 && episodes.length < batchLimit && (effectiveTotal === 0 || episodes.length < effectiveTotal)) {
     const seenUrls = new Set(episodes.map(e => e.url));
     const epsByNum = new Map(episodes.map(e => [e.number, e]));
 
-    for (const pageUrl of paginationLinks.slice(0, 10)) {
+    for (const pageUrl of paginationLinks) {
+      if (epsByNum.size >= batchLimit) break; // 50 bölüme ulaşıldığında hemen dur, tüm sayfaları boş yere çekme!
       try {
         const pageRes = await fetchHtml(pageUrl, 8000);
         if (pageRes.ok && !isBotBlocked(pageRes.html, pageRes.size)) {
@@ -1355,9 +1460,101 @@ export async function fetchEpisodesForAnime(animeOverviewUrl, targetTotal = 0, a
     }];
   }
 
-  // KULLANICI KESİN KURALI: Olmayan / henüz çıkmamış bölümleri asla sahte olarak listeleme!
-  // Sadece sitede gerçekten yayınlanmış ve bulunan bölümleri listele.
+  // Sadece batchLimit (50) sınırına kadar tamamla (tüm 1000 bölümü tek seferde üretip kastırma!)
+  if (episodes.length > 0 && (effectiveTotal > episodes.length || episodes.length < batchLimit)) {
+    episodes = completeMissingEpisodes(episodes, effectiveTotal, animeTitle, '', batchLimit);
+  } else if (episodes.length > batchLimit) {
+    episodes = episodes.slice(0, batchLimit);
+  }
+
+  episodes.totalCount = effectiveTotal;
+  episodes.overviewUrl = animeOverviewUrl;
+  episodes.paginationLinks = paginationLinks;
+  episodes.hasMore = effectiveTotal > episodes.length;
+
   return episodes;
+}
+
+/**
+ * 2b. Kullanıcı aşağı kaydırdıkça sonraki bölümleri (50'şerli) kademeli olarak çeker/tamamlar
+ */
+export async function fetchNextEpisodesBatch({
+  overviewUrl = '',
+  currentCount = 0,
+  batchSize = 50,
+  targetTotal = 0,
+  animeTitle = '',
+  targetFormat = '',
+  defaultThumb = '',
+  paginationLinks = [],
+  existingEpisodes = []
+}) {
+  const currentTotal = parseInt(targetTotal, 10) || 0;
+  const nextLimit = currentCount + batchSize;
+  const effectiveTarget = currentTotal > 0 ? Math.min(currentTotal, nextLimit) : nextLimit;
+
+  if (currentTotal > 0 && currentCount >= currentTotal) {
+    return {
+      episodes: existingEpisodes,
+      newEpisodes: [],
+      hasMore: false,
+      totalCount: currentTotal
+    };
+  }
+
+  const epsByNum = new Map();
+  (existingEpisodes || []).forEach(ep => {
+    const num = parseInt(ep.number || ep.episode_number, 10);
+    if (!isNaN(num) && num > 0) epsByNum.set(num, ep);
+  });
+
+  // Eğer sitede henüz taranmamış sayfalama linkleri varsa çek
+  if (Array.isArray(paginationLinks) && paginationLinks.length > 0) {
+    const seenUrls = new Set((existingEpisodes || []).map(e => e.url));
+    const estimatedPageStart = Math.max(0, Math.floor(currentCount / 14));
+    const pagesToTry = paginationLinks.slice(estimatedPageStart, estimatedPageStart + 3);
+
+    for (const pageUrl of pagesToTry) {
+      if (epsByNum.size >= effectiveTarget) break;
+      try {
+        const pageRes = await fetchHtml(pageUrl, 8000);
+        if (pageRes.ok && !isBotBlocked(pageRes.html, pageRes.size)) {
+          const pageEps = parseEpisodesHtml(pageRes.html, pageUrl);
+          pageEps.forEach(ep => {
+            if (!seenUrls.has(ep.url) && !epsByNum.has(ep.number)) {
+              seenUrls.add(ep.url);
+              epsByNum.set(ep.number, ep);
+            }
+          });
+        }
+      } catch (e) {
+        console.warn('[Resolver] Next batch page fetch error:', e.message);
+      }
+    }
+  }
+
+  let fullList = Array.from(epsByNum.values()).sort((a, b) => (a.number || a.episode_number) - (b.number || b.episode_number));
+
+  // Eksik bölümleri effectiveTarget'a kadar örüntüyle tamamla
+  if (fullList.length < effectiveTarget) {
+    fullList = completeMissingEpisodes(fullList, currentTotal || effectiveTarget, animeTitle, defaultThumb, effectiveTarget);
+  } else if (fullList.length > effectiveTarget) {
+    fullList = fullList.slice(0, effectiveTarget);
+  }
+
+  const newlyAdded = fullList.filter(ep => {
+    const n = parseInt(ep.number || ep.episode_number, 10);
+    return n > currentCount;
+  });
+
+  const hasMore = currentTotal > 0 ? fullList.length < currentTotal : newlyAdded.length > 0;
+
+  return {
+    episodes: fullList,
+    newEpisodes: newlyAdded,
+    hasMore,
+    totalCount: currentTotal || fullList.length
+  };
 }
 
 /**
@@ -1378,71 +1575,75 @@ export async function searchAndExtractEpisodes(animeInput, seasonNum = 1, target
   const targetPart = animeInfo.part_number || detectPartNumber(animeInfo.title || animeInfo.season_title, 1);
   const isTargetFinal = Boolean(animeInfo.is_final || /\bfinal\b/i.test(animeInfo.title || animeInfo.season_title));
 
+  const isNamedSeason = !hasExplicitSeasonNumber(animeInfo.season_title || animeInfo.title) && targetSeason > 1;
+
   const queriesToTry = [];
 
-  // 1. If multi-part (e.g. Part 2, 2. Kısım), final season, or targetSeason > 1, try direct queries first
-  const baseTitles = [animeInfo.title_romaji, animeInfo.title_english, animeInfo.title].filter(Boolean);
-  if (targetPart > 1 || isTargetFinal || targetSeason > 1) {
-    for (const bt of baseTitles) {
-      const cleanBt = getCleanSearchQuery(bt);
-      if (cleanBt && cleanBt.length >= 3 && !/^\d+[\s.]*(sezon|season)?$/i.test(cleanBt)) {
-        if (isTargetFinal && targetPart > 1) {
-          const q1 = `${cleanBt} Final Sezon ${targetPart}. Kısım`;
-          const q2 = `${cleanBt} ${targetSeason}. Sezon ${targetPart}. Kısım`;
-          const q3 = `${cleanBt} Final Sezon Part ${targetPart}`;
-          if (!queriesToTry.includes(q1)) queriesToTry.push(q1);
-          if (!queriesToTry.includes(q2)) queriesToTry.push(q2);
-          if (!queriesToTry.includes(q3)) queriesToTry.push(q3);
-        } else if (targetPart > 1) {
-          const q1 = `${cleanBt} ${targetSeason}. Sezon ${targetPart}. Kısım`;
-          const q2 = `${cleanBt} ${targetSeason}. Sezon Part ${targetPart}`;
-          const q3 = `${cleanBt} ${targetPart}. Kısım`;
-          if (!queriesToTry.includes(q1)) queriesToTry.push(q1);
-          if (!queriesToTry.includes(q2)) queriesToTry.push(q2);
-          if (!queriesToTry.includes(q3)) queriesToTry.push(q3);
-        } else if (isTargetFinal) {
-          const q1 = `${cleanBt} Final Sezon`;
-          const q2 = `${cleanBt} ${targetSeason}. Sezon Final`;
-          const q3 = `${cleanBt} The Final Season`;
-          if (!queriesToTry.includes(q1)) queriesToTry.push(q1);
-          if (!queriesToTry.includes(q2)) queriesToTry.push(q2);
-          if (!queriesToTry.includes(q3)) queriesToTry.push(q3);
-        } else if (targetSeason > 1) {
-          const seasonSuffixes = [
-            targetSeason === 2 ? '2nd Season' : targetSeason === 3 ? '3rd Season' : `${targetSeason}th Season`,
-            `${targetSeason}. Sezon`,
-            targetSeason === 2 ? 'II' : targetSeason === 3 ? 'III' : targetSeason === 4 ? 'IV' : ''
-          ].filter(Boolean);
-          for (const suff of seasonSuffixes) {
-            const sq = `${cleanBt} ${suff}`.trim();
-            if (!queriesToTry.includes(sq)) queriesToTry.push(sq);
-          }
-        }
+  // 1. If season is a named season (e.g. Dragon Ball Z, Dragon Ball Super, Naruto Shippuuden):
+  // Prioritize the exact clean season titles!
+  if (isNamedSeason) {
+    const namedTitles = [
+      animeInfo.season_title,
+      animeInfo.title,
+      animeInfo.title_romaji,
+      animeInfo.title_english
+    ];
+    for (const nt of namedTitles) {
+      if (!nt) continue;
+      const cleanNt = getCleanSearchQuery(nt);
+      if (cleanNt && cleanNt.length >= 3 && !hasExplicitSeasonNumber(cleanNt) && !queriesToTry.includes(cleanNt)) {
+        queriesToTry.push(cleanNt);
       }
     }
   }
 
-  // 2. Base franchise queries (Romaji, English, Standard, Synonyms)
-  if (animeInfo.title_romaji) {
-    const q = getCleanSearchQuery(animeInfo.title_romaji);
-    if (q && !queriesToTry.includes(q)) queriesToTry.push(q);
-  }
-  if (animeInfo.title_english) {
-    const q = getCleanSearchQuery(animeInfo.title_english);
-    if (q && !queriesToTry.includes(q)) queriesToTry.push(q);
-  }
-  if (animeInfo.title) {
-    const q = getCleanSearchQuery(animeInfo.title);
-    if (q && !queriesToTry.includes(q)) queriesToTry.push(q);
-  }
-  if (Array.isArray(animeInfo.synonyms)) {
-    animeInfo.synonyms.slice(0, 3).forEach(s => {
-      if (s) {
-        const q = getCleanSearchQuery(s);
-        if (q && !queriesToTry.includes(q)) queriesToTry.push(q);
+  // 2. All base franchise titles including Romaji, English, Turkish title, and synonyms
+  const allBaseTitles = [
+    animeInfo.title_romaji,
+    animeInfo.title_english,
+    animeInfo.title,
+    animeInfo.season_title,
+    ...(Array.isArray(animeInfo.synonyms) ? animeInfo.synonyms.slice(0, 5) : [])
+  ].filter(Boolean);
+
+  // For tranimeizle, clean base queries (e.g. "Re:Zero kara Hajimeru Isekai Seikatsu", "Mushoku Tensei", "Hyakkano")
+  // and Turkish season queries (e.g. "Hyakkano 2. Sezon") yield 100% accurate results.
+  for (const bt of allBaseTitles) {
+    const cleanBt = getCleanSearchQuery(bt);
+    if (cleanBt && cleanBt.length >= 3 && !/^\d+[\s.]*(sezon|season)?$/i.test(cleanBt)) {
+      // Turkish season queries for multi-part or multi-season
+      if (isTargetFinal && targetPart > 1) {
+        const q1 = `${cleanBt} Final Sezon ${targetPart}. Kısım`;
+        const q2 = `${cleanBt} ${targetSeason}. Sezon ${targetPart}. Kısım`;
+        if (!queriesToTry.includes(q1)) queriesToTry.push(q1);
+        if (!queriesToTry.includes(q2)) queriesToTry.push(q2);
+      } else if (targetPart > 1) {
+        const q1 = `${cleanBt} ${targetSeason}. Sezon ${targetPart}. Kısım`;
+        const q2 = `${cleanBt} ${targetPart}. Kısım`;
+        if (!queriesToTry.includes(q1)) queriesToTry.push(q1);
+        if (!queriesToTry.includes(q2)) queriesToTry.push(q2);
+      } else if (isTargetFinal) {
+        const q1 = `${cleanBt} Final Sezon`;
+        const q2 = `${cleanBt} ${targetSeason}. Sezon Final`;
+        if (!queriesToTry.includes(q1)) queriesToTry.push(q1);
+        if (!queriesToTry.includes(q2)) queriesToTry.push(q2);
+      } else if (targetSeason > 1 && !isNamedSeason) {
+        // Only append "${cleanBt} ${targetSeason}. Sezon" if the season is NOT a named season!
+        const q1 = `${cleanBt} ${targetSeason}. Sezon`;
+        if (!queriesToTry.includes(q1)) queriesToTry.push(q1);
       }
-    });
+
+      // Base franchise query (returns all seasons on tranimeizle)
+      if (!queriesToTry.includes(cleanBt)) queriesToTry.push(cleanBt);
+    }
   }
+
+  // Also include base franchise title if named season (e.g. "Dragon Ball")
+  const franBase = getFranchiseBaseTitle(animeInfo.franchise_title || animeInfo.parent_title || animeInfo.title_romaji || animeInfo.title);
+  if (franBase && franBase.length >= 3 && !queriesToTry.includes(franBase)) {
+    queriesToTry.push(franBase);
+  }
+
   if (queriesToTry.length === 0 && animeInfo.orijinal_ad) {
     const q = getCleanSearchQuery(animeInfo.orijinal_ad);
     if (q) queriesToTry.push(q);

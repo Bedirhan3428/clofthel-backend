@@ -3,7 +3,9 @@
  * Includes canvas-based pixel comparison captcha solver and hover/click event simulation.
  * Includes Touch-Unblocking Shield: Neutralizes IconCaptcha hoverDetection/clickDelay and destroys ad clickjackers.
  */
-export const scraperInjectedJs = `
+import { clientResourceBlockerJs } from './ResourceFilter';
+
+const coreScraperInjectedJs = `
     try {
       (function() {
         if (window.__scraper_initialized) return;
@@ -1534,3 +1536,5 @@ export const scraperInjectedJs = `
     }
     true;
 `;
+
+export const scraperInjectedJs = `${clientResourceBlockerJs}\n${coreScraperInjectedJs}`;

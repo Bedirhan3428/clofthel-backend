@@ -103,6 +103,21 @@ export default function PlayerSettingsScreen({ navigation }) {
           </View>
         </View>
 
+        <View style={styles.settingCard}>
+          <View style={styles.settingRow}>
+            <View style={styles.settingTextWrapper}>
+              <Text style={styles.settingLabel}>Otomatik İntro Atlama</Text>
+              <Text style={styles.settingDescription}>AniSkip ve fansub ofseti ile introlar tespit edildiğinde otomatik geçer.</Text>
+            </View>
+            <Switch
+              value={!!preferences.autoSkipIntro}
+              onValueChange={(val) => updatePreference('autoSkipIntro', val)}
+              trackColor={{ false: COLORS.bgSecondary, true: COLORS.accentGlow }}
+              thumbColor={preferences.autoSkipIntro ? COLORS.accent : COLORS.textMuted}
+            />
+          </View>
+        </View>
+
         {/* Configurations Section */}
         <Text style={styles.sectionTitle}>Sarma & Boyut Seçenekleri</Text>
 

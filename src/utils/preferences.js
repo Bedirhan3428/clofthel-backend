@@ -9,6 +9,7 @@ export const DEFAULT_PREFERENCES = {
   buttonSize: 'medium',
   defaultSpeed: 1.0,
   clarityMode: 'off',
+  autoSkipIntro: false,
   fansubPriority: ['TRanimeizle', 'seicode', 'BabaPro Fansub'],
 };
 

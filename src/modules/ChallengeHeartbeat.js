@@ -10,7 +10,9 @@
  * 5. Anime Episode Extractor & Navigation Bridge
  */
 
-export const challengeHeartbeatJs = `
+import { clientResourceBlockerJs } from './ResourceFilter';
+
+const coreChallengeHeartbeatJs = `
 (function() {
   try {
     function postMsg(obj) {
@@ -543,17 +545,42 @@ export const challengeHeartbeatJs = `
           if (tgtIsFinal && (full.indexOf('final season') !== -1 || full.indexOf('the final') !== -1 || full.indexOf('final sezon') !== -1 || full.indexOf('son sezon') !== -1)) {
             return tgtSeason;
           }
+
+          // Named Season Check (Dragon Ball Z, Dragon Ball Super, Naruto Shippuuden, etc.)
+          var tDistinct = window.__TARGET_DISTINCT_TOKENS || [];
+          if ((window.__IS_NAMED_SEASON || tgtSeason > 1) && tDistinct && tDistinct.length > 0) {
+            var candToks = full.split(' ');
+            var matchesAll = tDistinct.every(function(dt) { return candToks.indexOf(dt) !== -1 || (dt.length > 1 && full.indexOf(dt) !== -1); });
+            if (matchesAll) {
+              return tgtSeason;
+            }
+          }
+
           return 1;
         }
 
         function extractPartNumber(title, url) {
-          var full = normText((title || '') + ' ' + (url || ''));
-          if (full.indexOf('kanketsu hen') !== -1 || full.indexOf('final chapters') !== -1) return 3;
-          if (/\\b(?:2nd|second)\\s*(?:part|cour|kisim)\\b/.test(full)) return 2;
-          if (/\\b(?:3rd|third)\\s*(?:part|cour|kisim)\\b/.test(full)) return 3;
-          if (/\\b(?:4th|fourth)\\s*(?:part|cour|kisim)\\b/.test(full)) return 4;
-          var m = full.match(/\\b(?:part|cour|kisim)\\s*(\\d+)\\b/) || full.match(/\\b(\\d+)\\s*(?:kisim|part|cour)\\b/);
+          var tNorm = normText(title || '');
+          if (tNorm.indexOf('kanketsu hen') !== -1 || tNorm.indexOf('final chapters') !== -1) return 3;
+          if (/\b(?:2nd|second)\s*(?:part|cour|kisim)\b/.test(tNorm)) return 2;
+          if (/\b(?:3rd|third)\s*(?:part|cour|kisim)\b/.test(tNorm)) return 3;
+          if (/\b(?:4th|fourth)\s*(?:part|cour|kisim)\b/.test(tNorm)) return 4;
+          var m = tNorm.match(/\b(?:part|cour|kisim)\s*(\d+)\b/) || tNorm.match(/\b(\d+)\s*(?:kisim|part|cour)\b/);
           if (m) return parseInt(m[1], 10);
+
+          // If title explicitly specifies a season (e.g. 2. Sezon) without a part, it is Part 1!
+          if (/\b\d+\s*sezon\b/.test(tNorm) || /\bseason\s*\d+\b/.test(tNorm) || /\bs\d{1,2}\b/.test(tNorm)) {
+            return 1;
+          }
+
+          var uNorm = normText(url || '');
+          if (uNorm.indexOf('kanketsu hen') !== -1 || uNorm.indexOf('final chapters') !== -1) return 3;
+          if (/\b(?:2nd|second)\s*(?:part|cour|kisim)\b/.test(uNorm)) return 2;
+          if (/\b(?:3rd|third)\s*(?:part|cour|kisim)\b/.test(uNorm)) return 3;
+          if (/\b(?:4th|fourth)\s*(?:part|cour|kisim)\b/.test(uNorm)) return 4;
+          var mU = uNorm.match(/\b(?:part|cour|kisim)\s*(\d+)\b/) || uNorm.match(/\b(\d+)\s*(?:kisim|part|cour)\b/);
+          if (mU) return parseInt(mU[1], 10);
+
           return 1;
         }
 
@@ -626,6 +653,20 @@ export const challengeHeartbeatJs = `
               continue; // STRICT ZERO TOLERANCE: Any other season is completely disqualified!
             }
 
+            // If target is Season 1 (not named, no distinct tokens), reject candidates with known sequel tokens (z, super, gt, daima, shippuuden)
+            if (!window.__IS_NAMED_SEASON && targetSeason === 1) {
+              var candToks = candFull.split(' ');
+              var sequelTokens = ['z', 'gt', 'super', 'daima', 'kai', 'heroes', 'shippuuden', 'boruto', 'brotherhood', 'alicization'];
+              var hasSequel = false;
+              for (var sqi = 0; sqi < sequelTokens.length; sqi++) {
+                if (candToks.indexOf(sequelTokens[sqi]) !== -1) {
+                  hasSequel = true;
+                  break;
+                }
+              }
+              if (hasSequel) continue;
+            }
+
             var cPart = extractPartNumber(cand.title, cand.url);
             if (targetPart > 1 && cPart !== targetPart) {
               continue; // STRICT ZERO TOLERANCE: Target is Part 2+, candidate is not!
@@ -655,7 +696,9 @@ export const challengeHeartbeatJs = `
           window.__has_retried_season_search = true;
           var retryBaseTitle = window.__TARGET_TITLE || window.__TARGET_TITLE_ROMAJI || window.__TARGET_TITLE_EN || '';
           var retryQuery = '';
-          if (targetIsFinal && targetPart > 1) {
+          if (window.__IS_NAMED_SEASON) {
+            retryQuery = window.__TARGET_FRANCHISE || retryBaseTitle;
+          } else if (targetIsFinal && targetPart > 1) {
             retryQuery = retryBaseTitle + ' Final Sezon ' + targetPart + '. Kısım';
           } else if (targetPart > 1) {
             retryQuery = retryBaseTitle + ' ' + targetSeason + '. Sezon ' + targetPart + '. Kısım';
@@ -678,16 +721,20 @@ export const challengeHeartbeatJs = `
           window.__last_candidates_sent = nowSearchTime;
           if (chosenCand) {
             log('🔍 Arama sayfasında ' + pool.length + ' aday arasından Sezon ' + targetSeason + (targetPart > 1 ? ' (' + targetPart + '. Kısım)' : '') + ' için "' + chosenCand.title + '" seçildi!', 'info');
-          } else {
+          } else if (!window.__season_not_found_logged) {
+            window.__season_not_found_logged = true;
             log('⚠️ Arama sayfasında ' + pool.length + ' aday bulundu ancak Sezon ' + targetSeason + ' ile tam eşleşen aday yok!', 'warn');
           }
-          postMsg({
-            type: 'candidates_extracted',
-            candidates: pool.map(function(c) { return { url: c.url, title: c.title }; }),
-            chosen: chosenCand ? { url: chosenCand.url, title: chosenCand.title } : null,
-            targetSeason: targetSeason,
-            targetPart: targetPart
-          });
+          if (!window.__candidates_sent_once || chosenCand) {
+            window.__candidates_sent_once = true;
+            postMsg({
+              type: 'candidates_extracted',
+              candidates: pool.map(function(c) { return { url: c.url, title: c.title }; }),
+              chosen: chosenCand ? { url: chosenCand.url, title: chosenCand.title } : null,
+              targetSeason: targetSeason,
+              targetPart: targetPart
+            });
+          }
         }
 
         // DOĞRUDAN ANİME DETAY SAYFASINA GİT (YALNIZCA VE YALNIZCA DOĞRU SEZON BULUNDUYSA!)
@@ -1135,8 +1182,10 @@ export const challengeHeartbeatJs = `
 
       // 4. Sayfalama Linklerini Oturum İçi fetch() ile Çek (.pagination, ?sayfa=2 vb.)
       window.__fetched_pagination_urls = window.__fetched_pagination_urls || {};
+      var batchLimit = window.__SCRAPE_BATCH_LIMIT || 50;
       var pageAnchors = document.querySelectorAll('ul.pagination li a, .pagination a, .page-link, a[href*="sayfa="], a[href*="page="]');
       for (var pi = 0; pi < pageAnchors.length; pi++) {
+        if (Object.keys(window.__all_extracted_episodes).length >= batchLimit) break;
         var pA = pageAnchors[pi];
         var pHref = pA.getAttribute('href') || pA.href || '';
         if (pHref && pHref.indexOf('http') !== 0) {
@@ -1180,44 +1229,41 @@ export const challengeHeartbeatJs = `
         }
       }
 
-      // 5. Akıllı Örüntü Tamamlama (YALNIZCA TAMAMLANMIŞ SEZONLAR İÇİN)
-      // KULLANICI KESİN KURALI: Devam eden sezonlarda (RELEASING / Çıkmamış) ASLA bölüm türetilmez!
-      if (!window.__IS_RELEASING && !window.__NEXT_AIRING_EP) {
-        var currentCount = Object.keys(window.__all_extracted_episodes).length;
-        if (targetTotal > currentCount && currentCount > 0) {
-          var sampleEp = null;
-          for (var k in window.__all_extracted_episodes) {
-            var candEp = window.__all_extracted_episodes[k];
-            if (candEp && candEp.url && candEp.url.match(/[-_](\\d+)[-_]bolum/i)) {
-              sampleEp = candEp;
-              break;
-            }
+      // 5. Akıllı Örüntü Tamamlama (batchLimit veya targetTotal'a kadar olan yayınlanmış bölümleri tamamla)
+      var currentCount = Object.keys(window.__all_extracted_episodes).length;
+      var effectiveMax = targetTotal > 0 ? Math.min(targetTotal, batchLimit) : batchLimit;
+      if (effectiveMax > currentCount && currentCount > 0) {
+        var sampleEp = null;
+        for (var k in window.__all_extracted_episodes) {
+          var candEp = window.__all_extracted_episodes[k];
+          if (candEp && candEp.url && candEp.url.match(/[-_](\\d+)[-_]bolum/i)) {
+            sampleEp = candEp;
+            break;
           }
-          if (sampleEp) {
-            var uMatch = sampleEp.url.match(/^(https?:\\/\\/[^\\/]+.*\\/|.*?)([a-zA-Z0-9_-]+[-_])(\\d+)([-_]bolum(?:-izle)?.*)$/i) ||
-                         sampleEp.url.match(/^(.*\\/)([a-zA-Z0-9_-]+[-_])(\\d+)([-_]bolum.*)$/i) ||
-                         sampleEp.url.match(/^(.*[-_])(\\d+)([-_]bolum.*)$/i);
-            if (uMatch) {
-              var fullPfx = uMatch[1] + (uMatch[2] || '');
-              var sfx = uMatch[4] || uMatch[3];
-              var tPfx = window.__TARGET_TITLE ? (window.__TARGET_TITLE + ' ') : '';
-              var tSfx = '. Bölüm';
-              if (sampleEp.title) {
-                var tMat = sampleEp.title.match(/^(.*?)(\\d+)(\\.?\\s*Bölüm.*)$/i);
-                if (tMat) { tPfx = tMat[1]; tSfx = tMat[3]; }
-              }
-              var smpThumb = sampleEp.thumbnail || '';
-              for (var fillN = 1; fillN <= targetTotal; fillN++) {
-                if (!window.__all_extracted_episodes[fillN]) {
-                  window.__all_extracted_episodes[fillN] = {
-                    number: fillN,
-                    title: tPfx ? (tPfx + fillN + tSfx) : (fillN + '. Bölüm'),
-                    url: fullPfx + fillN + sfx,
-                    thumbnail: smpThumb,
-                    release_date: '',
-                    is_deduced: true
-                  };
-                }
+        }
+        if (sampleEp) {
+          var uMatch = sampleEp.url.match(/^(https?:\\/\\/[^\\/]+.*\\/|.*?)([a-zA-Z0-9_-]+[-_])(\\d+)([-_]bolum(?:-izle)?.*)$/i) ||
+                       sampleEp.url.match(/^(.*\\/)([a-zA-Z0-9_-]+[-_])(\\d+)([-_]bolum.*)$/i) ||
+                       sampleEp.url.match(/^(.*[-_])(\\d+)([-_]bolum.*)$/i);
+          if (uMatch) {
+            var fullPfx = uMatch[1] + (uMatch[2] || '');
+            var sfx = uMatch[4] || uMatch[3];
+            var tPfx = window.__TARGET_TITLE ? (window.__TARGET_TITLE + ' ') : '';
+            var tSfx = '. Bölüm';
+            if (sampleEp.title) {
+              var tMat = sampleEp.title.match(/^(.*?)(\\d+)(\\.?\\s*Bölüm.*)$/i);
+              if (tMat) { tPfx = tMat[1]; tSfx = tMat[3]; }
+            }
+            var smpThumb = sampleEp.thumbnail || '';
+            for (var fillN = 1; fillN <= effectiveMax; fillN++) {
+              if (!window.__all_extracted_episodes[fillN]) {
+                window.__all_extracted_episodes[fillN] = {
+                  number: fillN,
+                  title: tPfx ? (tPfx + fillN + tSfx) : (fillN + '. Bölüm'),
+                  url: fullPfx + fillN + sfx,
+                  thumbnail: smpThumb,
+                  release_date: ''
+                };
               }
             }
           }
@@ -1229,11 +1275,6 @@ export const challengeHeartbeatJs = `
       for (var numKey in window.__all_extracted_episodes) {
         if (window.__all_extracted_episodes.hasOwnProperty(numKey)) {
           var itemEp = window.__all_extracted_episodes[numKey];
-          // Devam eden sezonlarda türetilmiş ve çıkmamış bölümleri ele
-          if (window.__IS_RELEASING || window.__NEXT_AIRING_EP) {
-            if (itemEp.is_deduced) continue;
-            if (window.__NEXT_AIRING_EP && itemEp.number >= window.__NEXT_AIRING_EP) continue;
-          }
           eps.push(itemEp);
         }
       }
@@ -1244,11 +1285,13 @@ export const challengeHeartbeatJs = `
         window.__episodes_sent_count = eps.length;
         window.__episodes_sent = true;
         eps.sort(function(x, y) { return x.number - y.number; });
-        log('🎉 Sayfadan ' + eps.length + ' adet bölüm başarıyla çıkarıldı!', 'success');
+        var batchEps = eps.slice(0, batchLimit);
+        log('🎉 Sayfadan ' + batchEps.length + ' adet bölüm başarıyla çıkarıldı!', 'success');
         postMsg({
           type: 'episodes_extracted',
-          episodes: eps,
-          count: eps.length,
+          episodes: batchEps,
+          count: batchEps.length,
+          total: targetTotal || eps.length,
           url: pageHref
         });
       }
@@ -1267,3 +1310,5 @@ export const challengeHeartbeatJs = `
 })();
 true;
 `;
+
+export const challengeHeartbeatJs = `${clientResourceBlockerJs}\n${coreChallengeHeartbeatJs}`;

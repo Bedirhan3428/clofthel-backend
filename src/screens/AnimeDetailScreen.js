@@ -49,19 +49,26 @@ import {
   detectCandidateSeason,
   extractSeasonsFromCandidates,
   completeMissingEpisodes,
+  fetchNextEpisodesBatch,
   normalizeTurkish,
   isSpecial,
   isMovie,
+  hasExplicitSeasonNumber,
+  getFranchiseBaseTitle,
+  getDistinctSeasonTokens,
   BASE_URL 
 } from '../services/lightweightResolver';
 import { 
   fetchAnimeDetails as fetchAniListDetails, 
   fetchFullSeasonChain,
   isAnimeUpcoming,
-  formatReleaseDateTr
+  formatReleaseDateTr,
+  fetchAniListEpisodeMetadata,
+  getReleasedEpisodeCount
 } from '../services/anilistService';
 import { scraperInjectedJs } from '../modules/ScraperScript';
 import { challengeHeartbeatJs } from '../modules/ChallengeHeartbeat';
+import { shouldBlockNetworkRequest } from '../modules/ResourceFilter';
 import { useAlert } from '../context/AlertContext';
 import { AuthContext } from '../context/AuthContext';
 
@@ -153,6 +160,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const useRefValue = useRef(new Animated.Value(0));
   const fadeAnim = useRefValue.current;
   const seasonCacheRef = useRef({});
+  const episodeMetadataRef = useRef({});
   const allCandidatesRef = useRef([]);
   const isAlertOpenRef = useRef(false);
   const webViewRef = useRef(null);
@@ -170,6 +178,19 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const [challengeUrl, setChallengeUrl] = useState('');
   const [isJsonModalVisible, setIsJsonModalVisible] = useState(false);
   const [isJsonCopied, setIsJsonCopied] = useState(false);
+
+  // ── 50'şerli Kademeli Bölüm Yükleme (Lazy Pagination) ───────
+  const [loadingMoreEpisodes, setLoadingMoreEpisodes] = useState(false);
+  const [hasMoreEpisodes, setHasMoreEpisodes] = useState(false);
+  const [totalEpisodesCount, setTotalEpisodesCount] = useState(0);
+  const episodePaginationRef = useRef({
+    overviewUrl: '',
+    paginationLinks: [],
+    targetTotal: 0,
+    currentLimit: 50,
+    rawPool: []
+  });
+  const isFetchingMoreRef = useRef(false);
 
   const handleCopyJson = async () => {
     try {
@@ -218,17 +239,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
     for (const ep of rawEps) {
       if (!ep) continue;
 
-      // 1. KULLANICI KESİN KURALI: Sahte / Türetilmiş (is_deduced) bölümler KESİNLİKLE LİSTELENMEZ!
-      if (ep.is_deduced) {
-        continue;
-      }
-
       let num = parseInt(ep.number || ep.episode_number, 10);
-
-      // 2. Devam eden sezonlarda henüz yayınlanmamış gelecek bölümler KESİNLİKLE LİSTELENMEZ!
-      if (nextAiringNum !== null && nextAiringNum > 0 && num >= nextAiringNum) {
-        continue;
-      }
 
       const epUrl = (ep.url || '').trim();
       const rawTitle = (ep.title || ep.episode_title || '').trim();
@@ -285,16 +296,40 @@ export default function AnimeDetailScreen({ route, navigation }) {
         continue;
       }
 
-      const formatted = {
-        _id: `${mongoId || 'ep'}_${num}`,
-        episode_number: num,
-        episode_title: (rawTitle && rawTitle !== '.' && !/^[.\s]+$/.test(rawTitle)) 
-          ? rawTitle 
-          : (isMovieTarget ? (defaultTitle || 'Film') : `${num}. Bölüm`),
-        url: epUrl.startsWith('http') ? epUrl : `${BASE_URL}${epUrl.startsWith('/') ? '' : '/'}${epUrl}`,
-        thumbnail: ep.thumbnail ? (ep.thumbnail.startsWith('http') ? ep.thumbnail : `${BASE_URL}${ep.thumbnail.startsWith('/') ? '' : '/'}${ep.thumbnail}`) : (defaultThumb || null),
-        release_date: ep.release_date || null
-      };
+        const isCleanThumb = ep.thumbnail && !ep.thumbnail.includes('data:image') && !ep.thumbnail.includes('base64') && !ep.thumbnail.includes('loader.gif');
+        const siteThumb = isCleanThumb ? (ep.thumbnail.startsWith('http') ? ep.thumbnail : `${BASE_URL}${ep.thumbnail.startsWith('/') ? '' : '/'}${ep.thumbnail}`) : null;
+
+        // AniList / Kitsu Bölüm İsmi ve Kapak Fotoğrafı Zenginleştirme (Sezona özel, sezonlar arası karışma engellendi)
+        const metaMap = episodeMetadataRef.current[currentId] || {};
+        const epMeta = metaMap[num];
+
+        let epTitle;
+        if (epMeta && epMeta.title) {
+          epTitle = isMovieTarget ? epMeta.title : `${num}. Bölüm - ${epMeta.title}`;
+        } else if (isMovieTarget) {
+          epTitle = defaultTitle || 'Film';
+        } else {
+          epTitle = `${num}. Bölüm`;
+        }
+
+        const finalThumb = epMeta?.thumbnail || siteThumb || defaultThumb || null;
+
+        let releaseDate = ep.release_date || null;
+        if (!releaseDate && rawTitle && rawTitle.includes('\n')) {
+          const parts = rawTitle.split('\n').map(p => p.trim()).filter(Boolean);
+          if (parts.length > 1 && /\d{1,2}\s+[a-zçğıöşü]+\s+\d{4}/i.test(parts[1])) {
+            releaseDate = parts[1];
+          }
+        }
+
+        const formatted = {
+          _id: `${mongoId || 'ep'}_${num}`,
+          episode_number: num,
+          episode_title: epTitle,
+          url: epUrl.startsWith('http') ? epUrl : `${BASE_URL}${epUrl.startsWith('/') ? '' : '/'}${epUrl}`,
+          thumbnail: finalThumb,
+          release_date: releaseDate
+        };
 
       // Tekilleştirme: Aynı bölüm numarasından birden fazla geldiyse (örn: hero buton vs liste öğesi)
       if (episodesByNumber.has(num)) {
@@ -347,8 +382,13 @@ export default function AnimeDetailScreen({ route, navigation }) {
   const seasonNumForJs = currentSeasonForJs?.season_number || detectSeasonNumber(rawTitleForSeasonDetection, 1);
   const partNumForJs = currentSeasonForJs?.part_number || detectPartNumber(rawTitleForSeasonDetection, 1);
   const isFinalForJs = Boolean(currentSeasonForJs?.is_final || /(?:final\s*(?:season|sezon)|the\s*final|son\s*sezon|\(final\))/i.test(rawTitleForSeasonDetection));
-  const targetTitleForJs = getCleanSearchQuery(currentSeasonForJs?.title || currentAnimeDataForJs?.title_romaji || currentAnimeDataForJs?.title || initialTitle || '');
-  const totalEpsForJs = currentAnimeDataForJs?.episodes || currentSeasonForJs?.episodes || 0;
+  const isNamedSeasonForJs = !hasExplicitSeasonNumber(currentSeasonForJs?.title || currentSeasonForJs?.label) && seasonNumForJs > 1;
+  const targetTitleForJs = getCleanSearchQuery(currentSeasonForJs?.title || currentSeasonForJs?.label || currentAnimeDataForJs?.title_romaji || currentAnimeDataForJs?.title || initialTitle || '');
+  const franchiseTitleForJs = getCleanSearchQuery(getFranchiseBaseTitle(currentAnimeDataForJs?.title_romaji || currentAnimeDataForJs?.title || initialTitle || ''));
+  const franBaseTokensForJs = franchiseTitleForJs.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length >= 2);
+  const targetDistinctTokensForJs = getDistinctSeasonTokens(currentSeasonForJs || currentAnimeDataForJs, franBaseTokensForJs);
+  const totalEpsForJs = getReleasedEpisodeCount(currentSeasonForJs) || 
+                        getReleasedEpisodeCount(currentAnimeDataForJs) || 0;
   const seasonTitleForJs = currentSeasonForJs?.title || currentSeasonForJs?.label || '';
   const titleRomajiForJs = currentSeasonForJs?.title_romaji || currentSeasonForJs?.node?.title_romaji || currentAnimeDataForJs?.title_romaji || currentAnimeDataForJs?.titleRomaji || '';
   const titleEnglishForJs = currentSeasonForJs?.title_english || currentSeasonForJs?.node?.title_english || currentAnimeDataForJs?.title_english || currentAnimeDataForJs?.titleEnglish || '';
@@ -364,7 +404,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
   );
   const nextAiringEpForJs = currentSeasonForJs?.nextAiringEpisode?.episode || currentAnimeDataForJs?.nextAiringEpisode?.episode || null;
   const releaseDateStr = formatReleaseDateTr(currentSeasonForJs || currentAnimeDataForJs);
-  const activeHeartbeatJs = `window.__TARGET_TITLE = ${JSON.stringify(targetTitleForJs)}; window.__TARGET_SEASON = ${seasonNumForJs}; window.__TARGET_PART = ${partNumForJs}; window.__TARGET_IS_FINAL = ${isFinalForJs}; window.__TARGET_SEASON_TITLE = ${JSON.stringify(seasonTitleForJs)}; window.__TARGET_TITLE_ROMAJI = ${JSON.stringify(titleRomajiForJs)}; window.__TARGET_TITLE_EN = ${JSON.stringify(titleEnglishForJs)}; window.__TARGET_SYNONYMS = ${JSON.stringify(synonymsForJs)}; window.__TARGET_TOTAL_EPISODES = ${totalEpsForJs}; window.__TARGET_FORMAT = ${JSON.stringify(targetFormatForJs)}; window.__IS_RELEASING = ${isReleasingForJs}; window.__NEXT_AIRING_EP = ${JSON.stringify(nextAiringEpForJs)}; ` + challengeHeartbeatJs;
+  const activeHeartbeatJs = `window.__TARGET_TITLE = ${JSON.stringify(targetTitleForJs)}; window.__TARGET_FRANCHISE = ${JSON.stringify(franchiseTitleForJs)}; window.__IS_NAMED_SEASON = ${isNamedSeasonForJs}; window.__TARGET_DISTINCT_TOKENS = ${JSON.stringify(targetDistinctTokensForJs)}; window.__TARGET_SEASON = ${seasonNumForJs}; window.__TARGET_PART = ${partNumForJs}; window.__TARGET_IS_FINAL = ${isFinalForJs}; window.__TARGET_SEASON_TITLE = ${JSON.stringify(seasonTitleForJs)}; window.__TARGET_TITLE_ROMAJI = ${JSON.stringify(titleRomajiForJs)}; window.__TARGET_TITLE_EN = ${JSON.stringify(titleEnglishForJs)}; window.__TARGET_SYNONYMS = ${JSON.stringify(synonymsForJs)}; window.__TARGET_TOTAL_EPISODES = ${totalEpsForJs}; window.__TARGET_FORMAT = ${JSON.stringify(targetFormatForJs)}; window.__IS_RELEASING = ${isReleasingForJs}; window.__NEXT_AIRING_EP = ${JSON.stringify(nextAiringEpForJs)}; ` + challengeHeartbeatJs;
 
   // ── Heartbeat Bot Solver & Touch Unblocker (Her 1 sn'de bir WebView'a enjekte edilir) ──
   useEffect(() => {
@@ -436,18 +476,40 @@ export default function AnimeDetailScreen({ route, navigation }) {
       const currentSeason = (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))) || (seasons && seasons[0]) || null;
       const currentAnimeData = anime || passedAnime;
       const targetFormat = currentAnimeData?.format || 'TV';
-      const targetTotal = currentAnimeData?.episodes || currentSeason?.episodes || 0;
+      const targetTotal = getReleasedEpisodeCount(currentSeason) || 
+                          getReleasedEpisodeCount(currentAnimeData) || 0;
       const targetTitle = candidateTitle || currentSeason?.title || currentAnimeData?.title || initialTitle || '';
-      const rawEps = await fetchEpisodesForAnime(overviewUrl, targetTotal, targetTitle, targetFormat);
-      if (rawEps && rawEps.length > 0) {
-        const formattedEps = formatAndFilterEpisodes(rawEps, activeMongoId, targetTotal, targetTitle, currentAnimeData?.banner_image || currentAnimeData?.cover_image, targetFormat);
+      const rawEps = await fetchEpisodesForAnime(overviewUrl, targetTotal, targetTitle, targetFormat, 50);
+      const effectiveTotal = targetTotal || rawEps.totalCount || rawEps.length;
+      let epsToFormat = rawEps;
+      if (effectiveTotal > epsToFormat.length && epsToFormat.length > 0) {
+        epsToFormat = completeMissingEpisodes(epsToFormat, effectiveTotal, targetTitle, currentAnimeData?.banner_image || currentAnimeData?.cover_image, 50);
+      } else if (epsToFormat.length > 50) {
+        epsToFormat = epsToFormat.slice(0, 50);
+      }
+      if (epsToFormat && epsToFormat.length > 0) {
+        const formattedEps = formatAndFilterEpisodes(epsToFormat, activeMongoId, effectiveTotal, targetTitle, currentAnimeData?.banner_image || currentAnimeData?.cover_image, targetFormat);
         setEpisodes(formattedEps);
-        addLog(`🎉 [TAMAMLANDI] ${formattedEps.length} adet bölüm listelendi!`, 'success');
+        setTotalEpisodesCount(effectiveTotal);
+        setHasMoreEpisodes(effectiveTotal > formattedEps.length);
+        episodePaginationRef.current = {
+          overviewUrl,
+          paginationLinks: rawEps.paginationLinks || [],
+          targetTotal: effectiveTotal,
+          animeTitle: targetTitle,
+          targetFormat,
+          defaultThumb: currentAnimeData?.banner_image || currentAnimeData?.cover_image,
+          currentLimit: formattedEps.length,
+          rawPool: rawEps
+        };
+        addLog(`🎉 [TAMAMLANDI] İlk ${formattedEps.length} adet bölüm listelendi!${effectiveTotal > formattedEps.length ? ` (Toplam: ${effectiveTotal})` : ''}`, 'success');
 
         seasonCacheRef.current[activeMongoId] = {
           ...(seasonCacheRef.current[activeMongoId] || {}),
           episodes: formattedEps,
-          selectedCandidateUrl: overviewUrl
+          selectedCandidateUrl: overviewUrl,
+          totalCount: effectiveTotal,
+          paginationLinks: rawEps.paginationLinks || []
         };
         return formattedEps;
       } else {
@@ -501,8 +563,18 @@ export default function AnimeDetailScreen({ route, navigation }) {
     if (cached) {
       if (cached.anime) setAnime(cached.anime);
       if (cached.episodes && cached.episodes.length > 0) {
-        const cleaned = formatAndFilterEpisodes(cached.episodes, activeMongoId, cached.anime?.episodes || 0, cached.anime?.title);
+        const effTotal = cached.totalCount || cached.anime?.episodes || cached.episodes.length;
+        const cleaned = formatAndFilterEpisodes(cached.episodes, activeMongoId, effTotal, cached.anime?.title);
         setEpisodes(cleaned);
+        setTotalEpisodesCount(effTotal);
+        setHasMoreEpisodes(effTotal > cleaned.length);
+        episodePaginationRef.current = {
+          overviewUrl: cached.selectedCandidateUrl || '',
+          paginationLinks: cached.paginationLinks || [],
+          targetTotal: effTotal,
+          currentLimit: cleaned.length,
+          rawPool: cached.episodes
+        };
         setLoadingEpisodes(false);
       }
       setLoading(false);
@@ -615,14 +687,17 @@ export default function AnimeDetailScreen({ route, navigation }) {
         const seasonNum = currentSeason?.season_number || detectSeasonNumber(currentSeason?.title || currentSeason?.label || targetTitle, 1);
         const partNum = currentSeason?.part_number || detectPartNumber(currentSeason?.title || currentSeason?.label || targetTitle, 1);
         const isFinal = Boolean(currentSeason?.is_final || /(?:final\s*(?:season|sezon)|the\s*final|son\s*sezon|\(final\))/i.test(currentSeason?.title || currentSeason?.label || targetTitle));
-        const targetTotal = currentAnimeData?.episodes || currentSeason?.episodes || 0;
+        const targetTotal = getReleasedEpisodeCount(currentSeason) || 
+                            getReleasedEpisodeCount(currentAnimeData) || 0;
         const targetFormat = currentAnimeData?.format || 'TV';
 
         const searchPayload = {
           title_romaji: currentSeason?.title_romaji || currentSeason?.node?.title_romaji || currentAnimeData?.title_romaji || currentAnimeData?.titleRomaji || '',
           title_english: currentSeason?.title_english || currentSeason?.node?.title_english || currentAnimeData?.title_english || currentAnimeData?.titleEnglish || '',
           title: currentSeason?.title || currentSeason?.label || currentAnimeData?.title || initialTitle || '',
-          season_title: currentSeason?.label || currentSeason?.title || '',
+          season_title: currentSeason?.title || currentSeason?.label || '',
+          franchise_title: currentAnimeData?.title_romaji || currentAnimeData?.title || '',
+          parent_title: currentAnimeData?.title_romaji || currentAnimeData?.title || '',
           orijinal_ad: currentSeason?.node?.orijinal_ad || currentAnimeData?.orijinal_ad || '',
           synonyms: [
             ...(currentSeason?.node?.synonyms || []),
@@ -634,12 +709,54 @@ export default function AnimeDetailScreen({ route, navigation }) {
           is_final: isFinal
         };
 
+        const activeSeasonAniListId = currentSeason?.anilist_id || currentSeason?.node?.id || currentSeason?.id || (typeof initialId === 'number' ? initialId : parseInt(initialId, 10)) || null;
+        const metaSearchTitle = currentSeason?.title_english || currentSeason?.title_romaji || currentSeason?.title || currentAnimeData?.title_english || currentAnimeData?.title_romaji || targetTitle || '';
+
+        // AniList / Kitsu bölüm başlıklarını ve yüksek kaliteli kapak fotoğraflarını sezona özel olarak çek
+        let metaFetchPromise = null;
+        if (activeSeasonAniListId || metaSearchTitle) {
+          metaFetchPromise = fetchAniListEpisodeMetadata(activeSeasonAniListId, metaSearchTitle, seasonNum).then(meta => {
+            if (meta && Object.keys(meta).length > 0 && !cancelled) {
+              episodeMetadataRef.current[activeMongoId] = meta;
+              // Zaten yüklenmiş veya render edilmiş bölümler varsa gerçek AniList isimleriyle güncelle
+              setEpisodes(prev => {
+                if (!prev || prev.length === 0) return prev;
+                return prev.map(ep => {
+                  const m = meta[ep.episode_number];
+                  if (!m) return ep;
+                  const newTitle = targetFormat === 'MOVIE' ? (m.title || ep.episode_title) : `${ep.episode_number}. Bölüm - ${m.title}`;
+                  const newThumb = m.thumbnail || ep.thumbnail;
+                  return {
+                    ...ep,
+                    episode_title: newTitle,
+                    thumbnail: newThumb
+                  };
+                });
+              });
+            }
+            return meta;
+          }).catch(() => ({}));
+        }
+
         // Önbellek kontrolü (Eğer bu sezon zaten çekildiyse anında yükle)
         const cachedSeasonData = seasonCacheRef.current[activeMongoId];
         if (cachedSeasonData && cachedSeasonData.episodes && cachedSeasonData.episodes.length > 0) {
-          const cleaned = formatAndFilterEpisodes(cachedSeasonData.episodes, activeMongoId, targetTotal, targetTitle, currentAnimeData?.banner_image || currentAnimeData?.cover_image, targetFormat);
+          const effTotal = cachedSeasonData.totalCount || targetTotal || cachedSeasonData.episodes.length;
+          const cleaned = formatAndFilterEpisodes(cachedSeasonData.episodes, activeMongoId, effTotal, targetTitle, currentAnimeData?.banner_image || currentAnimeData?.cover_image, targetFormat);
           if (!cancelled) {
             setEpisodes(cleaned);
+            setTotalEpisodesCount(effTotal);
+            setHasMoreEpisodes(effTotal > cleaned.length);
+            episodePaginationRef.current = {
+              overviewUrl: cachedSeasonData.selectedCandidateUrl || '',
+              paginationLinks: cachedSeasonData.paginationLinks || [],
+              targetTotal: effTotal,
+              animeTitle: targetTitle,
+              targetFormat,
+              defaultThumb: currentAnimeData?.banner_image || currentAnimeData?.cover_image,
+              currentLimit: cleaned.length,
+              rawPool: cachedSeasonData.episodes
+            };
             setLoadingEpisodes(false);
           }
           return;
@@ -664,34 +781,65 @@ export default function AnimeDetailScreen({ route, navigation }) {
           setSearchQueryInput(targetTitle);
           addLog(`🚀 Sezon ${seasonNum}${partNum > 1 ? ` (${partNum}. Kısım)` : ''} ("${targetTitle}") için arama yapılıp bölümler getiriliyor...`, 'info');
           if (!cancelled) {
+            // AniList bölüm meta verilerinin hızlıca gelmesi için maksimum 500ms bekle (kullanıcıyı asla bekletmez)
+            if (metaFetchPromise) {
+              await Promise.race([metaFetchPromise, new Promise(r => setTimeout(r, 500))]);
+            }
+
             const pipelineRes = await searchAndExtractEpisodes(searchPayload, seasonNum);
             if (pipelineRes.success && pipelineRes.episodes.length > 0) {
-              const formattedEps = formatAndFilterEpisodes(pipelineRes.episodes, activeMongoId, targetTotal, targetTitle, currentAnimeData?.banner_image || currentAnimeData?.cover_image, targetFormat);
+              const effectiveTotal = targetTotal || pipelineRes.episodes.totalCount || pipelineRes.total || pipelineRes.episodes.length;
+              let epsToFormat = pipelineRes.episodes;
+              if (effectiveTotal > epsToFormat.length && epsToFormat.length > 0) {
+                epsToFormat = completeMissingEpisodes(epsToFormat, effectiveTotal, targetTitle, currentAnimeData?.banner_image || currentAnimeData?.cover_image, 50);
+              } else if (epsToFormat.length > 50) {
+                epsToFormat = epsToFormat.slice(0, 50);
+              }
+              const formattedEps = formatAndFilterEpisodes(epsToFormat, activeMongoId, effectiveTotal, targetTitle, currentAnimeData?.banner_image || currentAnimeData?.cover_image, targetFormat);
               if (!cancelled) {
                 setEpisodes(formattedEps);
+                setTotalEpisodesCount(effectiveTotal);
+                setHasMoreEpisodes(effectiveTotal > formattedEps.length);
+                episodePaginationRef.current = {
+                  overviewUrl: pipelineRes.targetUrl,
+                  paginationLinks: pipelineRes.episodes.paginationLinks || [],
+                  targetTotal: effectiveTotal,
+                  animeTitle: targetTitle,
+                  targetFormat,
+                  defaultThumb: currentAnimeData?.banner_image || currentAnimeData?.cover_image,
+                  currentLimit: formattedEps.length,
+                  rawPool: pipelineRes.episodes
+                };
                 setLoadingEpisodes(false);
-                addLog(`🎉 [BÖLÜMLER LİSTELENDİ] ${formattedEps.length} adet bölüm başarıyla yüklendi!`, 'success');
+                addLog(`🎉 [BÖLÜMLER LİSTELENDİ] İlk ${formattedEps.length} adet bölüm başarıyla yüklendi!${effectiveTotal > formattedEps.length ? ` (Toplam: ${effectiveTotal})` : ''}`, 'success');
               }
               seasonCacheRef.current[activeMongoId] = {
                 anime: currentAnimeData,
                 episodes: formattedEps,
-                selectedCandidateUrl: pipelineRes.targetUrl
+                selectedCandidateUrl: pipelineRes.targetUrl,
+                totalCount: effectiveTotal,
+                paginationLinks: pipelineRes.episodes.paginationLinks || []
               };
             } else {
               // HTTP başarısız (Cloudflare veya boş) — WebView Arama Fallback
               let bestQuery = pipelineRes.bestSearchQuery;
-              if (!bestQuery) {
-                const baseQuery = getCleanSearchQuery(currentAnimeData?.title_romaji || currentAnimeData?.title || targetTitle);
-                if (isFinal && partNum > 1) {
-                  bestQuery = `${baseQuery} Final Sezon ${partNum}. Kısım`;
-                } else if (partNum > 1) {
-                  bestQuery = `${baseQuery} ${seasonNum}. Sezon ${partNum}. Kısım`;
-                } else if (isFinal) {
-                  bestQuery = `${baseQuery} Final Sezon`;
-                } else if (seasonNum > 1) {
-                  bestQuery = `${baseQuery} ${seasonNum}. Sezon`;
+              if (!bestQuery || /\b(?:2nd|3rd|4th|5th|6th|7th|8th)\s*season\b/i.test(bestQuery)) {
+                const isNamed = !hasExplicitSeasonNumber(currentSeason?.title || currentSeason?.label) && seasonNum > 1;
+                if (isNamed) {
+                  bestQuery = getCleanSearchQuery(currentSeason?.title || currentSeason?.label || targetTitle);
                 } else {
-                  bestQuery = baseQuery;
+                  const baseQuery = getCleanSearchQuery(currentAnimeData?.title_romaji || currentAnimeData?.title || targetTitle);
+                  if (isFinal && partNum > 1) {
+                    bestQuery = `${baseQuery} Final Sezon ${partNum}. Kısım`;
+                  } else if (partNum > 1) {
+                    bestQuery = `${baseQuery} ${seasonNum}. Sezon ${partNum}. Kısım`;
+                  } else if (isFinal) {
+                    bestQuery = `${baseQuery} Final Sezon`;
+                  } else if (seasonNum > 1) {
+                    bestQuery = `${baseQuery} ${seasonNum}. Sezon`;
+                  } else {
+                    bestQuery = baseQuery;
+                  }
                 }
               }
               const searchUrl = `${BASE_URL}/arama/${encodeURIComponent(bestQuery)}`;
@@ -730,6 +878,17 @@ export default function AnimeDetailScreen({ route, navigation }) {
   // ── Handlers ─────────────────────────────────────────────────
   const handleSeasonSelect = useCallback((seasonId) => {
     if (seasonId === activeMongoId) return;
+    setEpisodes([]);
+    setHasMoreEpisodes(false);
+    setLoadingMoreEpisodes(false);
+    isFetchingMoreRef.current = false;
+    episodePaginationRef.current = {
+      overviewUrl: '',
+      paginationLinks: [],
+      targetTotal: 0,
+      currentLimit: 50,
+      rawPool: []
+    };
     setActiveMongoId(seasonId);
   }, [activeMongoId]);
 
@@ -752,6 +911,89 @@ export default function AnimeDetailScreen({ route, navigation }) {
       setCustomLists(res.customLists);
     }
   };
+
+  // ── Kademeli Bölüm Yükleme (Sonraki 50 Bölümü Scrape Et / Getir) ─
+  const handleLoadMoreEpisodes = useCallback(async () => {
+    if (isFetchingMoreRef.current || !hasMoreEpisodes || loadingEpisodes) return;
+
+    const currentSeason = (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))) || (seasons && seasons[0]) || null;
+    const currentAnimeData = anime || passedAnime;
+    const targetFormat = currentAnimeData?.format || 'TV';
+    const targetTitle = currentSeason?.title || currentAnimeData?.title_romaji || currentAnimeData?.title || initialTitle || '';
+    const thumb = currentAnimeData?.banner_image || currentAnimeData?.cover_image || '';
+    const currentCount = episodes.length;
+    const targetTotal = totalEpisodesCount || getReleasedEpisodeCount(currentSeason) || getReleasedEpisodeCount(currentAnimeData) || 0;
+
+    if (targetTotal > 0 && currentCount >= targetTotal) {
+      setHasMoreEpisodes(false);
+      return;
+    }
+
+    isFetchingMoreRef.current = true;
+    setLoadingMoreEpisodes(true);
+    addLog(`⏳ Sonraki 50 bölüm taranıyor (${currentCount + 1} - ${Math.min(currentCount + 50, targetTotal || (currentCount + 50))})...`, 'info');
+
+    try {
+      const paginationState = episodePaginationRef.current || {};
+      const res = await fetchNextEpisodesBatch({
+        overviewUrl: paginationState.overviewUrl || selectedCandidateUrl || '',
+        currentCount,
+        batchSize: 50,
+        targetTotal,
+        animeTitle: targetTitle,
+        targetFormat,
+        defaultThumb: thumb,
+        paginationLinks: paginationState.paginationLinks || [],
+        existingEpisodes: paginationState.rawPool || episodes
+      });
+
+      if (res.newEpisodes && res.newEpisodes.length > 0) {
+        const newlyFormatted = formatAndFilterEpisodes(
+          res.newEpisodes,
+          activeMongoId,
+          targetTotal,
+          targetTitle,
+          thumb,
+          targetFormat
+        );
+
+        setEpisodes(prev => {
+          const existingNums = new Set(prev.map(e => e.episode_number));
+          const filteredNew = newlyFormatted.filter(e => !existingNums.has(e.episode_number));
+          const updated = [...prev, ...filteredNew];
+          if (seasonCacheRef.current[activeMongoId]) {
+            seasonCacheRef.current[activeMongoId].episodes = updated;
+          }
+          return updated;
+        });
+
+        episodePaginationRef.current = {
+          ...paginationState,
+          currentLimit: currentCount + res.newEpisodes.length,
+          rawPool: res.episodes
+        };
+
+        setHasMoreEpisodes(res.hasMore);
+        addLog(`🎉 +${newlyFormatted.length} adet yeni bölüm başarıyla eklendi! (Toplam gösterilen: ${currentCount + newlyFormatted.length})`, 'success');
+      } else {
+        setHasMoreEpisodes(false);
+        addLog(`ℹ️ Gösterilecek başka bölüm bulunamadı.`, 'info');
+      }
+    } catch (err) {
+      addLog(`❌ Sonraki bölümler çekilirken hata: ${err.message}`, 'error');
+    } finally {
+      isFetchingMoreRef.current = false;
+      setLoadingMoreEpisodes(false);
+    }
+  }, [hasMoreEpisodes, loadingEpisodes, episodes, seasons, anime, passedAnime, activeMongoId, initialTitle, totalEpisodesCount, addLog, selectedCandidateUrl, formatAndFilterEpisodes]);
+
+  const handleScroll = useCallback((event) => {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    const paddingToBottom = 350;
+    if (layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom) {
+      handleLoadMoreEpisodes();
+    }
+  }, [handleLoadMoreEpisodes]);
 
 
   // ── Derived dynamic values ───────────────────────────────────
@@ -851,6 +1093,8 @@ export default function AnimeDetailScreen({ route, navigation }) {
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
         bounces={false}
+        onScroll={handleScroll}
+        scrollEventThrottle={200}
       >
         {/* ── Banner + Poster Header ──────────────────── */}
         <View style={styles.bannerContainer}>
@@ -1080,7 +1324,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
         <View style={styles.section}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.md }}>
             <Text style={[styles.sectionTitle, { marginBottom: 0 }]}>
-              {activeLabel} — {isCurrentSeasonUpcoming ? 'Yayın Bilgisi' : `Bölümler ${episodes.length > 0 ? `(${episodes.length})` : ''}`}
+              {activeLabel} — {isCurrentSeasonUpcoming ? 'Yayın Bilgisi' : `Bölümler ${episodes.length > 0 ? `(${episodes.length}${totalEpisodesCount > episodes.length ? ` / ${totalEpisodesCount}` : ''})` : ''}`}
             </Text>
             {episodes.length > 0 && (
               <TouchableOpacity
@@ -1174,6 +1418,30 @@ export default function AnimeDetailScreen({ route, navigation }) {
                   {renderEpisodeCard({ item: ep })}
                 </View>
               ))}
+
+              {/* ── Kademeli Bölüm Yükleme Göstergesi & Butonu ── */}
+              {loadingMoreEpisodes ? (
+                <View style={styles.loadingMoreBox}>
+                  <ActivityIndicator size="small" color={COLORS.accent} />
+                  <Text style={styles.loadingMoreText}>Sonraki 50 bölüm taranıyor ve yükleniyor...</Text>
+                </View>
+              ) : hasMoreEpisodes ? (
+                <TouchableOpacity
+                  style={styles.loadMoreBtn}
+                  onPress={handleLoadMoreEpisodes}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="arrow-down-circle-outline" size={18} color={COLORS.accent} />
+                  <Text style={styles.loadMoreBtnText}>Daha Fazla Bölüm Yükle (+50)</Text>
+                </TouchableOpacity>
+              ) : episodes.length > 50 ? (
+                <View style={styles.allEpisodesLoadedBox}>
+                  <Ionicons name="checkmark-done-circle-outline" size={16} color={COLORS.textMuted} />
+                  <Text style={styles.allEpisodesLoadedText}>
+                    Tüm bölümler listelendi ({episodes.length} / {totalEpisodesCount || episodes.length})
+                  </Text>
+                </View>
+              ) : null}
             </Animated.View>
           )}
         </View>
@@ -1366,9 +1634,12 @@ export default function AnimeDetailScreen({ route, navigation }) {
                     const isFinal = Boolean(currentSeason?.is_final || /(?:final\s*(?:season|sezon)|the\s*final|son\s*sezon|\(final\))/i.test(rawCandidateTargetT));
 
                     const animeMatchingPayload = {
-                      title_romaji: currentSeason?.node?.title_romaji || currentAnimeData?.title_romaji || currentAnimeData?.titleRomaji || '',
-                      title_english: currentSeason?.node?.title_english || currentAnimeData?.title_english || currentAnimeData?.titleEnglish || '',
+                      title_romaji: currentSeason?.title_romaji || currentSeason?.node?.title_romaji || currentAnimeData?.title_romaji || currentAnimeData?.titleRomaji || '',
+                      title_english: currentSeason?.title_english || currentSeason?.node?.title_english || currentAnimeData?.title_english || currentAnimeData?.titleEnglish || '',
                       title: currentSeason?.title || currentSeason?.label || currentAnimeData?.title || initialTitle || '',
+                      season_title: currentSeason?.title || currentSeason?.label || '',
+                      franchise_title: currentAnimeData?.title_romaji || currentAnimeData?.title || '',
+                      parent_title: currentAnimeData?.title_romaji || currentAnimeData?.title || '',
                       orijinal_ad: currentSeason?.node?.orijinal_ad || currentAnimeData?.orijinal_ad || '',
                       synonyms: [
                         ...(currentSeason?.node?.synonyms || []),
@@ -1419,75 +1690,123 @@ export default function AnimeDetailScreen({ route, navigation }) {
                         webViewRef.current.injectJavaScript(`if (window.location.pathname.indexOf('/arama') !== -1 || window.location.href.indexOf('/arama') !== -1) { window.location.replace("${target}"); } true;`);
                       }
                     } else {
-                      addLog(`⚠️ [SEZON BULUNAMADI] Sezon ${seasonNum}${partNum > 1 ? ` (${partNum}. Kısım)` : ''} için bu sayfada eşleşen aday yok. Otomatik sezona özel arama tetikleniyor...`, 'warn');
-                      if ((seasonNum > 1 || partNum > 1 || isFinal) && webViewRef.current && !hasRetriedSeasonSearchRef.current[activeMongoId]) {
-                        hasRetriedSeasonSearchRef.current[activeMongoId] = true;
+                      const retryAttempts = hasRetriedSeasonSearchRef.current[activeMongoId] || 0;
+                      if ((seasonNum > 1 || partNum > 1 || isFinal || synonymsForJs.length > 0) && webViewRef.current && retryAttempts < 2) {
+                        hasRetriedSeasonSearchRef.current[activeMongoId] = retryAttempts + 1;
+                        addLog(`⚠️ [SEZON BULUNAMADI] Sezon ${seasonNum}${partNum > 1 ? ` (${partNum}. Kısım)` : ''} için ilk aramada aday bulunamadı. Alternatif arama yapılıyor...`, 'warn');
+                        
                         let retryQuery = '';
-                        if (isFinal && partNum > 1) {
-                          retryQuery = `${targetTitleForJs} Final Sezon ${partNum}. Kısım`;
-                        } else if (partNum > 1) {
-                          retryQuery = `${targetTitleForJs} ${seasonNum}. Sezon ${partNum}. Kısım`;
-                        } else if (isFinal) {
-                          retryQuery = `${targetTitleForJs} Final Sezon`;
-                        } else {
-                          retryQuery = `${targetTitleForJs} ${seasonNum}. Sezon`;
+                        const isNamedRetry = !hasExplicitSeasonNumber(currentSeason?.title || currentSeason?.label) && seasonNum > 1;
+                        if (retryAttempts === 0) {
+                          if (isNamedRetry) {
+                            retryQuery = getCleanSearchQuery(currentSeason?.title || currentSeason?.label || targetTitleForJs);
+                          } else if (isFinal && partNum > 1) {
+                            retryQuery = `${targetTitleForJs} Final Sezon ${partNum}. Kısım`;
+                          } else if (partNum > 1) {
+                            retryQuery = `${targetTitleForJs} ${seasonNum}. Sezon ${partNum}. Kısım`;
+                          } else if (isFinal) {
+                            retryQuery = `${targetTitleForJs} Final Sezon`;
+                          } else if (seasonNum > 1) {
+                            retryQuery = `${targetTitleForJs} ${seasonNum}. Sezon`;
+                          } else {
+                            retryQuery = targetTitleForJs;
+                          }
+                        } else if (retryAttempts === 1) {
+                          if (isNamedRetry) {
+                            retryQuery = franchiseTitleForJs || getFranchiseBaseTitle(currentAnimeData?.title_romaji || currentAnimeData?.title || '');
+                          } else if (synonymsForJs.length > 0) {
+                            const synClean = getCleanSearchQuery(synonymsForJs[0]);
+                            if (synClean) {
+                              if (seasonNum > 1) {
+                                retryQuery = `${synClean} ${seasonNum}. Sezon`;
+                              } else {
+                                retryQuery = synClean;
+                              }
+                            }
+                          }
                         }
-                        const retryUrl = `${BASE_URL}/arama/${encodeURIComponent(retryQuery)}`;
-                        addLog(`🔄 [ARAMA YENİLENİYOR] Sezon ${seasonNum}${partNum > 1 ? ` (${partNum}. Kısım)` : ''} için özel arama yapılıyor: ${retryUrl}`, 'info');
-                        setSelectedCandidateUrl(retryUrl);
-                        setChallengeUrl(retryUrl);
-                        webViewRef.current.injectJavaScript(`window.location.replace("${retryUrl}"); true;`);
+
+                        if (retryQuery) {
+                          const retryUrl = `${BASE_URL}/arama/${encodeURIComponent(retryQuery)}`;
+                          addLog(`🔄 [ARAMA YENİLENİYOR] Sezon ${seasonNum}${partNum > 1 ? ` (${partNum}. Kısım)` : ''} için özel arama yapılıyor: ${retryUrl}`, 'info');
+                          setSelectedCandidateUrl(retryUrl);
+                          setChallengeUrl(retryUrl);
+                          webViewRef.current.injectJavaScript(`window.location.replace("${retryUrl}"); true;`);
+                        }
+                      } else {
+                        if (!hasRetriedSeasonSearchRef.current[activeMongoId + '_stopped']) {
+                          hasRetriedSeasonSearchRef.current[activeMongoId + '_stopped'] = true;
+                          addLog(`⚠️ Sezon ${seasonNum}${partNum > 1 ? ` (${partNum}. Kısım)` : ''} için sitede uygun bölüm/sayfa bulunamadı.`, 'warn');
+                          setLoadingEpisodes(false);
+                        }
                       }
                     }
                   } else if (data.type === 'episodes_extracted' && Array.isArray(data.episodes) && data.episodes.length > 0) {
                     addLog(`🎉 WebView köprüsü üzerinden ${data.episodes.length} adet bölüm başarıyla çıkarıldı!`, 'success');
                     const currentSeason = (seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))) || (seasons && seasons[0]) || null;
                     const currentAnimeData = anime || passedAnime;
-                    const targetTotal = currentAnimeData?.episodes || currentSeason?.episodes || 0;
+                    const targetTotal = getReleasedEpisodeCount(currentSeason) || 
+                                        getReleasedEpisodeCount(currentAnimeData) || data.total || 0;
                     const targetTitle = currentSeason?.title || currentAnimeData?.title_romaji || currentAnimeData?.title || initialTitle || '';
                     const thumb = currentAnimeData?.banner_image || currentAnimeData?.cover_image || '';
                     const targetFormat = currentAnimeData?.format || 'TV';
-                    let formatted = formatAndFilterEpisodes(data.episodes, activeMongoId, targetTotal, targetTitle, thumb, targetFormat);
+                    const effectiveTotal = targetTotal || data.total || data.episodes.length;
+                    let rawExtracted = data.episodes;
+                    if (effectiveTotal > rawExtracted.length && rawExtracted.length > 0) {
+                      rawExtracted = completeMissingEpisodes(rawExtracted, effectiveTotal, targetTitle, thumb, 50);
+                    } else if (rawExtracted.length > 50) {
+                      rawExtracted = rawExtracted.slice(0, 50);
+                    }
+                    let formatted = formatAndFilterEpisodes(rawExtracted, activeMongoId, effectiveTotal, targetTitle, thumb, targetFormat);
 
                     if (!formatted || formatted.length === 0) {
-                      // Güvenli Kurtarma Fallback'i: Eğer tümü filtrelendiyse bile data.episodes'u temel formatla kullan (sahte/çıkmamış bölümler kesinlikle hariç)
-                      formatted = (data.episodes || [])
-                        .filter(e => !e.is_deduced && (!nextAiringEpForJs || e.number < nextAiringEpForJs))
-                        .map(e => ({
-                          _id: `${activeMongoId || 'ep'}_${e.number}`,
-                          episode_number: e.number,
-                          episode_title: e.title || `${e.number}. Bölüm`,
-                          url: e.url,
-                          thumbnail: e.thumbnail || thumb || null,
-                          release_date: e.release_date || null
-                        }));
+                      // Güvenli Kurtarma Fallback'i: Eğer tümü filtrelendiyse bile rawExtracted'i temel formatla kullan
+                      formatted = (rawExtracted || [])
+                        .map(e => {
+                          const epMeta = (episodeMetadataRef.current[activeMongoId] || {})[e.number];
+                          const epTitle = epMeta?.title 
+                            ? (targetFormat === 'MOVIE' ? epMeta.title : `${e.number}. Bölüm - ${epMeta.title}`) 
+                            : (targetFormat === 'MOVIE' ? (targetTitle || 'Film') : `${e.number}. Bölüm`);
+                          return {
+                            _id: `${activeMongoId || 'ep'}_${e.number}`,
+                            episode_number: e.number,
+                            episode_title: epTitle,
+                            url: e.url,
+                            thumbnail: epMeta?.thumbnail || e.thumbnail || thumb || null,
+                            release_date: e.release_date || null
+                          };
+                        });
                     }
 
                     setEpisodes(formatted);
+                    setTotalEpisodesCount(effectiveTotal);
+                    setHasMoreEpisodes(effectiveTotal > formatted.length);
+                    episodePaginationRef.current = {
+                      overviewUrl: data.url || challengeUrl || selectedCandidateUrl,
+                      paginationLinks: [],
+                      targetTotal: effectiveTotal,
+                      animeTitle: targetTitle,
+                      targetFormat,
+                      defaultThumb: thumb,
+                      currentLimit: formatted.length,
+                      rawPool: rawExtracted
+                    };
                     setLoadingEpisodes(false);
                     setIsChallengeModalVisible(false);
                     seasonCacheRef.current[activeMongoId] = {
                       anime: currentAnimeData,
                       episodes: formatted,
-                      selectedCandidateUrl: challengeUrl || selectedCandidateUrl
+                      selectedCandidateUrl: challengeUrl || selectedCandidateUrl,
+                      totalCount: effectiveTotal
                     };
-                    addLog(`✅ [BAŞARILI] ${formatted.length} bölüm listelendi!`, 'success');
+                    addLog(`✅ [BAŞARILI] İlk ${formatted.length} bölüm listelendi!${effectiveTotal > formatted.length ? ` (Toplam: ${effectiveTotal})` : ''}`, 'success');
                   } else if (data.type === 'resolved') {
                     addLog('🎉 Doğrulama başarılı!', 'success');
                   }
                 } catch(e) {}
               }}
               onShouldStartLoadWithRequest={(request) => {
-                const url = (request.url || '').toLowerCase();
-                const adKeywords = [
-                  'syndication', 'clickadu', 'propellerads', 'adcash', 'adsterra',
-                  'doubleclick', 'googleads', 'wargamings.net', 'maxihalisaha',
-                  'deloplen', 'highcpmgate', 'monetag', 'cp-host', 'exdynsrv',
-                  'popunder', 'betting', 'casino', 'popigram', 'bayigram',
-                  'sosyalgram', 'sosyalevin', '1xbet'
-                ];
-                if (adKeywords.some(kw => url.includes(kw))) {
-                  addLog(`🚫 [REKLAM ENGELLENDİ] ${request.url}`, 'info');
+                if (shouldBlockNetworkRequest(request.url)) {
                   return false;
                 }
                 return true;
@@ -1974,6 +2293,53 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 107, 0, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  loadingMoreBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: SPACING.md,
+    backgroundColor: 'rgba(255, 107, 0, 0.08)',
+    borderRadius: BORDER_RADIUS.md,
+    marginVertical: SPACING.md,
+    gap: SPACING.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 0, 0.25)',
+  },
+  loadingMoreText: {
+    color: COLORS.textPrimary,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.medium,
+  },
+  loadMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    backgroundColor: 'rgba(255, 107, 0, 0.12)',
+    borderRadius: BORDER_RADIUS.md,
+    marginVertical: SPACING.md,
+    gap: SPACING.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 0, 0.35)',
+  },
+  loadMoreBtnText: {
+    color: COLORS.accent,
+    fontSize: FONT_SIZES.body,
+    fontWeight: FONT_WEIGHTS.bold,
+  },
+  allEpisodesLoadedBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: SPACING.md,
+    marginTop: SPACING.sm,
+    gap: 6,
+  },
+  allEpisodesLoadedText: {
+    color: COLORS.textMuted,
+    fontSize: FONT_SIZES.small,
+    fontWeight: FONT_WEIGHTS.medium,
   },
 
   // ── Modal ───────────────────────────────────────

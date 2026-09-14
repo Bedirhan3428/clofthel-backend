@@ -16,8 +16,8 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { COLORS, SPACING, FONT_SIZES, FONT_WEIGHTS, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { API_BASE_URL } from '../constants/config';
 import TouchInjector from '../modules/TouchInjector';
-import { scraperInjectedJs } from '../modules/ScraperScript';
 import { challengeHeartbeatJs } from '../modules/ChallengeHeartbeat';
+import { shouldBlockNetworkRequest } from '../modules/ResourceFilter';
 import { getPlayerPreferences, DEFAULT_PREFERENCES } from '../utils/preferences';
 
 let WebView = null;
@@ -263,16 +263,7 @@ export default function NetworkChallengeResolver({
             }}
             onMessage={handleWebViewMessage}
             onShouldStartLoadWithRequest={(request) => {
-              const url = (request.url || '').toLowerCase();
-              const adKeywords = [
-                'syndication', 'clickadu', 'propellerads', 'adcash', 'adsterra',
-                'doubleclick', 'googleads', 'wargamings.net', 'maxihalisaha',
-                'deloplen', 'highcpmgate', 'monetag', 'cp-host', 'exdynsrv',
-                'popunder', 'betting', 'casino', 'popigram', 'bayigram',
-                'sosyalgram', 'sosyalevin', '1xbet'
-              ];
-              if (adKeywords.some(kw => url.includes(kw))) {
-                console.log('[ChallengeResolver Ad Blocked]', request.url);
+              if (shouldBlockNetworkRequest(request.url)) {
                 return false;
               }
               return true;

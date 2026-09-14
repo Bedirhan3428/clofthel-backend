@@ -29,6 +29,7 @@ import {
 import { AuthContext } from '../context/AuthContext';
 import { useAlert } from '../context/AlertContext';
 import TouchInjector from '../modules/TouchInjector';
+import { shouldBlockNetworkRequest, clientResourceBlockerJs } from '../modules/ResourceFilter';
 
 let WebView = null;
 if (Platform.OS !== 'web') {
@@ -307,7 +308,7 @@ export default function HomeScreen() {
     }
   };
 
-  const silentInjectedJs = `
+  const silentInjectedJs = `${clientResourceBlockerJs}\n` + `
     try {
       (function() {
         if (window.__scraper_initialized) return;
@@ -733,7 +734,10 @@ export default function HomeScreen() {
             mediaPlaybackRequiresUserAction={false}
             setSupportMultipleWindows={false}
             onShouldStartLoadWithRequest={(request) => {
-              const url = request.url;
+              if (shouldBlockNetworkRequest(request.url)) {
+                return false;
+              }
+              const url = request.url || '';
               return url.includes('tranimeizle.io') || url.includes('Captcha') || url.includes('challenge') || url.startsWith('about:blank') || url.startsWith('data:');
             }}
           />
