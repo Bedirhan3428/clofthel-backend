@@ -47,9 +47,13 @@ const UserSchema = new mongoose.Schema({
   expoPushTokens: [{
     type: String
   }],
-  avatar: {
+  resetPasswordCode: {
     type: String,
-    default: 'no-photo.jpg'
+    select: false
+  },
+  resetPasswordExpires: {
+    type: Date,
+    select: false
   },
   favorites: [{
     type: mongoose.Schema.ObjectId,

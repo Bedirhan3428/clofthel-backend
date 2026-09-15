@@ -18,6 +18,7 @@ import AiRecommendationScreen from './src/screens/AiRecommendationScreen';
 import AccountSettingsScreen from './src/screens/AccountSettingsScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
 import PlayerSettingsScreen from './src/screens/PlayerSettingsScreen';
+import SettingsScreen from './src/screens/SettingsScreen';
 import { AuthProvider } from './src/context/AuthContext';
 import { AlertProvider } from './src/context/AlertContext';
 import * as Notifications from 'expo-notifications';
@@ -85,6 +86,7 @@ export default function App() {
             <Stack.Screen name="AiRecommendation" component={AiRecommendationScreen} />
             <Stack.Screen name="AccountSettings" component={AccountSettingsScreen} />
             <Stack.Screen name="PlayerSettings" component={PlayerSettingsScreen} />
+            <Stack.Screen name="Settings" component={SettingsScreen} />
             <Stack.Screen name="Notifications" component={NotificationsScreen} />
           </Stack.Navigator>
         </NavigationContainer>

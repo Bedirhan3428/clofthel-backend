@@ -147,6 +147,89 @@ export async function getFansubOffsetSeconds(fansubList = []) {
 /**
  * Fetches AniSkip opening & ending intervals for the anime episode.
  * Automatically resolves AniList ID -> MyAnimeList ID and applies Fansub Intro Offset.
+/**
+ * Extracts pure, clean episode number from episode strings or titles.
+ * Handles formats like:
+ * - "2. Sezon 1. Bölüm" -> 1
+ * - "Bölüm 25" -> 25
+ * - "S02E08" -> 8
+ * - "2x05" -> 5
+ * - "12" -> 12
+ */
+export function parseCleanEpisodeNumber(ep, title = '') {
+  const combined = (String(ep || '') + ' ' + String(title || '')).trim();
+
+  // 1. Explicit Episode tag like "1. Bölüm" or "Bölüm 1" or "Episode 1" or "Ep. 1"
+  const epMatch = combined.match(/(?:bölüm|bolum|episode|ep\.?|#)\s*(\d+)/i) || 
+                  combined.match(/(\d+)\s*\.\s*(?:bölüm|bolum)/i);
+  if (epMatch) {
+    const num = parseInt(epMatch[1], 10);
+    if (!isNaN(num) && num > 0) return num;
+  }
+
+  // 2. S02E08 or 2x08
+  const sMatch = combined.match(/s\d+e(\d+)/i) || combined.match(/\d+x(\d+)/i);
+  if (sMatch) {
+    const num = parseInt(sMatch[1], 10);
+    if (!isNaN(num) && num > 0) return num;
+  }
+
+  // 3. Just number
+  if (typeof ep === 'number' && !isNaN(ep) && ep > 0) return Math.floor(ep);
+  if (typeof ep === 'string' && /^\d+$/.test(ep.trim())) {
+    return parseInt(ep.trim(), 10);
+  }
+
+  // 4. Decimal/Float e.g. "12.5"
+  const floatMatch = String(ep).match(/^(\d+)(?:\.\d+)?$/);
+  if (floatMatch) {
+    return parseInt(floatMatch[1], 10);
+  }
+
+  // 5. Number excluding Season prefix (e.g. "2. Sezon 5" -> ignore 2, take 5)
+  const nonSeasonMatch = combined.replace(/(\d+)\s*\.\s*(?:sezon|season)/gi, '').match(/(\d+)/);
+  if (nonSeasonMatch) {
+    const num = parseInt(nonSeasonMatch[1], 10);
+    if (!isNaN(num) && num > 0) return num;
+  }
+
+  return 1;
+}
+
+/**
+ * Low-level AniSkip API call with caching
+ */
+async function queryAniSkipApi(malId, epNum, epLen = 0) {
+  if (!malId || !epNum) return null;
+  const cacheKey = `${ANISKIP_CACHE_PREFIX}${malId}_${epNum}`;
+  try {
+    const cached = await AsyncStorage.getItem(cacheKey);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+  } catch (e) {}
+
+  try {
+    // episodeLength=0 prevents AniSkip from rejecting due to slight player length mismatches
+    const url = `https://api.aniskip.com/v2/skip-times/${malId}/${epNum}?types=op&types=ed&episodeLength=0`;
+    const response = await fetch(url);
+    if (response.ok) {
+      const json = await response.json();
+      if (json.found && Array.isArray(json.results) && json.results.length > 0) {
+        await AsyncStorage.setItem(cacheKey, JSON.stringify(json.results));
+        return json.results;
+      }
+    }
+  } catch (err) {
+    // Network or API error
+  }
+  return null;
+}
+
+/**
+ * Fetches AniSkip opening & ending intervals for the anime episode.
+ * Automatically resolves AniList ID -> MyAnimeList ID and applies Fansub Intro Offset.
+ * Supports multi-season shows, season relative numbers, and fallback MAL IDs.
  */
 export async function fetchAniSkipTimes(anilistIdOrOptions, episodeNumber, episodeLength = 0, fansubList = [], providedMalId = null) {
   let anilistId = anilistIdOrOptions;
@@ -154,6 +237,8 @@ export async function fetchAniSkipTimes(anilistIdOrOptions, episodeNumber, episo
   let epLen = episodeLength;
   let fansubs = fansubList;
   let malId = providedMalId;
+  let epTitle = '';
+  let fallbackMalIds = [];
 
   // Support options object
   if (typeof anilistIdOrOptions === 'object' && anilistIdOrOptions !== null) {
@@ -162,53 +247,72 @@ export async function fetchAniSkipTimes(anilistIdOrOptions, episodeNumber, episo
     epLen = anilistIdOrOptions.episodeLength || 0;
     fansubs = anilistIdOrOptions.fansubList || anilistIdOrOptions.fansubs || [];
     malId = anilistIdOrOptions.malId || null;
+    epTitle = anilistIdOrOptions.episodeTitle || '';
+    if (Array.isArray(anilistIdOrOptions.fallbackMalIds)) {
+      fallbackMalIds = anilistIdOrOptions.fallbackMalIds;
+    }
   }
 
-  // Parse clean episode number
-  const epNum = parseInt(String(ep || '').replace(/\D+/g, ''), 10);
-  if (isNaN(epNum) || epNum <= 0) {
-    console.warn('[AniSkip] Invalid episode number:', ep);
-    return null;
+  // Parse clean and raw episode numbers
+  const cleanEpNum = parseCleanEpisodeNumber(ep, epTitle);
+  const rawNumOnly = parseInt(String(ep || '').replace(/\D+/g, ''), 10);
+  const rawEpNum = !isNaN(rawNumOnly) && rawNumOnly > 0 ? rawNumOnly : cleanEpNum;
+
+  // Resolve Candidate MyAnimeList IDs
+  const candidateMalIds = [];
+  if (malId && !isNaN(Number(malId)) && Number(malId) > 0) {
+    candidateMalIds.push(parseInt(malId, 10));
+  }
+  for (const fId of fallbackMalIds) {
+    if (fId && !isNaN(Number(fId)) && Number(fId) > 0) {
+      const parsed = parseInt(fId, 10);
+      if (!candidateMalIds.includes(parsed)) {
+        candidateMalIds.push(parsed);
+      }
+    }
   }
 
-  // Resolve MyAnimeList ID (AniSkip requires MAL ID)
-  let targetMalId = malId && !isNaN(Number(malId)) ? parseInt(malId, 10) : null;
-  if (!targetMalId && anilistId) {
-    targetMalId = await getMalIdFromAnilistId(anilistId);
+  if (candidateMalIds.length === 0 && anilistId) {
+    const resolvedMalId = await getMalIdFromAnilistId(anilistId);
+    if (resolvedMalId) {
+      candidateMalIds.push(resolvedMalId);
+    }
   }
 
-  if (!targetMalId) {
+  if (candidateMalIds.length === 0) {
     console.warn('[AniSkip] Could not resolve valid MAL ID for AniList ID:', anilistId);
     return null;
   }
 
-  const cacheKey = `${ANISKIP_CACHE_PREFIX}${targetMalId}_${epNum}`;
   let rawSkipData = null;
+  let matchedMalId = null;
+  let matchedEpNum = null;
 
-  try {
-    const cached = await AsyncStorage.getItem(cacheKey);
-    if (cached) {
-      rawSkipData = JSON.parse(cached);
+  // Try each candidate MAL ID with cleanEpNum, then rawEpNum if different
+  for (const cMalId of candidateMalIds) {
+    // 1. Try with clean episode number
+    rawSkipData = await queryAniSkipApi(cMalId, cleanEpNum, epLen);
+    if (rawSkipData && rawSkipData.length > 0) {
+      matchedMalId = cMalId;
+      matchedEpNum = cleanEpNum;
+      break;
     }
-  } catch (e) {}
 
-  if (!rawSkipData) {
-    try {
-      const url = `https://api.aniskip.com/v2/skip-times/${targetMalId}/${epNum}?types=op&types=ed&episodeLength=${Math.floor(epLen || 0)}`;
-      const response = await fetch(url);
-      if (response.ok) {
-        const json = await response.json();
-        if (json.found && Array.isArray(json.results) && json.results.length > 0) {
-          rawSkipData = json.results;
-          await AsyncStorage.setItem(cacheKey, JSON.stringify(rawSkipData));
-        }
+    // 2. If cleanEpNum failed and rawEpNum is different, try rawEpNum
+    if (rawEpNum !== cleanEpNum) {
+      rawSkipData = await queryAniSkipApi(cMalId, rawEpNum, epLen);
+      if (rawSkipData && rawSkipData.length > 0) {
+        matchedMalId = cMalId;
+        matchedEpNum = rawEpNum;
+        break;
       }
-    } catch (err) {
-      console.warn(`[AniSkip] API request failed for MAL ID ${targetMalId} Ep ${epNum}:`, err.message);
     }
   }
 
-  if (!rawSkipData || rawSkipData.length === 0) return null;
+  if (!rawSkipData || rawSkipData.length === 0) {
+    console.log(`ℹ️ [AniSkip] No skip times found for Candidate MAL IDs [${candidateMalIds.join(', ')}] Ep ${cleanEpNum}`);
+    return null;
+  }
 
   // Calculate Fansub Intro Offset
   const fansubOffset = await getFansubOffsetSeconds(fansubs);
@@ -244,7 +348,7 @@ export async function fetchAniSkipTimes(anilistIdOrOptions, episodeNumber, episo
     }
   }
 
-  console.log(`✅ [AniSkip] Skip times loaded (MAL ID: ${targetMalId}, Ep: ${epNum}, Fansub Offset: ${fansubOffset}s):`, 
+  console.log(`✅ [AniSkip] Skip times loaded (MAL ID: ${matchedMalId}, Ep: ${matchedEpNum}, Fansub Offset: ${fansubOffset}s):`, 
     opInterval ? `OP: ${opInterval.startTime}s - ${opInterval.endTime}s` : 'No OP',
     edInterval ? `ED: ${edInterval.startTime}s - ${edInterval.endTime}s` : 'No ED'
   );
@@ -253,7 +357,7 @@ export async function fetchAniSkipTimes(anilistIdOrOptions, episodeNumber, episo
     op: opInterval,
     ed: edInterval,
     fansubOffset,
-    malId: targetMalId,
+    malId: matchedMalId,
     anilistId: anilistId ? parseInt(anilistId, 10) : null
   };
 }

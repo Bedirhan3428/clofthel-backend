@@ -64,7 +64,8 @@ import {
   isAnimeUpcoming,
   formatReleaseDateTr,
   fetchAniListEpisodeMetadata,
-  getReleasedEpisodeCount
+  getReleasedEpisodeCount,
+  formatAniListMedia
 } from '../services/anilistService';
 import { scraperInjectedJs } from '../modules/ScraperScript';
 import { challengeHeartbeatJs } from '../modules/ChallengeHeartbeat';
@@ -557,7 +558,15 @@ export default function AnimeDetailScreen({ route, navigation }) {
   // ── Fetch Details from AniList & Immediately trigger Tranimeizle search ──
   useEffect(() => {
     let cancelled = false;
-    const anilistId = anime?.anilist_id || passedAnime?.anilist_id || (typeof initialId === 'number' ? initialId : parseInt(initialId, 10));
+
+    // Aktif seçilen sezonun gerçek AniList ID'sini tespit et
+    const matchedSeasonObj = seasons?.find(s => s && (String(s._id) === String(activeMongoId) || String(s.anilist_id) === String(activeMongoId))) || null;
+    const anilistId = matchedSeasonObj?.anilist_id 
+      || matchedSeasonObj?.node?.id 
+      || (typeof activeMongoId === 'number' ? activeMongoId : (parseInt(activeMongoId, 10) || null))
+      || anime?.anilist_id 
+      || passedAnime?.anilist_id 
+      || (typeof initialId === 'number' ? initialId : parseInt(initialId, 10));
 
     const cached = seasonCacheRef.current[activeMongoId];
     if (cached) {
@@ -590,12 +599,20 @@ export default function AnimeDetailScreen({ route, navigation }) {
         let currentAnimeData = anime || passedAnime;
         let loadedSeasons = seasons;
 
-        // 1. Fetch rich AniList details if anilistId is available
+        // 1. Aktif sezonun AniList detaylarını çek ve anime durumunu güncelle
         if (anilistId) {
-          if (!currentAnimeData || !currentAnimeData.synopsis || !currentAnimeData.relations || !currentAnimeData.relations.length) {
+          const isDifferentSeasonId = String(currentAnimeData?.anilist_id) !== String(anilistId);
+          if (isDifferentSeasonId || !currentAnimeData || !currentAnimeData.synopsis || !currentAnimeData.relations || !currentAnimeData.relations.length) {
             const aniData = await fetchAniListDetails(anilistId);
             if (aniData && !cancelled) {
-              currentAnimeData = { ...currentAnimeData, ...aniData };
+              currentAnimeData = {
+                ...currentAnimeData,
+                ...aniData,
+                _id: activeMongoId,
+                id: anilistId,
+                anilist_id: anilistId,
+                season_number: matchedSeasonObj?.season_number || currentAnimeData?.season_number || 1
+              };
               setAnime(currentAnimeData);
             }
           }
@@ -608,7 +625,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
               loadedSeasons = chain;
               setSeasons(chain);
             }
-          } else if (isMovie && !cancelled) {
+          } else if (isMovie && !cancelled && (!loadedSeasons || loadedSeasons.length === 0)) {
             loadedSeasons = [];
             setSeasons([]);
           }
@@ -643,6 +660,30 @@ export default function AnimeDetailScreen({ route, navigation }) {
           if (matchBySeason) {
             currentSeason = matchBySeason;
             hasAppliedInitialSeasonRef.current = true;
+            const matchAniId = currentSeason.anilist_id || currentSeason.node?.id || (typeof currentSeason._id === 'number' ? currentSeason._id : parseInt(currentSeason._id, 10)) || currentAnimeData?.anilist_id;
+            const seasonMedia = currentSeason.node ? formatAniListMedia(currentSeason.node) : null;
+            currentAnimeData = {
+              ...currentAnimeData,
+              ...(seasonMedia || {}),
+              _id: currentSeason._id || activeMongoId,
+              id: matchAniId || activeMongoId,
+              anilist_id: matchAniId,
+              title: currentSeason.title || currentSeason.label || currentAnimeData.title,
+              title_romaji: currentSeason.title_romaji || currentSeason.title || currentAnimeData.title_romaji,
+              title_english: currentSeason.title_english || currentSeason.title || currentAnimeData.title_english,
+              cover_image: currentSeason.cover_image || seasonMedia?.coverImage || currentAnimeData.cover_image,
+              banner_image: currentSeason.banner_image || seasonMedia?.bannerImage || currentAnimeData.banner_image,
+              coverImage: currentSeason.cover_image || seasonMedia?.coverImage || currentAnimeData.coverImage,
+              bannerImage: currentSeason.banner_image || seasonMedia?.bannerImage || currentAnimeData.bannerImage,
+              format: currentSeason.format || seasonMedia?.format || currentAnimeData.format,
+              status: currentSeason.status || seasonMedia?.status || currentAnimeData.status,
+              episodes: currentSeason.episodes || seasonMedia?.episodes || currentAnimeData.episodes,
+              season_number: currentSeason.season_number || clickedSeasonNum || 1,
+              averageScore: currentSeason.node?.averageScore || seasonMedia?.averageScore || currentAnimeData.averageScore,
+              description: currentSeason.node?.description || seasonMedia?.description || currentAnimeData.description,
+              synopsis: currentSeason.node?.description || seasonMedia?.synopsis || currentAnimeData.synopsis,
+            };
+            setAnime(currentAnimeData);
             if (currentSeason._id && String(currentSeason._id) !== String(activeMongoId)) {
               setActiveMongoId(currentSeason._id);
             }
@@ -681,6 +722,35 @@ export default function AnimeDetailScreen({ route, navigation }) {
           }
           if (currentSeason && currentSeason._id && String(currentSeason._id) !== String(activeMongoId)) {
             setActiveMongoId(currentSeason._id);
+          }
+        }
+
+        if (currentSeason) {
+          const sAniId = currentSeason.anilist_id || currentSeason.node?.id || (typeof currentSeason._id === 'number' ? currentSeason._id : parseInt(currentSeason._id, 10)) || currentAnimeData?.anilist_id;
+          if (sAniId && String(currentAnimeData?.anilist_id) !== String(sAniId)) {
+            const seasonMedia = currentSeason.node ? formatAniListMedia(currentSeason.node) : null;
+            currentAnimeData = {
+              ...currentAnimeData,
+              ...(seasonMedia || {}),
+              _id: currentSeason._id || activeMongoId,
+              id: sAniId,
+              anilist_id: sAniId,
+              title: currentSeason.title || currentSeason.label || currentAnimeData.title,
+              title_romaji: currentSeason.title_romaji || currentSeason.title || currentAnimeData.title_romaji,
+              title_english: currentSeason.title_english || currentSeason.title || currentAnimeData.title_english,
+              cover_image: currentSeason.cover_image || seasonMedia?.coverImage || currentAnimeData.cover_image,
+              banner_image: currentSeason.banner_image || seasonMedia?.bannerImage || currentAnimeData.banner_image,
+              coverImage: currentSeason.cover_image || seasonMedia?.coverImage || currentAnimeData.coverImage,
+              bannerImage: currentSeason.banner_image || seasonMedia?.bannerImage || currentAnimeData.bannerImage,
+              format: currentSeason.format || seasonMedia?.format || currentAnimeData.format,
+              status: currentSeason.status || seasonMedia?.status || currentAnimeData.status,
+              episodes: currentSeason.episodes || seasonMedia?.episodes || currentAnimeData.episodes,
+              season_number: currentSeason.season_number || 1,
+              averageScore: currentSeason.node?.averageScore || seasonMedia?.averageScore || currentAnimeData.averageScore,
+              description: currentSeason.node?.description || seasonMedia?.description || currentAnimeData.description,
+              synopsis: currentSeason.node?.description || seasonMedia?.synopsis || currentAnimeData.synopsis,
+            };
+            setAnime(currentAnimeData);
           }
         }
         const targetTitle = currentSeason?.title || currentSeason?.label || currentAnimeData?.title_romaji || currentAnimeData?.title || currentAnimeData?.orijinal_ad || initialTitle || '';
@@ -889,8 +959,41 @@ export default function AnimeDetailScreen({ route, navigation }) {
       currentLimit: 50,
       rawPool: []
     };
+
+    // Anında UI'da sezon AniList kimliğini güncelle (bekletmeden)
+    const selectedSeasonObj = 
+      seasons?.find(s => s && (String(s._id) === String(seasonId) || String(s.anilist_id) === String(seasonId))) ||
+      relatedMoviesOvas?.find(m => m && (String(m._id) === String(seasonId) || String(m.anilist_id) === String(seasonId)));
+
+    if (selectedSeasonObj) {
+      const seasonMedia = selectedSeasonObj.node ? formatAniListMedia(selectedSeasonObj.node) : null;
+      const targetAniId = selectedSeasonObj.anilist_id || selectedSeasonObj.node?.id || (typeof selectedSeasonObj._id === 'number' ? selectedSeasonObj._id : parseInt(selectedSeasonObj._id, 10)) || null;
+
+      setAnime(prev => ({
+        ...prev,
+        ...(seasonMedia || {}),
+        _id: selectedSeasonObj._id || seasonId,
+        id: targetAniId || selectedSeasonObj._id || seasonId,
+        anilist_id: targetAniId || prev?.anilist_id,
+        title: selectedSeasonObj.title || selectedSeasonObj.label || prev?.title,
+        title_romaji: selectedSeasonObj.title_romaji || selectedSeasonObj.title || prev?.title_romaji,
+        title_english: selectedSeasonObj.title_english || selectedSeasonObj.title || prev?.title_english,
+        cover_image: selectedSeasonObj.cover_image || seasonMedia?.coverImage || prev?.cover_image,
+        banner_image: selectedSeasonObj.banner_image || seasonMedia?.bannerImage || prev?.banner_image,
+        coverImage: selectedSeasonObj.cover_image || seasonMedia?.coverImage || prev?.coverImage,
+        bannerImage: selectedSeasonObj.banner_image || seasonMedia?.bannerImage || prev?.bannerImage,
+        format: selectedSeasonObj.format || seasonMedia?.format || prev?.format,
+        status: selectedSeasonObj.status || seasonMedia?.status || prev?.status,
+        episodes: selectedSeasonObj.episodes || seasonMedia?.episodes || prev?.episodes,
+        season_number: selectedSeasonObj.season_number || prev?.season_number || 1,
+        averageScore: selectedSeasonObj.node?.averageScore || seasonMedia?.averageScore || prev?.averageScore,
+        description: selectedSeasonObj.node?.description || seasonMedia?.description || prev?.description,
+        synopsis: selectedSeasonObj.node?.description || seasonMedia?.synopsis || prev?.synopsis,
+      }));
+    }
+
     setActiveMongoId(seasonId);
-  }, [activeMongoId]);
+  }, [activeMongoId, seasons, relatedMoviesOvas]);
 
   const handleToggleFavorite = async () => {
     if (!user) {
@@ -997,33 +1100,41 @@ export default function AnimeDetailScreen({ route, navigation }) {
 
 
   // ── Derived dynamic values ───────────────────────────────────
-  const mainTitleEn = anime?.title || anime?.anime_title || initialTitle || 'Loading...';
-  const mainTitleJp = anime?.romajiTitle || anime?.orijinal_ad || passedAnime?.orijinal_ad || '';
-  const animeType = anime?.format || passedAnime?.format || 'TV';
+  const activeSeason = (seasons && seasons.find(s => s && (String(s._id) === String(activeMongoId) || String(s.anilist_id) === String(activeMongoId)))) ||
+                       (relatedMoviesOvas && relatedMoviesOvas.find(m => m && (String(m._id) === String(activeMongoId) || String(m.anilist_id) === String(activeMongoId)))) || null;
+
+  const mainTitleEn = activeSeason?.title || activeSeason?.title_english || anime?.title || anime?.anime_title || initialTitle || 'Loading...';
+  const mainTitleJp = activeSeason?.title_romaji || anime?.romajiTitle || anime?.orijinal_ad || passedAnime?.orijinal_ad || '';
+  const animeType = activeSeason?.format || anime?.format || passedAnime?.format || 'TV';
   
   // Use passed images as fallback to prevent slow loading flashes
-  const bannerImage = anime?.banner_image || anime?.bannerImage || passedAnime?.banner_image || passedAnime?.bannerImage || passedEntry?.banner_image || null;
-  const coverImage = anime?.cover_image || anime?.coverImage || passedAnime?.cover_image || passedAnime?.coverImage || passedEntry?.cover_image || null;
+  const bannerImage = activeSeason?.banner_image || anime?.banner_image || anime?.bannerImage || passedAnime?.banner_image || passedAnime?.bannerImage || passedEntry?.banner_image || null;
+  const coverImage = activeSeason?.cover_image || anime?.cover_image || anime?.coverImage || passedAnime?.cover_image || passedAnime?.coverImage || passedEntry?.cover_image || null;
   
-  const description = anime?.description && typeof anime.description === 'string'
-    ? anime.description.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').trim()
+  const rawDesc = anime?.description || anime?.synopsis || activeSeason?.node?.description;
+  const description = rawDesc && typeof rawDesc === 'string'
+    ? rawDesc.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').trim()
     : null;
     
-  const genresRaw = anime?.genres || anime?.enrichedGenres || passedAnime?.genres || [];
+  const genresRaw = anime?.genres || anime?.enrichedGenres || activeSeason?.node?.genres || passedAnime?.genres || [];
   const genres = Array.isArray(genresRaw)
     ? genresRaw
     : (typeof genresRaw === 'string' ? genresRaw.split(',').map(g => g.trim()).filter(Boolean) : []);
     
-  const averageScore = anime?.averageScore || anime?.average_score || passedAnime?.average_score || null;
+  const averageScore = anime?.averageScore || activeSeason?.node?.averageScore || anime?.average_score || passedAnime?.average_score || null;
 
   // Active Label resolution
-  const activeLabel = (activeMongoId && seasons && seasons.find(s => s && String(s._id) === String(activeMongoId))?.label) ||
-                      (activeMongoId && relatedMoviesOvas && relatedMoviesOvas.find(m => m && String(m._id) === String(activeMongoId))?.title) ||
+  const activeLabel = (activeMongoId && seasons && seasons.find(s => s && (String(s._id) === String(activeMongoId) || String(s.anilist_id) === String(activeMongoId)))?.label) ||
+                      (activeMongoId && relatedMoviesOvas && relatedMoviesOvas.find(m => m && (String(m._id) === String(activeMongoId) || String(m.anilist_id) === String(activeMongoId)))?.title) ||
                       'Sezon 1';
 
   // ── Render Episode Card ──────────────────────────────────────
   const renderEpisodeCard = useCallback(({ item }) => {
     const hasThumb = Boolean(item.thumbnail);
+
+    const activeSeasonObj = (seasons && seasons.find(s => s && (String(s._id) === String(activeMongoId) || String(s.anilist_id) === String(activeMongoId)))) || null;
+    const activeAniListId = activeSeasonObj?.anilist_id || activeSeasonObj?.node?.id || anime?.anilist_id || (typeof activeMongoId === 'number' ? activeMongoId : (parseInt(activeMongoId, 10) || null));
+    const activeTitle = activeSeasonObj?.title || activeSeasonObj?.label || mainTitleEn;
 
     return (
       <TouchableOpacity
@@ -1037,11 +1148,13 @@ export default function AnimeDetailScreen({ route, navigation }) {
             animeId: activeMongoId,
             episodeNumber: item.episode_number,
             episodeTitle: item.episode_title || `${item.episode_number}. Bölüm`,
-            animeTitle: mainTitleEn,
-            anilistId: anime?.anilist_id || null,
+            animeTitle: activeTitle,
+            anilistId: activeAniListId,
             fansubs: anime?.fansubs || [],
             episodeUrl: item.url,
-            episodes: episodes
+            episodes: episodes,
+            seasons: seasons,
+            anime: { ...(anime || {}), anilist_id: activeAniListId, title: activeTitle }
           });
         }}
       >
@@ -1085,7 +1198,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
         </View>
       </TouchableOpacity>
     );
-  }, [activeMongoId, mainTitleEn, navigation, user, episodes, anime]);
+  }, [activeMongoId, mainTitleEn, navigation, user, episodes, anime, seasons]);
 
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
@@ -1218,7 +1331,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pillRow}>
               {seasons.map((season, index) => {
                 if (!season) return null;
-                const isActive = season._id && String(season._id) === String(activeMongoId);
+                const isActive = season._id && (String(season._id) === String(activeMongoId) || String(season.anilist_id) === String(activeMongoId));
                 return (
                   <TouchableOpacity
                     key={season._id || index}
@@ -1248,7 +1361,7 @@ export default function AnimeDetailScreen({ route, navigation }) {
               contentContainerStyle={styles.movieListContent}
               renderItem={({ item }) => {
                 if (!item) return null;
-                const isActive = item._id && String(item._id) === String(activeMongoId);
+                const isActive = item._id && (String(item._id) === String(activeMongoId) || String(item.anilist_id) === String(activeMongoId));
                 return (
                   <TouchableOpacity
                     style={[styles.movieCard, isActive && styles.movieCardActive]}

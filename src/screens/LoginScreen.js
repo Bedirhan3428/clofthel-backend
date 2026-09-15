@@ -7,7 +7,8 @@ import {
   StyleSheet,
   ActivityIndicator,
   KeyboardAvoidingView,
-  Platform
+  Platform,
+  Modal
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -27,7 +28,7 @@ try {
 WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen({ navigation }) {
-  const { login, googleLogin, loginAsTestUser } = useContext(AuthContext);
+  const { login, googleLogin, loginAsTestUser, forgotPassword, resetPassword } = useContext(AuthContext);
   const { showAlert } = useAlert();
 
   React.useEffect(() => {
@@ -45,6 +46,66 @@ export default function LoginScreen({ navigation }) {
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
+  // ── Forgot Password Modal State ──────────────────────────────
+  const [isForgotModalVisible, setForgotModalVisible] = useState(false);
+  const [forgotStep, setForgotStep] = useState(1); // 1: Email, 2: Code + New Password
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotCode, setForgotCode] = useState('');
+  const [forgotNewPassword, setForgotNewPassword] = useState('');
+  const [isForgotLoading, setIsForgotLoading] = useState(false);
+  const [showForgotNewPassword, setShowForgotNewPassword] = useState(false);
+
+  const handleOpenForgotModal = () => {
+    setForgotEmail((email || '').trim().toLowerCase());
+    setForgotCode('');
+    setForgotNewPassword('');
+    setForgotStep(1);
+    setForgotModalVisible(true);
+  };
+
+  const handleRequestResetCode = async () => {
+    const cleanForgotEmail = (forgotEmail || '').trim().toLowerCase();
+    if (!cleanForgotEmail) {
+      showAlert('Hata', 'Lütfen e-posta adresinizi girin.');
+      return;
+    }
+    setIsForgotLoading(true);
+    const result = await forgotPassword(cleanForgotEmail);
+    setIsForgotLoading(false);
+
+    if (result.success) {
+      showAlert('Kod Gönderildi', result.message || '6 haneli sıfırlama kodu e-postanıza gönderildi.');
+      setForgotStep(2);
+    } else {
+      showAlert('Hata', result.error || 'Şifre sıfırlama kodu gönderilemedi.');
+    }
+  };
+
+  const handleConfirmResetPassword = async () => {
+    const cleanForgotEmail = (forgotEmail || '').trim().toLowerCase();
+    if (!forgotCode || forgotCode.trim().length !== 6) {
+      showAlert('Hata', 'Lütfen 6 haneli kodu eksiksiz girin.');
+      return;
+    }
+    if (!forgotNewPassword || forgotNewPassword.length < 6) {
+      showAlert('Hata', 'Yeni şifreniz en az 6 karakter olmalıdır.');
+      return;
+    }
+
+    setIsForgotLoading(true);
+    const result = await resetPassword(cleanForgotEmail, forgotCode.trim(), forgotNewPassword);
+    setIsForgotLoading(false);
+
+    if (result.success) {
+      setForgotModalVisible(false);
+      showAlert('Başarılı', 'Şifreniz başarıyla sıfırlandı ve oturumunuz açıldı.', [
+        { text: 'Devam Et', onPress: () => navigation.replace('Home') }
+      ]);
+    } else {
+      showAlert('Hata', result.error || 'Şifre sıfırlanamadı.');
+    }
+  };
+
   const handleDevLogin = async () => {
     setIsLoading(true);
     await loginAsTestUser();
@@ -53,13 +114,14 @@ export default function LoginScreen({ navigation }) {
   };
 
   const handleLogin = async () => {
-    if (!email || !password) {
+    const cleanEmail = (email || '').trim().toLowerCase();
+    if (!cleanEmail || !password) {
       showAlert('Hata', 'Lütfen e-posta ve şifrenizi girin.');
       return;
     }
 
     setIsLoading(true);
-    const result = await login(email, password);
+    const result = await login(cleanEmail, password);
     setIsLoading(false);
 
     if (result.success) {
@@ -67,7 +129,7 @@ export default function LoginScreen({ navigation }) {
     } else {
       if (result.requiresVerification) {
         showAlert('Doğrulama Gerekli', result.error, [
-          { text: 'Doğrula', onPress: () => navigation.replace('Verification', { email: result.email || email }) }
+          { text: 'Doğrula', onPress: () => navigation.replace('Verification', { email: result.email || cleanEmail }) }
         ]);
       } else {
         showAlert('Giriş Başarısız', result.error);
@@ -165,7 +227,7 @@ export default function LoginScreen({ navigation }) {
               </View>
             </View>
 
-            <TouchableOpacity style={styles.forgotPassword}>
+            <TouchableOpacity style={styles.forgotPassword} onPress={handleOpenForgotModal} activeOpacity={0.7}>
               <Text style={styles.forgotPasswordText}>Şifremi Unuttum</Text>
             </TouchableOpacity>
 
@@ -222,6 +284,142 @@ export default function LoginScreen({ navigation }) {
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      {/* Şifremi Unuttum Modalı */}
+      <Modal
+        visible={isForgotModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setForgotModalVisible(false)}
+      >
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalHeaderTitleRow}>
+                <Ionicons name="key-outline" size={22} color={COLORS.accent} style={{ marginRight: 8 }} />
+                <Text style={styles.modalTitle}>
+                  {forgotStep === 1 ? 'Şifremi Unuttum' : 'Yeni Şifre Belirle'}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setForgotModalVisible(false)} style={styles.modalCloseBtn}>
+                <Ionicons name="close" size={20} color="#AAA" />
+              </TouchableOpacity>
+            </View>
+
+            {forgotStep === 1 ? (
+              <View>
+                <Text style={styles.modalSubtitle}>
+                  Hesabınıza ait e-posta adresini girin. Size 6 haneli bir sıfırlama kodu göndereceğiz.
+                </Text>
+
+                <View style={styles.modalInputGroup}>
+                  <Text style={styles.label}>E-Posta Adresi</Text>
+                  <View style={styles.inputContainer}>
+                    <Ionicons name="mail-outline" size={20} color={COLORS.textSecondary} style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.input}
+                      placeholder="ornek@mail.com"
+                      placeholderTextColor={COLORS.textSecondary}
+                      value={forgotEmail}
+                      onChangeText={setForgotEmail}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                    />
+                  </View>
+                </View>
+
+                <TouchableOpacity 
+                  style={[styles.modalActionBtn, isForgotLoading && styles.loginButtonDisabled]}
+                  onPress={handleRequestResetCode}
+                  disabled={isForgotLoading}
+                >
+                  <LinearGradient
+                    colors={[COLORS.accent, COLORS.accentDark]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.modalActionGradient}
+                  >
+                    {isForgotLoading ? (
+                      <ActivityIndicator color="#FFF" size="small" />
+                    ) : (
+                      <Text style={styles.loginButtonText}>Sıfırlama Kodu Gönder</Text>
+                    )}
+                  </LinearGradient>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View>
+                <Text style={styles.modalSubtitle}>
+                  <Text style={{ fontWeight: 'bold', color: COLORS.textPrimary }}>{forgotEmail}</Text> adresine gönderilen 6 haneli kodu ve yeni şifrenizi girin.
+                </Text>
+
+                <View style={styles.modalInputGroup}>
+                  <Text style={styles.label}>6 Haneli Kod</Text>
+                  <View style={styles.inputContainer}>
+                    <Ionicons name="keypad-outline" size={20} color={COLORS.textSecondary} style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.input}
+                      placeholder="123456"
+                      placeholderTextColor={COLORS.textSecondary}
+                      value={forgotCode}
+                      onChangeText={(t) => setForgotCode(t.replace(/[^0-9]/g, '').slice(0, 6))}
+                      keyboardType="number-pad"
+                      maxLength={6}
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.modalInputGroup}>
+                  <Text style={styles.label}>Yeni Şifre (En az 6 karakter)</Text>
+                  <View style={styles.inputContainer}>
+                    <Ionicons name="lock-closed-outline" size={20} color={COLORS.textSecondary} style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Yeni şifreniz"
+                      placeholderTextColor={COLORS.textSecondary}
+                      value={forgotNewPassword}
+                      onChangeText={setForgotNewPassword}
+                      secureTextEntry={!showForgotNewPassword}
+                    />
+                    <TouchableOpacity onPress={() => setShowForgotNewPassword(!showForgotNewPassword)} style={styles.eyeIcon}>
+                      <Ionicons name={showForgotNewPassword ? "eye-off-outline" : "eye-outline"} size={20} color={COLORS.textSecondary} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <TouchableOpacity 
+                  style={[styles.modalActionBtn, isForgotLoading && styles.loginButtonDisabled]}
+                  onPress={handleConfirmResetPassword}
+                  disabled={isForgotLoading}
+                >
+                  <LinearGradient
+                    colors={[COLORS.accent, COLORS.accentDark]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.modalActionGradient}
+                  >
+                    {isForgotLoading ? (
+                      <ActivityIndicator color="#FFF" size="small" />
+                    ) : (
+                      <Text style={styles.loginButtonText}>Şifreyi Güncelle & Giriş Yap</Text>
+                    )}
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={styles.modalBackStepBtn}
+                  onPress={() => setForgotStep(1)}
+                >
+                  <Text style={styles.modalBackStepText}>Farklı bir e-posta dene</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -394,5 +592,75 @@ const styles = StyleSheet.create({
     color: COLORS.accent,
     fontSize: FONT_SIZES.body,
     fontWeight: FONT_WEIGHTS.bold,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: SPACING.lg,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: '#161922',
+    borderRadius: BORDER_RADIUS.xl,
+    padding: SPACING.xl,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    ...SHADOWS.glow,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+  },
+  modalHeaderTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: FONT_SIZES.subtitle,
+    fontWeight: FONT_WEIGHTS.bold,
+    color: COLORS.textPrimary,
+  },
+  modalCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalSubtitle: {
+    fontSize: FONT_SIZES.caption,
+    color: COLORS.textSecondary,
+    lineHeight: 18,
+    marginBottom: SPACING.lg,
+  },
+  modalInputGroup: {
+    marginBottom: SPACING.md,
+  },
+  modalActionBtn: {
+    height: 50,
+    borderRadius: BORDER_RADIUS.lg,
+    overflow: 'hidden',
+    marginTop: SPACING.sm,
+  },
+  modalActionGradient: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBackStepBtn: {
+    alignItems: 'center',
+    marginTop: SPACING.md,
+    paddingVertical: SPACING.xs,
+  },
+  modalBackStepText: {
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.caption,
+    textDecorationLine: 'underline',
   },
 });

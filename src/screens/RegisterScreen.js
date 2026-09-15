@@ -49,7 +49,10 @@ export default function RegisterScreen({ navigation }) {
   const [showPassword, setShowPassword] = useState(false);
 
   const handleRegister = async () => {
-    if (!name || !email || !password || !passwordConfirm) {
+    const cleanName = (name || '').trim();
+    const cleanEmail = (email || '').trim().toLowerCase();
+
+    if (!cleanName || !cleanEmail || !password || !passwordConfirm) {
       showAlert('Hata', 'Lütfen tüm alanları doldurun.');
       return;
     }
@@ -65,12 +68,12 @@ export default function RegisterScreen({ navigation }) {
     }
 
     setIsLoading(true);
-    const result = await register(name, email, password);
+    const result = await register(cleanName, cleanEmail, password);
     setIsLoading(false);
 
     if (result.success) {
       showAlert('Başarılı', 'Doğrulama kodu e-postanıza gönderildi.', [
-        { text: 'Tamam', onPress: () => navigation.replace('Verification', { email }) }
+        { text: 'Tamam', onPress: () => navigation.replace('Verification', { email: cleanEmail }) }
       ]);
     } else {
       showAlert('Kayıt Başarısız', result.error);

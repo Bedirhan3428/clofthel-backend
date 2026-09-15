@@ -893,11 +893,49 @@ export async function updateEmail(email) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
-      body: JSON.stringify({ email })
+      body: JSON.stringify({ email: (email || '').trim().toLowerCase() })
     });
     return await response.json();
   } catch (err) {
     console.error('updateEmail error:', err);
+    return { success: false, error: 'Sunucu bağlantı hatası.' };
+  }
+}
+
+/**
+ * Şifre sıfırlama kodu talep eder
+ */
+export async function forgotPasswordApi(email) {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: (email || '').trim().toLowerCase() })
+    });
+    return await response.json();
+  } catch (err) {
+    console.error('forgotPasswordApi error:', err);
+    return { success: false, error: 'Sunucu bağlantı hatası.' };
+  }
+}
+
+/**
+ * Şifre sıfırlama kodunu doğrulayıp yeni şifreyi ayarlar
+ */
+export async function resetPasswordApi(email, code, newPassword) {
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/auth/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        email: (email || '').trim().toLowerCase(), 
+        code: (code || '').trim(), 
+        newPassword 
+      })
+    });
+    return await response.json();
+  } catch (err) {
+    console.error('resetPasswordApi error:', err);
     return { success: false, error: 'Sunucu bağlantı hatası.' };
   }
 }

@@ -88,10 +88,11 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     try {
+      const cleanEmail = (email || '').trim().toLowerCase();
       const res = await apiFetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email: cleanEmail, password })
       });
       const data = await res.json();
       
@@ -103,7 +104,7 @@ export const AuthProvider = ({ children }) => {
       } else {
         // Eğer hesap doğrulanmamışsa özel bir cevap dönüyoruz ki LoginScreen VerificationScreen'e yönlendirebilsin
         if (data.requiresVerification) {
-          return { success: false, error: data.error, requiresVerification: true, email: data.email };
+          return { success: false, error: data.error, requiresVerification: true, email: data.email || cleanEmail };
         }
         return { success: false, error: data.error };
       }
@@ -114,16 +115,17 @@ export const AuthProvider = ({ children }) => {
 
   const register = async (name, email, password) => {
     try {
+      const cleanEmail = (email || '').trim().toLowerCase();
+      const cleanName = (name || '').trim();
       const res = await apiFetch(`${API_BASE_URL}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password })
+        body: JSON.stringify({ name: cleanName, email: cleanEmail, password })
       });
       const data = await res.json();
       
       if (data.success) {
-        // Artık token dönmüyor, sadece success
-        return { success: true, email: data.email };
+        return { success: true, email: data.email || cleanEmail };
       } else {
         return { success: false, error: data.error };
       }
@@ -134,10 +136,11 @@ export const AuthProvider = ({ children }) => {
 
   const verifyEmail = async (email, code) => {
     try {
+      const cleanEmail = (email || '').trim().toLowerCase();
       const res = await apiFetch(`${API_BASE_URL}/auth/verify-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, code })
+        body: JSON.stringify({ email: cleanEmail, code: code.toString().trim() })
       });
       const data = await res.json();
       
@@ -156,15 +159,57 @@ export const AuthProvider = ({ children }) => {
 
   const resendCode = async (email) => {
     try {
+      const cleanEmail = (email || '').trim().toLowerCase();
       const res = await apiFetch(`${API_BASE_URL}/auth/resend-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email })
+        body: JSON.stringify({ email: cleanEmail })
       });
       const data = await res.json();
       
       if (data.success) {
         return { success: true, message: data.message };
+      } else {
+        return { success: false, error: data.error };
+      }
+    } catch (e) {
+      return { success: false, error: 'Bağlantı hatası oluştu.' };
+    }
+  };
+
+  const forgotPassword = async (email) => {
+    try {
+      const cleanEmail = (email || '').trim().toLowerCase();
+      const res = await apiFetch(`${API_BASE_URL}/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail })
+      });
+      const data = await res.json();
+      if (data.success) {
+        return { success: true, message: data.message, email: data.email || cleanEmail };
+      } else {
+        return { success: false, error: data.error };
+      }
+    } catch (e) {
+      return { success: false, error: 'Bağlantı hatası oluştu.' };
+    }
+  };
+
+  const resetPassword = async (email, code, newPassword) => {
+    try {
+      const cleanEmail = (email || '').trim().toLowerCase();
+      const res = await apiFetch(`${API_BASE_URL}/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, code: code.toString().trim(), newPassword })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await AsyncStorage.setItem('userToken', data.token);
+        setUserToken(data.token);
+        setUser(data.user);
+        return { success: true };
       } else {
         return { success: false, error: data.error };
       }
@@ -248,7 +293,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ login, register, verifyEmail, resendCode, googleLogin, logout, loginAsTestUser, user, userToken, isLoading, updateUserAvatar, updateUserName, acceptLegal, isBotBypassed, setBotBypassed }}>
+    <AuthContext.Provider value={{ login, register, verifyEmail, resendCode, forgotPassword, resetPassword, googleLogin, logout, loginAsTestUser, user, userToken, isLoading, updateUserAvatar, updateUserName, acceptLegal, isBotBypassed, setBotBypassed }}>
       {children}
     </AuthContext.Provider>
   );

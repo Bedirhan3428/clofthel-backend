@@ -30,6 +30,7 @@ export default function ProfileScreen({ navigation }) {
   const [newListName, setNewListName] = React.useState('');
 
   const [isAvatarModalVisible, setAvatarModalVisible] = React.useState(false);
+  const [avatarError, setAvatarError] = React.useState(false);
 
   const fetchProfile = async () => {
     if (user) {
@@ -62,10 +63,12 @@ export default function ProfileScreen({ navigation }) {
   };
 
   const handleSelectAvatar = async (imageUrl) => {
+    setAvatarError(false);
     const res = await updateAvatar(imageUrl);
     if (res) {
       setAvatarModalVisible(false);
       updateUserAvatar(imageUrl);
+      setProfileData(prev => prev ? { ...prev, avatar: imageUrl } : { avatar: imageUrl });
       fetchProfile();
     }
   };
@@ -134,12 +137,16 @@ export default function ProfileScreen({ navigation }) {
       <ScrollView contentContainerStyle={styles.content}>
         {/* Profile Info */}
         <View style={styles.profileCard}>
-          <TouchableOpacity style={styles.avatarWrapper} onPress={() => setAvatarModalVisible(true)}>
-            {profileData?.avatar ? (
-              <Image source={{ uri: profileData.avatar }} style={styles.avatarImage} />
+          <TouchableOpacity style={styles.avatarWrapper} onPress={() => { setAvatarError(false); setAvatarModalVisible(true); }}>
+            {profileData?.avatar && profileData.avatar !== 'no-photo.jpg' && profileData.avatar.startsWith('http') && !avatarError ? (
+              <Image 
+                source={{ uri: profileData.avatar }} 
+                style={styles.avatarImage} 
+                onError={() => setAvatarError(true)}
+              />
             ) : (
               <Text style={styles.avatarText}>
-                {user.name ? user.name.charAt(0).toUpperCase() : 'U'}
+                {user?.name ? user.name.charAt(0).toUpperCase() : 'U'}
               </Text>
             )}
             <View style={styles.editAvatarBadge}>
@@ -270,19 +277,15 @@ export default function ProfileScreen({ navigation }) {
 
           <Text style={styles.sectionTitle}>Ayarlar</Text>
 
-          <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('AccountSettings')}>
+          <TouchableOpacity 
+            style={styles.menuItem} 
+            activeOpacity={0.7}
+            onPress={() => navigation.navigate('Settings')}
+          >
             <View style={styles.menuIconWrapper}>
               <Ionicons name="settings-outline" size={20} color={COLORS.textSecondary} />
             </View>
-            <Text style={styles.menuText}>Hesap Ayarları</Text>
-            <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('PlayerSettings')}>
-            <View style={styles.menuIconWrapper}>
-              <Ionicons name="play-outline" size={20} color={COLORS.textSecondary} />
-            </View>
-            <Text style={styles.menuText}>Player Ayarları</Text>
+            <Text style={styles.menuText}>Ayarlar</Text>
             <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
           </TouchableOpacity>
         </View>

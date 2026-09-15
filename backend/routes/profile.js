@@ -1,6 +1,7 @@
 const express = require('express');
 const User = require('../models/User');
 const { protect } = require('../middleware/authMiddleware');
+const { sendEmailUpdateCode } = require('../utils/mailer');
 
 const router = express.Router();
 
@@ -273,24 +274,7 @@ router.put('/update-email', protect, async (req, res) => {
     console.log('=============================================\n');
 
     // Mail gönder
-    const { Resend } = require('resend');
-    const resend = new Resend(process.env.RESEND_API_KEY || '');
-    
-    try {
-      await resend.emails.send({
-        from: 'Clofthel <no-reply@clofthel.com.tr>',
-        to: newEmail,
-        subject: 'Clofthel E-posta Değişikliği Doğrulama Kodunuz',
-        html: `<div style="font-family: sans-serif; padding: 20px;">
-          <h2>Clofthel E-posta Değişikliği</h2>
-          <p>Yeni e-posta adresinizi doğrulamak için aşağıdaki 6 haneli kodu kullanın:</p>
-          <h1 style="color: #FF6B00; letter-spacing: 5px;">${code}</h1>
-          <p>Bu kod 15 dakika geçerlidir.</p>
-        </div>`
-      });
-    } catch (mailErr) {
-      console.error('Mail gönderme hatası:', mailErr.message);
-    }
+    await sendEmailUpdateCode(newEmail, code);
 
     res.status(200).json({
       success: true,

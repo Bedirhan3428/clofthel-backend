@@ -282,11 +282,12 @@ export default function WatchScreen({ route, navigation }) {
               ? Number(currentAnime.anilist_id)
               : (isNumericId(currentAnime?.id) ? Number(currentAnime.id) : null));
 
+        let resolved = null;
         // If AniList ID not resolved yet, attempt resolution using title
         if (!anilistId) {
           const targetTitle = currentAnime?.title_english || currentAnime?.title || route.params?.animeTitle || currentEpisodeTitle;
           if (targetTitle) {
-            const resolved = await resolveAniListMedia({
+            resolved = await resolveAniListMedia({
               anilistId: null,
               animeId,
               animeTitle: targetTitle,
@@ -309,17 +310,48 @@ export default function WatchScreen({ route, navigation }) {
           if (Array.isArray(currentAnime?.fansubs)) activeFansubs.push(...currentAnime.fansubs);
           if (Array.isArray(initialFansubs)) activeFansubs.push(...initialFansubs);
 
-          const knownMalId = currentAnime?.idMal || currentAnime?.mal_id || null;
+          // Multi-season handling: check if current episode belongs to a specific season in seasons chain
+          let targetMalId = resolved?.idMal || resolved?.mal_id || currentAnime?.idMal || currentAnime?.mal_id || null;
+          let targetAnilistId = anilistId;
+          const fallbackMalIds = [];
 
-          console.log(`🎬 [WatchScreen AniSkip] Fetching skip times for AniList ID: ${anilistId}, MAL ID: ${knownMalId || 'Auto-resolve'}, Episode: ${currentEpisodeNumber}, Fansubs:`, activeFansubs);
+          if (targetMalId) fallbackMalIds.push(targetMalId);
 
-          const skipTimes = await fetchAniSkipTimes(
-            anilistId,
-            currentEpisodeNumber,
-            0,
-            activeFansubs,
-            knownMalId
-          );
+          const detectedSeasonNum = detectSeasonFromTitle(currentEpisodeTitle || String(currentEpisodeNumber), 1);
+          if (Array.isArray(seasons) && seasons.length > 0) {
+            seasons.forEach(s => {
+              const sMal = s.idMal || s.mal_id;
+              if (sMal && !fallbackMalIds.includes(sMal)) fallbackMalIds.push(sMal);
+            });
+
+            if (detectedSeasonNum > 1) {
+              const matchingSeason = seasons.find(s => 
+                s.season_number === detectedSeasonNum || 
+                s.season === detectedSeasonNum || 
+                detectSeasonFromTitle(s.title || s.title_english || '', 1) === detectedSeasonNum
+              );
+              if (matchingSeason) {
+                if (matchingSeason.idMal || matchingSeason.mal_id) {
+                  targetMalId = matchingSeason.idMal || matchingSeason.mal_id;
+                }
+                if (matchingSeason.id || matchingSeason.anilist_id) {
+                  targetAnilistId = matchingSeason.id || matchingSeason.anilist_id;
+                }
+              }
+            }
+          }
+
+          console.log(`🎬 [WatchScreen AniSkip] Fetching skip times for AniList ID: ${targetAnilistId}, MAL ID: ${targetMalId || 'Auto-resolve'}, Episode: ${currentEpisodeNumber}, Fansubs:`, activeFansubs);
+
+          const skipTimes = await fetchAniSkipTimes({
+            anilistId: targetAnilistId,
+            episodeNumber: currentEpisodeNumber,
+            episodeTitle: currentEpisodeTitle,
+            episodeLength: 0,
+            fansubList: activeFansubs,
+            malId: targetMalId,
+            fallbackMalIds
+          });
 
           if (!isCancelled && skipTimes) {
             console.log(`✅ [WatchScreen AniSkip] Skip intervals loaded:`, JSON.stringify(skipTimes));
@@ -327,15 +359,7 @@ export default function WatchScreen({ route, navigation }) {
             if (skipTimes.fansubOffset) {
               setFansubOffsetSeconds(skipTimes.fansubOffset);
             }
-            if (webViewRef.current) {
-              if (Platform.OS === 'web') {
-                if (webViewRef.current.contentWindow) {
-                  webViewRef.current.contentWindow.postMessage(JSON.stringify({ type: 'setSkipTimes', value: skipTimes }), '*');
-                }
-              } else {
-                webViewRef.current.injectJavaScript(`if(window.setSkipTimes){window.setSkipTimes(${JSON.stringify(skipTimes)});}true;`);
-              }
-            }
+            sendControlCommand('setSkipTimes', JSON.stringify(skipTimes));
           }
         } else {
           console.log(`ℹ️ [WatchScreen AniSkip] No numeric AniList ID available for anime ${animeId} yet.`);
@@ -347,7 +371,7 @@ export default function WatchScreen({ route, navigation }) {
 
     loadSkipTimes();
     return () => { isCancelled = true; };
-  }, [animeId, currentAnilistId, currentAnime, currentEpisodeNumber, currentEpisodeFansub, currentEpisodeTitle]);
+  }, [animeId, currentAnilistId, currentAnime, currentEpisodeNumber, currentEpisodeFansub, currentEpisodeTitle, seasons]);
 
   useEffect(() => {
     const loadPrefs = async () => {
@@ -357,6 +381,8 @@ export default function WatchScreen({ route, navigation }) {
         setClarityMode(prefs.clarityMode);
         setSelectedSpeed(prefs.defaultSpeed);
         setCurrentSpeedLabel(prefs.defaultSpeed === 1.0 ? 'Normal (1.0x)' : `${prefs.defaultSpeed}x`);
+        sendControlCommand('setAutoSkipIntro', !!prefs.autoSkipIntro);
+        if (prefs.buttonSize) sendControlCommand('setButtonSize', prefs.buttonSize);
       } catch (err) {
         console.warn('[WatchScreen] Failed to load player preferences:', err);
       }
@@ -829,7 +855,10 @@ export default function WatchScreen({ route, navigation }) {
         console.warn('[WatchScreen] Failed to post message to web player:', e);
       }
     } else {
-      webViewRef.current?.injectJavaScript(`${command}(${val}); true;`);
+      const valJs = typeof val === 'string' && (val.startsWith('{') || val.startsWith('[') || val.startsWith('"') || val.startsWith("'"))
+        ? val
+        : JSON.stringify(val);
+      webViewRef.current?.injectJavaScript(`if (window.${command}) { window.${command}(${valJs}); } true;`);
     }
   };
 
@@ -839,6 +868,22 @@ export default function WatchScreen({ route, navigation }) {
       const data = JSON.parse(event.nativeEvent.data);
       if (data.type !== 'timeupdate') {
         console.log('[WebView Player Log]', data.type);
+      }
+
+      if (data.type === 'playerReady') {
+        console.log('[WatchScreen] Player is ready. Syncing skip times & prefs...');
+        if (aniSkipData) {
+          sendControlCommand('setSkipTimes', JSON.stringify(aniSkipData));
+        }
+        if (typeof playerPrefs?.autoSkipIntro !== 'undefined') {
+          sendControlCommand('setAutoSkipIntro', !!playerPrefs.autoSkipIntro);
+        }
+        if (playerPrefs?.buttonSize) {
+          sendControlCommand('setButtonSize', playerPrefs.buttonSize);
+        }
+        if (clarityMode) {
+          sendControlCommand('setClarityMode', clarityMode);
+        }
       }
 
       if (data.type === 'fullscreen') {
@@ -1891,6 +1936,18 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
         .skip-intro-btn.visible {
           display: flex;
         }
+        .skip-intro-btn.auto-counting {
+          background: rgba(30, 30, 40, 0.90);
+          border-color: rgba(255, 255, 255, 0.7);
+          box-shadow: 0 4px 22px rgba(0, 0, 0, 0.75), 0 0 14px rgba(255, 255, 255, 0.22);
+        }
+        .skip-intro-btn.auto-counting svg {
+          animation: pulseSkipIcon 1s infinite ease-in-out;
+        }
+        @keyframes pulseSkipIcon {
+          0%, 100% { transform: scale(1); opacity: 0.9; }
+          50% { transform: scale(1.22); opacity: 1; }
+        }
         .skip-intro-btn:hover {
           background: rgba(40, 40, 45, 0.88);
           border-color: rgba(255, 255, 255, 0.6);
@@ -1921,6 +1978,56 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
         }
         body.is-fullscreen .skip-intro-btn svg,
         body.is-spacious .skip-intro-btn svg {
+          width: 18px;
+          height: 18px;
+        }
+
+        /* Frosted Glass Skip Intro Toast */
+        .skip-intro-toast {
+          position: absolute;
+          bottom: calc(var(--bottom-offset) + 38px);
+          left: 20px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          background: rgba(20, 20, 25, 0.88);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          border: 1px solid rgba(255, 255, 255, 0.35);
+          border-radius: 9999px;
+          padding: 7px 16px;
+          color: #FFFFFF !important;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          font-size: 13px;
+          font-weight: 700;
+          z-index: 45;
+          box-shadow: 0 4px 18px rgba(0, 0, 0, 0.7);
+          opacity: 0;
+          transform: translateY(10px);
+          pointer-events: none;
+          transition: opacity 0.25s ease, transform 0.25s ease;
+          user-select: none;
+          -webkit-user-select: none;
+        }
+        .skip-intro-toast.show {
+          opacity: 1;
+          transform: translateY(0);
+        }
+        .skip-intro-toast svg {
+          width: 15px;
+          height: 15px;
+          fill: #FFFFFF !important;
+          stroke: none !important;
+        }
+        body.is-fullscreen .skip-intro-toast,
+        body.is-spacious .skip-intro-toast {
+          bottom: calc(var(--bottom-offset) + 52px);
+          left: 32px;
+          padding: 10px 22px;
+          font-size: 14.5px;
+        }
+        body.is-fullscreen .skip-intro-toast svg,
+        body.is-spacious .skip-intro-toast svg {
           width: 18px;
           height: 18px;
         }
@@ -2009,6 +2116,12 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
           <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4" fill="#FFFFFF"></polygon><line x1="19" y1="5" x2="19" y2="19" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"></line></svg>
           <span>İntroyu Geç</span>
         </button>
+
+        <!-- Frosted Glass Skip Intro Toast -->
+        <div class="skip-intro-toast" id="skip-intro-toast">
+          <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4" fill="#FFFFFF"></polygon><line x1="19" y1="5" x2="19" y2="19" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"></line></svg>
+          <span>İntro Atlandı</span>
+        </div>
       </div>
       
       <script>
@@ -2051,11 +2164,94 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
         }
 
         let currentSkipTimes = ${initialSkipTimes ? JSON.stringify(initialSkipTimes) : 'null'};
-        const autoSkipIntro = ${prefs.autoSkipIntro ? 'true' : 'false'};
+        let autoSkipIntro = ${prefs.autoSkipIntro ? 'true' : 'false'};
+        let hasSkippedIntro = false;
+        let autoSkipTimer = null;
+        let autoSkipCountdown = 3;
+        let isCountingDown = false;
+
         const btnSkipIntro = document.getElementById('btn-skip-intro');
+        const skipIntroToast = document.getElementById('skip-intro-toast');
+        let toastTimeout = null;
+
+        function showSkipToast(text) {
+          if (!skipIntroToast) return;
+          if (text) {
+            const span = skipIntroToast.querySelector('span');
+            if (span) span.textContent = text;
+          }
+          skipIntroToast.classList.add('show');
+          if (toastTimeout) clearTimeout(toastTimeout);
+          toastTimeout = setTimeout(() => {
+            skipIntroToast.classList.remove('show');
+          }, 2500);
+        }
+
+        function cancelAutoSkipCountdown() {
+          if (autoSkipTimer) {
+            clearInterval(autoSkipTimer);
+            autoSkipTimer = null;
+          }
+          isCountingDown = false;
+          autoSkipCountdown = 3;
+          if (btnSkipIntro) {
+            btnSkipIntro.classList.remove('auto-counting');
+            const span = btnSkipIntro.querySelector('span');
+            if (span) span.textContent = 'İntroyu Geç';
+          }
+        }
+
+        function performIntroSkip(isAuto = false) {
+          cancelAutoSkipCountdown();
+          if (currentSkipTimes && currentSkipTimes.op) {
+            hasSkippedIntro = true;
+            video.currentTime = currentSkipTimes.op.endTime;
+            if (btnSkipIntro) btnSkipIntro.classList.remove('visible');
+            showSkipToast('İntro Atlandı');
+            if (isAuto) {
+              sendToParent({ type: 'introAutoSkipped' });
+            }
+          }
+        }
+
+        function startAutoSkipCountdown() {
+          if (isCountingDown || hasSkippedIntro) return;
+          if (!currentSkipTimes || !currentSkipTimes.op) return;
+
+          isCountingDown = true;
+          autoSkipCountdown = 3;
+
+          if (btnSkipIntro) {
+            btnSkipIntro.classList.add('visible', 'auto-counting');
+            const span = btnSkipIntro.querySelector('span');
+            if (span) span.textContent = 'Atlanıyor (3)';
+          }
+
+          autoSkipTimer = setInterval(() => {
+            if (video.paused || isSeeking || isSwiping) return;
+            autoSkipCountdown--;
+            if (autoSkipCountdown > 0) {
+              if (btnSkipIntro) {
+                const span = btnSkipIntro.querySelector('span');
+                if (span) span.textContent = 'Atlanıyor (' + autoSkipCountdown + ')';
+              }
+            } else {
+              performIntroSkip(true);
+            }
+          }, 1000);
+        }
+
+        window.setAutoSkipIntro = function(enabled) {
+          autoSkipIntro = !!enabled;
+          if (!autoSkipIntro) {
+            cancelAutoSkipCountdown();
+          }
+        };
 
         window.setSkipTimes = function(data) {
           currentSkipTimes = data;
+          hasSkippedIntro = false;
+          cancelAutoSkipCountdown();
           if (!currentSkipTimes || !currentSkipTimes.op) {
             if (btnSkipIntro) btnSkipIntro.classList.remove('visible');
           }
@@ -2063,12 +2259,14 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
 
         if (btnSkipIntro) {
           bindFastClick(btnSkipIntro, (e) => {
-            if (currentSkipTimes && currentSkipTimes.op) {
-              video.currentTime = currentSkipTimes.op.endTime;
-              btnSkipIntro.classList.remove('visible');
-            }
+            performIntroSkip(false);
           });
         }
+
+        video.addEventListener('ended', () => {
+          hasSkippedIntro = false;
+          cancelAutoSkipCountdown();
+        }, { passive: true });
 
         function updateLayoutMode() {
           const isLandscapeOrLarge = (window.innerHeight > 280 && window.innerWidth > 480) || _isFullscreenLocal;
@@ -2171,6 +2369,7 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
             sendToParent({ type: 'qualitySelected', index: -1, label: 'Otomatik' });
             sendToParent({ type: 'speedSelected', speed: defaultSpeed, label: defaultSpeed === 1.0 ? 'Normal (1.0x)' : defaultSpeed + 'x' });
           }
+          sendToParent({ type: 'playerReady' });
         }
         
         function populateQualityLevels(levels) {
@@ -2348,17 +2547,29 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
           if (currentSkipTimes && currentSkipTimes.op) {
             const opStart = currentSkipTimes.op.startTime;
             const opEnd = currentSkipTimes.op.endTime;
-            if (current >= opStart && current < opEnd) {
-              if (autoSkipIntro) {
-                video.currentTime = opEnd;
-                if (btnSkipIntro) btnSkipIntro.classList.remove('visible');
+            const inIntro = current >= opStart && current < opEnd;
+
+            if (inIntro) {
+              if (autoSkipIntro && !hasSkippedIntro) {
+                startAutoSkipCountdown();
               } else {
-                if (btnSkipIntro) btnSkipIntro.classList.add('visible');
+                if (!isCountingDown && btnSkipIntro) {
+                  btnSkipIntro.classList.add('visible');
+                  btnSkipIntro.classList.remove('auto-counting');
+                  const span = btnSkipIntro.querySelector('span');
+                  if (span) span.textContent = 'İntroyu Geç';
+                }
               }
             } else {
+              if (isCountingDown) {
+                cancelAutoSkipCountdown();
+              }
               if (btnSkipIntro) btnSkipIntro.classList.remove('visible');
             }
           } else {
+            if (isCountingDown) {
+              cancelAutoSkipCountdown();
+            }
             if (btnSkipIntro) btnSkipIntro.classList.remove('visible');
           }
 
@@ -2782,6 +2993,8 @@ const generatePlayerHtml = (videoUrl, isMp4, clarityMode = 'off', startAt = 0, p
                 if (window.setButtonSize) window.setButtonSize(data.value);
               } else if (data.type === 'setSkipTimes') {
                 if (window.setSkipTimes) window.setSkipTimes(data.value);
+              } else if (data.type === 'setAutoSkipIntro') {
+                if (window.setAutoSkipIntro) window.setAutoSkipIntro(data.value);
               } else if (data.type === 'playVideo') {
                 if (window.playVideo) window.playVideo();
               }
@@ -2834,6 +3047,12 @@ function VideoPlayerWrapper({ videoUrl, onMessage, webViewRef, clarityMode, star
       webViewRef.current.injectJavaScript(`if(window.setButtonSize) { window.setButtonSize('${playerPrefs.buttonSize}'); } true;`);
     }
   }, [playerPrefs?.buttonSize]);
+
+  useEffect(() => {
+    if (webViewRef.current && typeof playerPrefs?.autoSkipIntro !== 'undefined') {
+      webViewRef.current.injectJavaScript(`if(window.setAutoSkipIntro) { window.setAutoSkipIntro(${!!playerPrefs.autoSkipIntro}); } true;`);
+    }
+  }, [playerPrefs?.autoSkipIntro]);
 
   useEffect(() => {
     if (webViewRef.current && aniSkipData) {
@@ -2893,6 +3112,12 @@ function WebVideoPlayer({ videoUrl, onMessage, webViewRef, clarityMode, startAt,
       webViewRef.current.contentWindow.postMessage(JSON.stringify({ type: 'setButtonSize', value: playerPrefs.buttonSize }), '*');
     }
   }, [playerPrefs?.buttonSize]);
+
+  useEffect(() => {
+    if (webViewRef.current && webViewRef.current.contentWindow && typeof playerPrefs?.autoSkipIntro !== 'undefined') {
+      webViewRef.current.contentWindow.postMessage(JSON.stringify({ type: 'setAutoSkipIntro', value: !!playerPrefs.autoSkipIntro }), '*');
+    }
+  }, [playerPrefs?.autoSkipIntro]);
 
   useEffect(() => {
     if (webViewRef.current && webViewRef.current.contentWindow && aniSkipData) {
