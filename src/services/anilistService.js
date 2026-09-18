@@ -544,14 +544,17 @@ export async function fetchFullSeasonChain(initialMedia) {
 
     try {
       const details = await fetchAnimeDetails(currId);
-      if (details && Array.isArray(details.relations)) {
-        for (const rel of details.relations) {
-          if (rel && rel.node && ['SEQUEL', 'PREQUEL'].includes(rel.relationType) && isEligibleSeason(rel.node)) {
-            const relId = String(rel.node.id);
-            if (!visitedIds.has(relId)) {
-              visitedIds.add(relId);
-              allSeasonsMap.set(relId, rel.node);
-              queue.push(rel.node);
+      if (details) {
+        allSeasonsMap.set(String(currId), { ...(allSeasonsMap.get(String(currId)) || current), ...details });
+        if (Array.isArray(details.relations)) {
+          for (const rel of details.relations) {
+            if (rel && rel.node && ['SEQUEL', 'PREQUEL'].includes(rel.relationType) && isEligibleSeason(rel.node)) {
+              const relId = String(rel.node.id);
+              if (!visitedIds.has(relId)) {
+                visitedIds.add(relId);
+                allSeasonsMap.set(relId, rel.node);
+                queue.push(rel.node);
+              }
             }
           }
         }
@@ -651,8 +654,10 @@ export async function fetchFullSeasonChain(initialMedia) {
       title_romaji: item.title_romaji || item.title || '',
       title_english: item.title_english || item.title || '',
       category: 'seasons',
-      cover_image: item.coverImage || item.poster,
-      banner_image: item.bannerImage || item.banner,
+      cover_image: item.coverImage || item.poster || item.cover_image,
+      banner_image: item.bannerImage || item.banner || item.banner_image,
+      coverImage: item.coverImage || item.poster || item.cover_image,
+      bannerImage: item.bannerImage || item.banner || item.banner_image,
       episodes: getReleasedEpisodeCount(item),
       format: item.format || 'TV',
       status: item.status || 'FINISHED',
@@ -660,6 +665,11 @@ export async function fetchFullSeasonChain(initialMedia) {
       nextAiringEpisode: item.nextAiringEpisode || null,
       season: item.season || null,
       seasonYear: item.seasonYear || null,
+      genres: item.genres || item.enrichedGenres || [],
+      averageScore: item.averageScore || null,
+      description: item.description || item.synopsis || null,
+      synopsis: item.synopsis || item.description || null,
+      studios: item.studios || [],
       node: item
     };
   });
